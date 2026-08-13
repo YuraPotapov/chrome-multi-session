@@ -68,3 +68,44 @@ def test_no_module_hard_codes_a_symbol_outside_the_theme():
                             offenders.append("%s:%d %r" % (name, number, char))
     assert not offenders, ("use theme.glyph() instead of a literal: %s"
                            % ", ".join(offenders[:8]))
+
+
+# ------------------------------------------------- stylesheets that cascade
+
+def _dominant_colour(widget):
+    image = widget.grab().toImage()
+    counts = {}
+    for x in range(image.width()):
+        for y in range(image.height()):
+            name = image.pixelColor(x, y).name()
+            counts[name] = counts.get(name, 0) + 1
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def test_a_primary_button_keeps_its_fill_inside_a_styled_container(qapp):
+    """A container's stylesheet must not repaint the widgets inside it.
+
+    Regression: the preview strip set a plain `background:`, which cascades to
+    its children and outranks the application sheet. The RUN button lost its
+    accent fill and painted its near-white label onto the strip's near-white
+    background - a button that looked empty.
+    """
+    from cms_gui.pages.command import CommandPage
+    from cms_gui.settings import Settings
+    page = CommandPage(Settings())
+    page.resize(1100, 700)
+    page.show()
+    qapp.processEvents()
+    assert _dominant_colour(page.run_button).lower() == theme.ACCENT.lower()
+
+
+def test_scoped_style_does_not_reach_children(qapp):
+    from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
+    from cms_gui import widgets
+    box = QWidget()
+    layout = QVBoxLayout(box)
+    button = QPushButton("x")
+    layout.addWidget(button)
+    widgets.scoped_style(box, "background: #123456;")
+    assert box.styleSheet().startswith("#")          # scoped by object name
+    assert "#123456" not in button.styleSheet()

@@ -118,7 +118,7 @@ class CommandPage(QWidget):
 
         # --- preview strip (the design's footer bar) -------------------------
         footer = QWidget()
-        footer.setStyleSheet("background: %s; border-top: 1px solid %s;"
+        widgets.scoped_style(footer, "background: %s; border-top: 1px solid %s;"
                              % (theme.NEUTRAL[100], theme.DIVIDER))
         strip = QHBoxLayout(footer)
         strip.setContentsMargins(24, 10, 24, 10)

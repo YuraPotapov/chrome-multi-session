@@ -107,6 +107,9 @@ _GLYPH_CANDIDATES = {
     "environments": ("▤", "▦", "="),
     "credentials": ("◍", "●", "o"),
     "command": ("⌗", "#", "#"),
+    "launch": ("◈", "◆", "+"),
+    "history": ("◷", "◔", "@"),
+    "developer": ("◧", "◐", "%"),
     "log": ("≡", "☰", "="),
     "artifacts": ("◫", "▢", "[]"),
     "pass": ("✓", "√", "+"),
@@ -158,6 +161,12 @@ STYLESHEET = """
 }}
 QWidget {{ background: {bg}; }}
 QMainWindow, QDialog {{ background: {bg}; }}
+/* A label is text, not a panel. Inheriting the page background from the rule
+   above made every label paint an opaque rectangle of it, which showed up as a
+   band of the wrong colour wherever a label sat on a tinted surface - the
+   CONFIGURE and OBSERVE headings on the sidebar. Anything that genuinely needs a
+   fill (the Tag pill) sets its own. */
+QLabel {{ background: transparent; }}
 
 QToolTip {{
     background: {n800}; color: {n100};

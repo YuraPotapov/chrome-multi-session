@@ -39,7 +39,7 @@ class SessionPanel(widgets.BlueprintPanel):
         column.setSpacing(0)
 
         head = QWidget()
-        head.setStyleSheet("border-bottom: 1px solid %s;" % theme.DIVIDER)
+        widgets.scoped_style(head, "border-bottom: 1px solid %s;" % theme.DIVIDER)
         self.name = QLabel("")
         self.name.setStyleSheet("font-family: %s; font-size: 13px; font-weight: 500;"
                                 % theme.MONO_CSS)
@@ -147,7 +147,7 @@ class RunPage(QWidget):
 
         head = QWidget()
         head.setProperty("role", "bar")
-        head.setStyleSheet("border-bottom: 1px solid %s;" % theme.DIVIDER)
+        widgets.scoped_style(head, "border-bottom: 1px solid %s;" % theme.DIVIDER)
         head_layout = QVBoxLayout(head)
         head_layout.setContentsMargins(24, 14, 24, 12)
         self.tag = widgets.Tag("IDLE", "neutral")

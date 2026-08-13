@@ -5,7 +5,7 @@ import sys
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from . import theme
+from . import icon, theme
 from .main_window import MainWindow
 
 
@@ -19,6 +19,9 @@ def main(argv=None):
     app.setStyle("Fusion")
     theme.load_fonts()
     app.setStyleSheet(theme.stylesheet())
+    # Set on the application as well as the window: on Wayland and on Windows the
+    # task switcher reads it from here, not from the window.
+    app.setWindowIcon(icon.app_icon())
 
     window = MainWindow()
     geometry = window.settings.geometry()

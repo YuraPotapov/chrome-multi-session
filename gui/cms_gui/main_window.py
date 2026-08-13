@@ -4,22 +4,30 @@ Layout follows the design export: a run/stop toolbar across the top, a narrow
 navigation rail split into what you *configure* and what you *observe*, and a
 status bar that always says which core, interpreter and config are in play - the
 three things that decide what any button here will actually do.
+
+Two pages can start a run - Launch Sessions for a user, Command for a developer -
+so this window is also the place that decides which of them the toolbar's RUN
+acts on, and the place that records the result. Both concerns live here rather
+than in either page, so neither page has to know the other exists.
 """
 
 import os
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (QDialog, QFrame, QLabel, QMainWindow, QMessageBox,
                                QPushButton, QStackedWidget, QVBoxLayout, QWidget)
 
-from . import commands, core as core_mod, theme, widgets
+from . import (commands, core as core_mod, history as history_mod, icon,
+               launch as launch_mod, theme, widgets)
 from .runner import LauncherProcess, RunState
 from .settings import Settings
 from .pages.artifacts import ArtifactsPage
 from .pages.command import CommandPage
 from .pages.credentials import CredentialsPage
 from .pages.environments import EnvironmentsPage
+from .pages.history import HistoryPage
+from .pages.launch import LaunchSessionsPage
 from .pages.log import LogPage
 from .pages.run import RunPage
 from .pages.settings_dialog import SettingsDialog
@@ -27,15 +35,35 @@ from .pages.settings_dialog import SettingsDialog
 # (page key, label, glyph name resolved by theme.glyph at build time)
 CONFIGURE = [("environments", "Environments", "environments"),
              ("credentials", "Credentials", "credentials"),
-             ("commands", "Command", "command")]
+             ("commands", "Command", "command"),
+             ("launch", "Launch Sessions", "launch")]
 OBSERVE = [("run", "Run", "run"), ("log", "Log", "log"),
-           ("artifacts", "Artifacts", "artifacts")]
+           ("artifacts", "Artifacts", "artifacts"),
+           ("history", "History", "history")]
+
+# Pages only a developer needs. Launch Sessions is never in here: it is the
+# primary interface in one mode and still available in the other.
+DEVELOPER_ONLY = ("commands",)
+
+# The rail's width is measured from its contents (see _build_ui); these only set
+# the floor, the left/right inset of the group headings, and enough slack that a
+# label never sits flush against the divider.
+RAIL_MIN_WIDTH = 196
+RAIL_PADDING = 14
+RAIL_SLACK = 18
+
+# Taken off a group heading's measured width. "CONFIGURE" is letter-spaced, and the
+# 2px lands after the final character as well as between characters, so its
+# reported width ends in space that draws nothing. A heading should not widen the
+# rail on account of that.
+HEADING_TRIM = 10
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("chrome-multi-session — GUI")
+        self.setWindowIcon(icon.app_icon())
         self.resize(1380, 880)
 
         self.settings = Settings()
@@ -44,12 +72,17 @@ class MainWindow(QMainWindow):
         self.inventory = core_mod.Inventory()
         self.run_state = RunState(self)
         self.process = LauncherProcess(self)
+        self.history = history_mod.History(parent=self)
 
         self._nav_buttons = {}
+        self._run_source = self.settings.run_source
+        self._entry_id = None
+        self._stopping = False
         self._build_menu()
         self._build_ui()
         self._connect_process()
 
+        self.set_developer_mode(self.settings.developer_mode)
         self.show_page(self.settings.page)
         # Ask the core what exists as soon as the window is up, so the pages are
         # populated before the user reaches them.
@@ -87,6 +120,13 @@ class MainWindow(QMainWindow):
         self.stop_action.triggered.connect(self.stop_run)
         self.stop_action.setEnabled(False)
         run_menu.addAction(self.stop_action)
+
+        view_menu = menu.addMenu("&View")
+        self.developer_action = QAction("&Developer mode", self)
+        self.developer_action.setCheckable(True)
+        self.developer_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        self.developer_action.toggled.connect(self.set_developer_mode)
+        view_menu.addAction(self.developer_action)
 
         tools_menu = menu.addMenu("&Tools")
         refresh_action = QAction("Refresh --describe", self)
@@ -131,11 +171,19 @@ class MainWindow(QMainWindow):
         self.refresh_button = QPushButton(theme.labelled("refresh", "Refresh describe"))
         self.refresh_button.clicked.connect(self.refresh_inventory)
         self.describe_label = widgets.mono("")
+        # A checkable button rather than a menu item alone: which mode you are in
+        # decides what the whole window offers, so it has to be readable at a
+        # glance instead of being remembered.
+        self.developer_button = QPushButton("")
+        self.developer_button.setCheckable(True)
+        self.developer_button.setCursor(Qt.PointingHandCursor)
+        self.developer_button.toggled.connect(self.set_developer_mode)
         settings_button = QPushButton(theme.labelled("settings", "Settings"))
         settings_button.clicked.connect(self.open_settings)
         bar_layout.addWidget(widgets.row(
             self.run_button, self.stop_button, widgets.vline(), self.copy_button,
-            self.refresh_button, None, self.describe_label, settings_button))
+            self.refresh_button, None, self.describe_label, widgets.vline(),
+            self.developer_button, settings_button))
         column.addWidget(bar)
 
         # --- body: rail + pages ---------------------------------------------
@@ -149,13 +197,25 @@ class MainWindow(QMainWindow):
 
         rail = QFrame()
         rail.setProperty("role", "sidebar")
-        rail.setFixedWidth(206)
         rail_layout = QVBoxLayout(rail)
-        rail_layout.setContentsMargins(0, 8, 0, 8)
+        # 1px reserved on the right for the frame's own border. A stylesheet border
+        # is painted inside the widget's rect and children are not clipped to the
+        # contents rect, so a full-width child with any fill of its own paints over
+        # it - which is how the divider ended up broken at the group headings and at
+        # whichever nav item was active.
+        rail_layout.setContentsMargins(0, 8, 1, 8)
         rail_layout.setSpacing(0)
+        # The rail is sized from what is actually in it. A fixed width was fine
+        # while the labels were short and the font was whatever this machine had,
+        # but "Launch Sessions" and a letter-spaced "CONFIGURE" overflow it as soon
+        # as the body font is wider - a condensed family missing, a larger system
+        # font, display scaling - and a QFrame with a fixed width clips rather than
+        # growing. So every label is measured and the widest one decides.
+        widest = 0
         for title, entries in (("Configure", CONFIGURE), ("Observe", OBSERVE)):
             heading = widgets.kicker(title)
-            heading.setContentsMargins(14, 8, 14, 6)
+            heading.setContentsMargins(RAIL_PADDING, 8, RAIL_PADDING, 6)
+            widest = max(widest, heading.sizeHint().width() - HEADING_TRIM)
             rail_layout.addWidget(heading)
             for key, label, glyph in entries:
                 button = QPushButton("%s   %s" % (theme.glyph(glyph), label))
@@ -163,9 +223,11 @@ class MainWindow(QMainWindow):
                 button.setCursor(Qt.PointingHandCursor)
                 button.clicked.connect(lambda _c=False, k=key: self.show_page(k))
                 self._nav_buttons[key] = button
+                widest = max(widest, button.sizeHint().width())
                 rail_layout.addWidget(button)
             rail_layout.addSpacing(10)
         rail_layout.addStretch(1)
+        rail.setFixedWidth(max(RAIL_MIN_WIDTH, widest + RAIL_SLACK))
         self.rail_note = QLabel("")
         self.rail_note.setStyleSheet(
             "font-family: %s; font-size: 10px; color: %s; border-top: 1px solid %s;"
@@ -178,24 +240,35 @@ class MainWindow(QMainWindow):
         self.environments = EnvironmentsPage(self.settings)
         self.credentials = CredentialsPage()
         self.command = CommandPage(self.settings)
+        self.launch = LaunchSessionsPage(self.settings)
         self.run = RunPage(self.run_state)
-        self.log = LogPage()
-        self.artifacts = ArtifactsPage()
+        self.log = LogPage(self.settings)
+        self.artifacts = ArtifactsPage(self.settings)
+        self.history_page = HistoryPage(self.history)
+        # Both observing pages read the run record for what to offer, so they open
+        # on the last run rather than on nothing after a restart.
+        self.log.set_history(self.history)
+        self.artifacts.set_history(self.history)
         self._pages = {"environments": self.environments, "credentials": self.credentials,
-                       "commands": self.command, "run": self.run, "log": self.log,
-                       "artifacts": self.artifacts}
+                       "commands": self.command, "launch": self.launch,
+                       "run": self.run, "log": self.log,
+                       "artifacts": self.artifacts, "history": self.history_page}
         for page in self._pages.values():
             self.stack.addWidget(page)
         inner.addWidget(self.stack, 1)
         body_row.addLayout(inner)
         column.addWidget(body, 1)
 
-        self.command.run_requested.connect(self.start_run)
+        self.command.run_requested.connect(lambda: self.start_run("commands"))
+        self.launch.run_requested.connect(lambda: self.start_run("launch"))
         self.credentials.saved.connect(self.refresh_inventory)
-        self.environments.directories_changed.connect(
-            lambda: self.command.set_inventory(self.inventory))
+        self.environments.directories_changed.connect(self._directories_changed)
         self.run_state.run_dir_known.connect(self.artifacts.set_run_dir)
         self.run_state.artifacts_written.connect(self.artifacts.note_artifacts)
+        self.history_page.rerun_requested.connect(self.rerun_entry)
+        self.history_page.restore_requested.connect(self.restore_entry)
+        self.history_page.open_log_requested.connect(self._open_log)
+        self.history_page.open_artifacts_requested.connect(self._open_artifacts)
 
         self.setCentralWidget(central)
 
@@ -224,19 +297,72 @@ class MainWindow(QMainWindow):
 
     # -- navigation -----------------------------------------------------------
     def show_page(self, key):
+        if key in DEVELOPER_ONLY and not self.settings.developer_mode:
+            key = "launch"
         page = self._pages.get(key)
         if page is None:
-            key, page = "commands", self.command
+            key, page = "launch", self.launch
         self.stack.setCurrentWidget(page)
         for name, button in self._nav_buttons.items():
             button.setProperty("active", "true" if name == key else "false")
             button.style().unpolish(button)
             button.style().polish(button)
         self.settings.page = key
+        # RUN follows whichever of the two launching pages you were last in, so
+        # the toolbar button and Ctrl+Return never act on a page you left behind.
+        if key in ("launch", "commands"):
+            self._run_source = key
+            self.settings.run_source = key
+            self._update_run_label()
+
+    def set_developer_mode(self, enabled):
+        enabled = bool(enabled)
+        self.settings.developer_mode = enabled
+        # Both are checkable and both call back in here, so each has to be set
+        # quietly or the two would bounce the change between them.
+        for control in (self.developer_button, self.developer_action):
+            control.blockSignals(True)
+            control.setChecked(enabled)
+            control.blockSignals(False)
+        self.developer_button.setText(
+            theme.labelled("developer", "Developer mode: on" if enabled
+                           else "Developer mode: off"))
+        self.developer_button.setProperty("variant", "primary" if enabled else "")
+        self.developer_button.style().unpolish(self.developer_button)
+        self.developer_button.style().polish(self.developer_button)
+
+        for key in DEVELOPER_ONLY:
+            nav = self._nav_buttons.get(key)
+            if nav is not None:
+                nav.setVisible(enabled)
+        self.copy_button.setVisible(enabled)
+        self.launch.set_developer_mode(enabled)
+        if not enabled and self.settings.page in DEVELOPER_ONLY:
+            self.show_page("launch")
+        else:
+            self._update_run_label()
+
+    def _update_run_label(self):
+        """Say which page RUN will act on, but only when both are reachable."""
+        if self.settings.developer_mode and self._run_source == "commands":
+            self.run_button.setText(theme.labelled("run", "RUN COMMAND"))
+        else:
+            self.run_button.setText(theme.labelled("run", "RUN"))
+
+    def _run_page(self, source=None):
+        source = source or self._run_source
+        if source == "commands" and self.settings.developer_mode:
+            return "commands", self.command
+        return "launch", self.launch
+
+    def _directories_changed(self):
+        self.command.set_inventory(self.inventory)
+        self.launch.set_inventory(self.inventory)
 
     # -- core -----------------------------------------------------------------
     def refresh_inventory(self):
         self.command.set_core(self.core)
+        self.launch.set_core(self.core)
         if not self.core.is_configured():
             self.describe_label.setText("core not configured")
             self._update_status()
@@ -254,6 +380,7 @@ class MainWindow(QMainWindow):
         self.inventory = core_mod.Inventory(payload)
         self.environments.set_inventory(self.inventory)
         self.command.set_inventory(self.inventory)
+        self.launch.set_inventory(self.inventory)
         self.credentials.load(self.inventory.config_path or self.core.config_path)
         self.describe_label.setText(self.inventory.summary())
         self.rail_note.setText("core %s\nPySide6 %s" % (self.inventory.version,
@@ -291,14 +418,22 @@ class MainWindow(QMainWindow):
             self.refresh_inventory()
 
     # -- running --------------------------------------------------------------
-    def start_run(self):
+    def start_run(self, source=None):
         if self.process.is_running():
             return
         if not self.core.is_configured():
             QMessageBox.information(self, "Run", "Configure the core first "
                                                  "(Settings -> Core script).")
             return
-        args = self.command.argv()
+        source, page = self._run_page(source)
+        if source == "launch":
+            problems = page.problem_list()
+            if problems:
+                QMessageBox.information(self, "Launch Sessions",
+                                        "Fix this first:\n\n- %s"
+                                        % "\n- ".join(problems))
+                return
+        args = page.argv()
         try:
             argv = self.core.argv(*args)
         except core_mod.CoreError as exc:
@@ -306,16 +441,45 @@ class MainWindow(QMainWindow):
             return
         self.run_state.reset()
         self.log.clear()
-        state = self.command.state()
-        self.run.run_started("jobs=%s · %s · events on stdout"
-                             % (state.get("--jobs") or "1",
-                                state.get("--run-tests") or "(launch only)"))
+        self._stopping = False
+        self._entry_id = self.history.begin(
+            *self._history_payload(source, page, args, argv))
+        if source == "launch":
+            self.run.run_started("%s · events on stdout" % page.run_meta())
+        else:
+            state = page.state()
+            self.run.run_started("jobs=%s · %s · events on stdout"
+                                 % (state.get("--jobs") or "1",
+                                    state.get("--run-tests") or "(launch only)"))
         self.show_page("run")
         self.process.start(argv, working_dir=self.core.root or None)
+
+    def _history_payload(self, source, page, args, argv):
+        """(kind, entry fields) for the run about to start.
+
+        Both halves go in: what the user asked for, and the command it became.
+        The first is what "run it again, but with one change" needs; the second is
+        what makes the entry readable without the GUI at all.
+        """
+        try:
+            display = self.core.display_argv(*args)
+        except core_mod.CoreError:
+            display = " ".join(argv)
+        if source == "launch":
+            config = page.state()
+            return history_mod.LAUNCH, {
+                "argv": list(argv), "display_command": display,
+                "summary": page.describe_line(), "launch_config": config,
+                "command_state": launch_mod.to_command_state(config, self.inventory)}
+        state = page.state()
+        return history_mod.COMMAND, {
+            "argv": list(argv), "display_command": display,
+            "summary": commands.preview(state, self.core), "command_state": state}
 
     def stop_run(self):
         if not self.process.is_running():
             return
+        self._stopping = True
         self.status_right.setText("stopping — the launcher closes its windows first")
         self.process.stop()
 
@@ -333,10 +497,36 @@ class MainWindow(QMainWindow):
         self.status_right.setText("finished (exit %d)" % code)
         if self.run_state.run_dir:
             self.artifacts.set_run_dir(self.run_state.run_dir)
+        self._close_entry(history_mod.status_for(code, stopped=self._stopping),
+                          exit_code=code)
 
     def _on_failed(self, message):
         self._set_running(False)
+        self._close_entry(history_mod.ERROR, summary_suffix=message)
         QMessageBox.warning(self, "Run", message)
+
+    def _close_entry(self, status, exit_code=None, summary_suffix=""):
+        """Record how the run ended, and keep a copy of its log.
+
+        The log has to be archived now: the next run clears the Log page, so this
+        is the only moment the text still exists anywhere.
+        """
+        if self._entry_id is None:
+            return
+        summary = self.run_state.summary or {}
+        passed, total = self.run_state.totals()
+        entry_id, self._entry_id = self._entry_id, None
+        log_path = self.history.log_path(entry_id)
+        fields = {"status": status, "exit_code": exit_code,
+                  "passed": int(summary.get("passed", passed) or 0),
+                  "total": int(summary.get("total", total) or 0),
+                  "run_dir": self.run_state.run_dir,
+                  "log_file": log_path if self.log.write_to(log_path) else ""}
+        if summary_suffix:
+            existing = (self.history.entry(entry_id) or {}).get("summary", "")
+            fields["summary"] = "%s — %s" % (existing, summary_suffix) if existing \
+                else summary_suffix
+        self.history.finish(entry_id, **fields)
 
     def _set_running(self, running):
         self.run_button.setEnabled(not running)
@@ -344,16 +534,62 @@ class MainWindow(QMainWindow):
         self.run_action.setEnabled(not running)
         self.stop_action.setEnabled(running)
         self.command.set_running(running)
+        self.launch.set_running(running)
         self.status_state.setText("state: running" if running else "state: idle")
         if running:
             self.status_right.setText("events: stdout · logs: stderr")
 
+    # -- history --------------------------------------------------------------
+    def restore_entry(self, entry):
+        """Put a recorded run back into the page that produced it."""
+        kind = entry.get("kind")
+        if kind == history_mod.LAUNCH:
+            self.launch.set_state(entry.get("launch_config") or {})
+            self.show_page("launch")
+            return "launch"
+        # The Command page needs nothing new for this: set_state is its own API.
+        if not self.settings.developer_mode:
+            self.set_developer_mode(True)
+        self.command.set_state(entry.get("command_state") or {})
+        self.show_page("commands")
+        return "commands"
+
+    def rerun_entry(self, entry):
+        source = self.restore_entry(entry)
+        self.start_run(source)
+
+    def _open_log(self, path):
+        """Show an archived log on the Log page, where the filters are.
+
+        Handing it to the desktop would open a text editor on something this app
+        already renders better - level colouring, the session picker, search.
+        """
+        if not path or not os.path.isfile(path):
+            return
+        if self.log.show_file(path):
+            self.show_page("log")
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _open_artifacts(self, run_dir):
+        self.artifacts.show_dir(run_dir)
+        self.show_page("artifacts")
+
     # -- chrome ---------------------------------------------------------------
     def _update_status(self):
-        self.status_core.setText("core: %s" % (self.core.script or "—"))
-        self.status_python.setText("python: %s" % (self.core.interpreter or "—"))
-        self.status_config.setText("config: %s"
-                                   % (os.path.basename(self.core.config_path) or "—"))
+        """Name the three things in play, without the full paths.
+
+        These are absolute paths, and a status-bar QLabel is as wide as its text:
+        spelling them out here set the window's minimum width to the length of the
+        longest one. The file name says which, and the tooltip has the rest.
+        """
+        for label, prefix, path in ((self.status_core, "core", self.core.script),
+                                    (self.status_python, "python",
+                                     self.core.interpreter),
+                                    (self.status_config, "config",
+                                     self.core.config_path)):
+            label.setText("%s: %s" % (prefix, os.path.basename(path or "") or "—"))
+            label.setToolTip(path or "")
 
     def about(self):
         QMessageBox.about(

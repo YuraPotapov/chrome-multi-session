@@ -178,6 +178,17 @@ class Inventory:
     def env_aliases(self):
         return [e.get("alias", "") for e in self.envs]
 
+    def env_value(self, alias):
+        """The users.json ``env`` string behind an ``--env`` alias.
+
+        ``--env`` matches on the alias, but the user rows carry the raw value, so
+        anything selecting users by environment has to cross this bridge.
+        """
+        for env in self.envs:
+            if env.get("alias") == alias:
+                return env.get("value", "")
+        return ""
+
     def logins(self, env_value=None):
         """Logins, optionally only those belonging to one environment value."""
         return [u.get("login", "") for u in self.users

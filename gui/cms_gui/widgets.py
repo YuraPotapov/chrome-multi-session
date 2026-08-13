@@ -6,8 +6,11 @@ segmented control, the tag pill - plus small constructors so pages read as
 layout rather than as widget configuration.
 """
 
+import itertools
+
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
 
 from . import theme
@@ -106,6 +109,245 @@ class Segmented(QWidget):
         return self._current
 
 
+class ElidedLabel(QLabel):
+    """A one-line label that shortens its text instead of widening the window.
+
+    A QLabel's minimum width is the width of its text, and a layout honours that:
+    one full filesystem path in a status bar or a header is enough to push the
+    whole window wider than the screen, which is how the Artifacts tree ended up
+    crushed to a sliver beside a path label. Eliding in the middle keeps the two
+    ends - the run folder and the file name are the parts anyone reads - and the
+    whole string stays available as the tooltip.
+    """
+
+    def __init__(self, text="", mode=Qt.ElideMiddle, parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self._mode = mode
+        self._eliding = False
+        # Ignored, not Preferred: the point is that this label's own text must
+        # never be what decides how wide anything gets.
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text):
+        self._full = "" if text is None else str(text)
+        self.setToolTip(self._full)
+        self._elide()
+
+    def text(self):
+        return self._full
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self):
+        if self._eliding:
+            return          # super().setText can trigger a resize, which re-enters
+        self._eliding = True
+        try:
+            width = self.width() - 2
+            if width <= 0:
+                super().setText(self._full)
+            else:
+                super().setText(self.fontMetrics().elidedText(self._full, self._mode,
+                                                              width))
+        finally:
+            self._eliding = False
+
+
+class CheckList(QWidget):
+    """A searchable list of tick boxes, with a count of what is ticked.
+
+    Accounts, extensions and scenarios are all the same problem - "choose some
+    of these, and there may be thirty of them" - so they are all the same widget.
+    The search box hides rows rather than removing them, so a ticked row that
+    scrolls out of the filter is still part of the selection.
+    """
+
+    changed = Signal()
+
+    def __init__(self, searchable=True, placeholder="Search…", parent=None):
+        super().__init__(parent)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(6)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText(placeholder)
+        self.search.textChanged.connect(self.set_filter)
+        self.search.setVisible(searchable)
+        column.addWidget(self.search)
+
+        self.list = QListWidget()
+        self.list.setSelectionMode(QListWidget.NoSelection)
+        self.list.setMinimumHeight(140)
+        self.list.itemChanged.connect(self._on_item_changed)
+        column.addWidget(self.list, 1)
+
+        self.count = QLabel("")
+        self.count.setStyleSheet("font-size: 11px; color: %s; font-family: %s;"
+                                 % (theme.NEUTRAL[600], theme.MONO_CSS))
+        column.addWidget(self.count)
+        self._quiet = False
+        self._noun = "selected"
+
+    # -- contents -------------------------------------------------------------
+    def set_noun(self, noun):
+        """What the count line calls the things in the list."""
+        self._noun = noun
+        self._update_count()
+
+    def clear(self):
+        self._quiet = True
+        self.list.clear()
+        self._quiet = False
+        self._update_count()
+
+    def add(self, value, label=None, note="", enabled=True, accent=False):
+        item = QListWidgetItem("%-30s %s" % (label if label is not None else value,
+                                             note))
+        item.setFont(theme.mono_font(9))
+        item.setData(Qt.UserRole, value)
+        flags = item.flags() | Qt.ItemIsUserCheckable
+        if not enabled:
+            # An unusable row still has to be visible - the reason it cannot be
+            # picked is the useful part - so it is shown greyed rather than hidden.
+            flags &= ~Qt.ItemIsEnabled
+        item.setFlags(flags)
+        item.setCheckState(Qt.Unchecked)
+        if accent:
+            item.setForeground(theme.color(theme.ACCENT_RAMP[700]))
+        elif not enabled:
+            item.setForeground(theme.color(theme.NEUTRAL[500]))
+        self._quiet = True
+        self.list.addItem(item)
+        self._quiet = False
+        self._update_count()
+        return item
+
+    # -- selection ------------------------------------------------------------
+    def values(self):
+        return [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())]
+
+    def checked(self):
+        return [self.list.item(i).data(Qt.UserRole)
+                for i in range(self.list.count())
+                if self.list.item(i).checkState() == Qt.Checked]
+
+    def set_checked(self, values, notify=False):
+        wanted = set(values or ())
+        self._quiet = True
+        for index in range(self.list.count()):
+            item = self.list.item(index)
+            item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in wanted
+                               else Qt.Unchecked)
+        self._quiet = False
+        self._update_count()
+        if notify:
+            self.changed.emit()
+
+    def set_all(self, checked):
+        self._quiet = True
+        for index in range(self.list.count()):
+            item = self.list.item(index)
+            if item.flags() & Qt.ItemIsEnabled:
+                item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        self._quiet = False
+        self._update_count()
+        self.changed.emit()
+
+    # -- filtering ------------------------------------------------------------
+    def set_filter(self, text):
+        needle = (text or "").strip().lower()
+        for index in range(self.list.count()):
+            item = self.list.item(index)
+            item.setHidden(bool(needle) and needle not in item.text().lower())
+        self._update_count()
+
+    def _on_item_changed(self, _item):
+        self._update_count()
+        if not self._quiet:
+            self.changed.emit()
+
+    def _update_count(self):
+        total = self.list.count()
+        hidden = sum(1 for i in range(total) if self.list.item(i).isHidden())
+        text = "%d of %d %s" % (len(self.checked()), total, self._noun)
+        if hidden:
+            text += "   ·   %d hidden by the search" % hidden
+        self.count.setText(text)
+
+
+class Disclosure(QWidget):
+    """A titled section that folds away, for settings most runs never touch.
+
+    Advanced options have to be reachable without being in the way: a collapsed
+    section keeps them one click deep instead of pushing them onto another page
+    or behind a mode switch.
+    """
+
+    toggled = Signal(bool)
+
+    def __init__(self, title, expanded=False, parent=None):
+        super().__init__(parent)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(8)
+
+        self._title = title
+        self.button = QPushButton("")
+        self.button.setProperty("variant", "ghost")
+        self.button.setCheckable(True)
+        self.button.setCursor(Qt.PointingHandCursor)
+        self.button.toggled.connect(self._on_toggled)
+        column.addWidget(self.button, 0, Qt.AlignLeft)
+
+        self._body = QWidget()
+        self._body_layout = QVBoxLayout(self._body)
+        self._body_layout.setContentsMargins(0, 0, 0, 0)
+        self._body_layout.setSpacing(10)
+        column.addWidget(self._body)
+
+        self.button.setChecked(expanded)
+        self._on_toggled(expanded)
+
+    def body(self):
+        return self._body_layout
+
+    def set_expanded(self, expanded):
+        self.button.setChecked(bool(expanded))
+
+    def is_expanded(self):
+        return self.button.isChecked()
+
+    def _on_toggled(self, checked):
+        self._body.setVisible(checked)
+        self.button.setText("%s  %s" % (theme.glyph("group") if checked else
+                                        theme.glyph("pending"), self._title))
+        self.toggled.emit(checked)
+
+
+_scope_counter = itertools.count()
+
+
+def scoped_style(widget, css):
+    """Apply ``css`` to ``widget`` alone - never to what is inside it.
+
+    A stylesheet set on a widget also applies to its children, and it outranks
+    the application sheet. So a plain ``background:`` on a container silently
+    repaints every button in it: that is how the primary RUN button in the
+    preview strip ended up filled with the strip's own colour, painting its
+    near-white label on a near-white background. Scoping the rule to the
+    widget's own object name confines it.
+    """
+    name = widget.objectName() or "scoped%d" % next(_scope_counter)
+    widget.setObjectName(name)
+    widget.setStyleSheet("#%s { %s }" % (name, css))
+    return widget
+
+
 def heading(text, role="h1"):
     label = QLabel(text)
     label.setProperty("role", role)
@@ -125,6 +367,13 @@ def lede(text):
 
 def mono(text=""):
     label = QLabel(text)
+    label.setProperty("role", "mono")
+    return label
+
+
+def elided_mono(text="", mode=Qt.ElideMiddle):
+    """Monospace machine text that may be a long path. See :class:`ElidedLabel`."""
+    label = ElidedLabel(text, mode)
     label.setProperty("role", "mono")
     return label
 
