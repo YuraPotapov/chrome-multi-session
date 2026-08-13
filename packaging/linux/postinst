@@ -1,0 +1,49 @@
+#!/bin/sh
+# Refresh the desktop caches, then set up the invoking user's project directory.
+#
+# dpkg runs this as root, so "the user" has to be inferred - $SUDO_USER is what
+# `sudo dpkg -i` leaves behind. That makes this a convenience, not the mechanism:
+# the app itself calls runtime_paths.ensure_user_data_root() on every start, so
+# any other account on the machine gets its own directory the first time it runs
+# the app. Nothing here ever overwrites something that already exists.
+set -e
+
+APP_DIR=/opt/chrome-multi-session
+USER_DIR_NAME=ChromeMultiSession
+
+case "$1" in
+  configure)
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
+    gtk-update-icon-cache -q -f /usr/share/icons/hicolor 2>/dev/null || true
+
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+      home=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+      group=$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")
+      if [ -n "$home" ] && [ -d "$home" ]; then
+        project="$home/$USER_DIR_NAME"
+        mkdir -p "$project/user_sessions" "$project/reports"
+        if [ ! -e "$project/users.json" ]; then
+          example="$APP_DIR/core/_internal/users.example.json"
+          if [ -f "$example" ]; then
+            # 0600 from the start: this file grows real passwords.
+            install -m 600 "$example" "$project/users.json"
+          fi
+        fi
+        chown -R "$SUDO_USER:$group" "$project" 2>/dev/null || true
+        echo "Chrome Multi Session: your sessions, credentials and reports live in"
+        echo "  $project"
+      fi
+    fi
+
+    if ! command -v google-chrome >/dev/null 2>&1 \
+       && ! command -v google-chrome-stable >/dev/null 2>&1 \
+       && ! command -v chromium >/dev/null 2>&1 \
+       && ! command -v chromium-browser >/dev/null 2>&1; then
+      echo "Chrome Multi Session: Google Chrome was not found." >&2
+      echo "  Download the .deb from https://www.google.com/chrome/ and run:" >&2
+      echo "    sudo apt install ./google-chrome-stable_current_amd64.deb" >&2
+    fi
+    ;;
+esac
+
+exit 0

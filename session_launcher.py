@@ -75,6 +75,8 @@ import sys
 import time
 from urllib.parse import urlsplit
 
+import runtime_paths
+
 log = logging.getLogger("session_launcher")
 
 # engine.events once --events is given, else None. The module is imported lazily
@@ -89,30 +91,34 @@ def _emit(kind, **fields):
         _events.emit(kind, **fields)
 
 
-# Profiles + generated extensions default to next to this script, so the
-# project is self-contained and can be moved without editing paths. Both the
-# sessions dir and the user config file can be overridden on the command line.
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Where things live. In a source checkout every one of these is the checkout
+# itself, so the project stays self-contained and movable; in an installed build
+# the read-only resources come out of the bundle and everything writable moves to
+# ~/ChromeMultiSession, so an upgrade cannot touch it. See runtime_paths.
+# The sessions dir and the user config file can be overridden on the command line.
+SCRIPT_DIR = runtime_paths.app_root()
 
 
 def version():
     """The installed version, or "dev" when running from a source checkout.
 
     pyproject.toml holds the only copy; this reads it back rather than keeping a
-    second one here to drift out of step.
+    second one here to drift out of step. A frozen build has no installed
+    distribution to look up, so it falls back to the VERSION file the build script
+    writes into the bundle from that same pyproject.toml.
     """
     try:
         from importlib.metadata import PackageNotFoundError, version as _version
         return _version("chrome-multi-session")
     except Exception:
-        return "dev (not installed)"
+        return runtime_paths.bundled_version() or "dev (not installed)"
 
 
-DEFAULT_SESSIONS_DIR = os.path.join(SCRIPT_DIR, "user_sessions")
-DEFAULT_CONFIG = os.path.join(SCRIPT_DIR, "users.json")
+DEFAULT_SESSIONS_DIR = runtime_paths.sessions_dir()
+DEFAULT_CONFIG = runtime_paths.config_path()
 # Unpacked extensions kept in-tree: extensions/<name>/manifest.json. Installed with
 # no network access at all, and editable - see extensions/README.md.
-EXTENSIONS_DIR = os.path.join(SCRIPT_DIR, "extensions")
+EXTENSIONS_DIR = runtime_paths.extensions_dir()
 
 # Where a bare URL should land, and which paths count as "the login page".
 #
@@ -275,9 +281,16 @@ def session_dir_for(session_prefix, entry_env, login):
     separators in the env (e.g. from a URL like "https://host/") are flattened so
     the result stays a single directory; ":" and the like are kept. The login is
     sanitized the same way ad-hoc --user profiles are.
+
+    On Windows the characters NTFS rejects go too - "localhost:8069" cannot be a
+    folder name there. That rule is deliberately platform-conditional: applying it
+    everywhere would rename every profile folder an existing Linux install already
+    has, silently orphaning its logged-in sessions.
     """
     prefix = session_prefix or entry_env
     safe_prefix = re.sub(r"[/\\]+", "_", prefix)
+    if os.name == "nt":
+        safe_prefix = re.sub(r'[:*?"<>|]+', "_", safe_prefix).rstrip(". ")
     safe_login = re.sub(r"[^A-Za-z0-9._-]", "_", login) or "user"
     return "%s-%s" % (safe_prefix, safe_login) if safe_prefix else safe_login
 
@@ -455,8 +468,11 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
         "script": os.path.abspath(__file__),
         "config_path": config_path,
         "flows_dir": flows_dir,
-        "reports_dir": reports_dir or os.path.join(SCRIPT_DIR, "reports"),
+        "reports_dir": reports_dir or runtime_paths.reports_dir(),
         "sessions_dir": sessions_dir or DEFAULT_SESSIONS_DIR,
+        # The front-end needs to be able to say "install Chrome" before the user
+        # tries to launch anything, so the answer travels with the inventory.
+        "chrome": describe_chrome(),
         "log_levels": ["DEBUG", "INFO", "WARNING", "ERROR"],
         "overlay_components": list(_OVERLAY_COMPONENTS),
         "report_artifacts": list(_REPORT_ARTIFACTS),
@@ -680,12 +696,40 @@ def _bad_option_message(arg, config_path):
     return ("Unknown option %r. Run --help for the full list." % arg)
 
 
-def find_chrome():
+def _windows_chrome_paths():
+    """Where Chrome installs itself on Windows, which is never on PATH.
+
+    The registry key is the authoritative answer (it is what ShellExecute uses);
+    the fixed locations cover a machine where it is missing or unreadable, including
+    the per-user install that needs no administrator.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(
+                    root,
+                    r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe") as key:
+                value = winreg.QueryValue(key, None)
+        except OSError:
+            continue
+        if value:
+            yield value
+    for var in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        base = os.environ.get(var)
+        if base:
+            yield os.path.join(base, "Google", "Chrome", "Application", "chrome.exe")
+
+
+def _chrome_candidates():
+    """Everything that might be a Chrome, best first."""
     for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
                  "chrome"):
         path = shutil.which(name)
         if path:
-            return path
+            yield path
     # macOS keeps the binary inside an .app bundle, which is not on PATH.
     if sys.platform == "darwin":
         for path in ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -693,8 +737,84 @@ def find_chrome():
                                         "MacOS/Google Chrome"),
                      "/Applications/Chromium.app/Contents/MacOS/Chromium"):
             if os.path.exists(path):
-                return path
-    return None
+                yield path
+    if os.name == "nt":
+        for path in _windows_chrome_paths():
+            if os.path.exists(path):
+                yield path
+
+
+def find_chrome():
+    """The browser to launch, or None.
+
+    A candidate that answers ``--version`` wins over one that does not, because
+    being on PATH is not the same as being a browser: Ubuntu's `chromium-browser`
+    is a 2 KB shim that only redirects to a snap, and on a machine without snapd
+    it launches nothing. Preferring a version-answering binary picks the real
+    Chrome when both are installed; when nothing answers, the first candidate is
+    still returned, so an environment that merely blocks --version behaves as it
+    always has and the caller reports the failure (see describe_chrome).
+    """
+    first = None
+    for path in _chrome_candidates():
+        if first is None:
+            first = path
+        if _chrome_version_string(path):
+            return path
+    return first
+
+
+def chrome_missing_message():
+    """What to tell someone who has no Chrome, in the terms of their platform.
+
+    An installed build is used by people who did not choose to install Python and
+    will not read a traceback, so the failure has to name the fix.
+    """
+    if os.name == "nt":
+        how = "Install Google Chrome from https://www.google.com/chrome/"
+    elif sys.platform == "darwin":
+        how = ("Install Google Chrome from https://www.google.com/chrome/ "
+               "and drag it into /Applications")
+    else:
+        # Not "apt install chromium-browser": on Ubuntu 22.04 that package is a
+        # shim that only redirects to a snap, and installing it produces something
+        # that looks like a browser on PATH and launches nothing.
+        how = ("Download the .deb from https://www.google.com/chrome/ and install "
+               "it with:\n"
+               "  sudo apt install ./google-chrome-stable_current_amd64.deb\n"
+               "(Chromium also works:  sudo snap install chromium)")
+    return "Google Chrome was not found on this computer.\n\n%s" % how
+
+
+def describe_chrome():
+    """{path, version, message} for --describe: is there a usable browser?
+
+    A non-empty ``message`` means no, and says how to fix it, so a front-end can
+    show the answer without knowing anything about platforms. Note that a path
+    with no version is also a "no": that is what Ubuntu's snap-transitional
+    `chromium-browser` shim looks like, and launching it opens nothing.
+    """
+    path = find_chrome()
+    if not path:
+        return {"path": "", "version": "", "message": chrome_missing_message()}
+    version_line = _chrome_version_string(path)
+    if not version_line:
+        return {"path": path, "version": "",
+                "message": "%s exists but does not run - it is most likely Ubuntu's "
+                           "snap placeholder rather than a browser.\n\n%s"
+                           % (path, chrome_missing_message())}
+    return {"path": path, "version": version_line, "message": ""}
+
+
+def _chrome_version_string(chrome):
+    """Chrome's own version banner, or "" when it will not say."""
+    try:
+        out = subprocess.run([chrome, "--version"], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, timeout=10,
+                             env=runtime_paths.clean_subprocess_env()).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (out or "").strip()
 
 
 # Chrome/webkit timestamps are microseconds since 1601-01-01.
@@ -769,6 +889,12 @@ def _encrypt_password(plaintext):
     but the key differs: Linux with --password-store=basic derives it from the fixed
     password "peanuts" in a single PBKDF2 round, while macOS uses the random Keychain
     secret and 1003 rounds. Using the wrong one writes a blob Chrome cannot decrypt.
+
+    Windows is not supported here: Chrome there uses AES-256-GCM under a per-install
+    key that is itself DPAPI-encrypted in the profile's Local State, a different
+    envelope entirely. seed_password skips the step rather than writing a blob Chrome
+    would silently fail to read - the auto-login extension is what actually signs in,
+    so only Chrome's saved-passwords list stays empty.
     """
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     if sys.platform == "darwin":
@@ -805,6 +931,7 @@ def _ensure_login_db(chrome, profile):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
+        env=runtime_paths.clean_subprocess_env(),
     )
     for _ in range(40):  # up to ~10s for Chrome to create the file
         if os.path.exists(db):
@@ -824,7 +951,13 @@ def seed_password(chrome, profile, origin, login, password):
     Any existing entry for the same site is removed first, so the isolated window's
     password manager holds only this user's login/password. The value is encrypted with
     this platform's Chrome key (see _encrypt_password) so Chrome can decrypt it.
+
+    A no-op on Windows, where that key is not reproducible from outside Chrome.
     """
+    if os.name == "nt":
+        log.info("Windows: skipping the saved-password step (Chrome's password "
+                 "store is not writable from outside). Auto-login is unaffected.")
+        return
     db = _ensure_login_db(chrome, profile)
     if not os.path.exists(db):
         log.warning("Could not create Login Data; skipping password save.")
@@ -1246,7 +1379,8 @@ def _chrome_prodversion(chrome):
     """Best-effort Chrome major.minor for the CRX update query; falls back high."""
     try:
         out = subprocess.run([chrome, "--version"], stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, text=True, timeout=10).stdout
+                             stderr=subprocess.DEVNULL, text=True, timeout=10,
+                             env=runtime_paths.clean_subprocess_env()).stdout
         match = re.search(r"(\d+\.\d+)", out or "")
         if match:
             return match.group(1)
@@ -1539,6 +1673,10 @@ Example:
 
 
 def main():
+    # An installed build has no checkout to fall back on, so the user's directories
+    # and a starter users.json have to exist before anything reads them. A no-op in
+    # a source checkout - see runtime_paths.ensure_user_data_root.
+    runtime_paths.ensure_user_data_root()
     detach = False
     session_prefix = ""
     url = ""
@@ -1899,7 +2037,7 @@ def main():
     # browser at all; only now does a missing Chrome become the problem.
     chrome = find_chrome()
     if not chrome:
-        sys.exit("Chrome/Chromium not found in PATH.")
+        sys.exit(chrome_missing_message())
 
     # Everything is resolved and valid from here on, so this event describes the
     # run a consumer is about to watch (never the passwords, which stay in the
@@ -1918,6 +2056,9 @@ def main():
         spawn_kwargs = {"start_new_session": True}
     else:
         spawn_kwargs = {"preexec_fn": _preexec_die_with_parent}  # calls setsid itself
+    # Chrome is a foreign executable: it must not inherit the library search path a
+    # frozen build sets up for itself, or it loads our bundled libssl and dies.
+    spawn_kwargs["env"] = runtime_paths.clean_subprocess_env()
 
     # Fetch each requested extension once (cached under the sessions dir) so every
     # profile can install it below. On any failure - offline, service down - we warn

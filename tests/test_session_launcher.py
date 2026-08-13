@@ -341,6 +341,12 @@ def test_environments_from_config_is_soft_when_not_strict(tmp_path):
 
 # --------------------------------------------------------------- main() paths
 
+# What main() exits with when there is no browser. These cases are meant to exit
+# during argument handling, so reaching this message means parsing got all the
+# way through - it is the sentinel for "nothing rejected the arguments".
+_NO_CHROME = "Google Chrome was not found"
+
+
 def _main(monkeypatch, config_path, *args):
     """Run main() with a throwaway config and return the SystemExit message.
 
@@ -480,7 +486,7 @@ def test_main_still_accepts_a_positional_url(monkeypatch, config):
     # find_chrome so this stops at the browser lookup: past parsing is exactly what
     # is being asserted, and anything further would launch real windows.
     message = _main(monkeypatch, config, "http://localhost:8069")
-    assert "Chrome/Chromium not found" in message
+    assert _NO_CHROME in message
 
 
 # ------------------------------------------------------- DevToolsActivePort reset
@@ -531,12 +537,12 @@ def test_main_accepts_jobs_all(monkeypatch, config):
     # than =config, because this fixture's users have no 'run-tests' field and that
     # check would fire first.
     message = _main(monkeypatch, config, "--env=dev", "--run-tests=access_agent", "--jobs=all")
-    assert "Chrome/Chromium not found" in message
+    assert _NO_CHROME in message
 
 
 def test_main_accepts_a_numeric_jobs(monkeypatch, config):
     message = _main(monkeypatch, config, "--env=dev", "--run-tests=access_agent", "--jobs=4")
-    assert "Chrome/Chromium not found" in message
+    assert _NO_CHROME in message
 
 
 # ------------------------------------------------- the scaffolded config must work
@@ -655,7 +661,7 @@ def test_no_extensions_are_installed_by_default(monkeypatch, config):
                         lambda *a, **k: called.append(a) or (_ for _ in ()).throw(
                             AssertionError("download_crx must not run by default")))
     message = _main(monkeypatch, config, "--env=dev", "--filter-users=role_division")
-    assert "Chrome/Chromium not found" in message
+    assert _NO_CHROME in message
     assert called == []
 
 
@@ -901,13 +907,13 @@ def test_default_extensions_is_empty_without_an_extensions_dir(tmp_path):
 def test_main_extensions_none_installs_nothing(monkeypatch, config):
     # Reaching the browser lookup proves parsing accepted it; the behaviour itself is
     # covered end to end by the launch checks.
-    assert "Chrome/Chromium not found" in _main(monkeypatch, config, "--env=dev",
+    assert _NO_CHROME in _main(monkeypatch, config, "--env=dev",
                                                 "--filter-users=role_division",
                                                 "--extensions=none")
 
 
 def test_main_extensions_all_is_accepted(monkeypatch, config):
-    assert "Chrome/Chromium not found" in _main(monkeypatch, config, "--env=dev",
+    assert _NO_CHROME in _main(monkeypatch, config, "--env=dev",
                                                 "--filter-users=role_division",
                                                 "--extensions=all")
 
@@ -991,7 +997,7 @@ def test_main_rejects_an_empty_events_target(monkeypatch, config):
 def test_main_accepts_events_to_a_file(monkeypatch, config, tmp_path):
     # Reaching the browser lookup proves parsing accepted it.
     target = str(tmp_path / "events.jsonl")
-    assert "Chrome/Chromium not found" in _main(monkeypatch, config, "--env=dev",
+    assert _NO_CHROME in _main(monkeypatch, config, "--env=dev",
                                                 "--filter-users=role_division",
                                                 "--events=" + target)
 
@@ -999,6 +1005,49 @@ def test_main_accepts_events_to_a_file(monkeypatch, config, tmp_path):
 def test_events_needs_no_run_tests(monkeypatch, config):
     # Window lifecycle is worth watching on a plain launch too, so unlike the
     # flow-execution flags this one does not require --run-tests.
-    assert "Chrome/Chromium not found" in _main(monkeypatch, config, "--env=dev",
+    assert _NO_CHROME in _main(monkeypatch, config, "--env=dev",
                                                 "--filter-users=role_division",
                                                 "--events=-")
+
+
+# -------------------------------------------------------------- finding Chrome
+
+def test_find_chrome_prefers_a_binary_that_answers_version(monkeypatch):
+    # Ubuntu 22.04 ships `chromium-browser` as a 2 KB shim that only redirects to
+    # a snap. It is on PATH and executable, so being findable proves nothing -
+    # only answering --version does.
+    monkeypatch.setattr(sl, "_chrome_candidates",
+                        lambda: iter(["/usr/bin/chromium-browser",
+                                      "/usr/bin/google-chrome"]))
+    monkeypatch.setattr(sl, "_chrome_version_string",
+                        lambda path: "Google Chrome 151" if "google" in path else "")
+    assert sl.find_chrome() == "/usr/bin/google-chrome"
+
+
+def test_find_chrome_falls_back_to_the_first_candidate(monkeypatch):
+    # Nothing answered, but something is there. Keep returning it - an environment
+    # that merely blocks --version must behave as it always has; describe_chrome
+    # is what turns "present but silent" into a message.
+    monkeypatch.setattr(sl, "_chrome_candidates", lambda: iter(["/usr/bin/chromium"]))
+    monkeypatch.setattr(sl, "_chrome_version_string", lambda path: "")
+    assert sl.find_chrome() == "/usr/bin/chromium"
+
+
+def test_find_chrome_returns_none_when_there_is_nothing(monkeypatch):
+    monkeypatch.setattr(sl, "_chrome_candidates", lambda: iter([]))
+    assert sl.find_chrome() is None
+
+
+def test_describe_chrome_flags_a_browser_that_will_not_run(monkeypatch):
+    monkeypatch.setattr(sl, "find_chrome", lambda: "/usr/bin/chromium-browser")
+    monkeypatch.setattr(sl, "_chrome_version_string", lambda path: "")
+    chrome = sl.describe_chrome()
+    assert chrome["path"] == "/usr/bin/chromium-browser"
+    assert "does not run" in chrome["message"]
+
+
+def test_describe_chrome_is_quiet_about_a_working_browser(monkeypatch):
+    monkeypatch.setattr(sl, "find_chrome", lambda: "/usr/bin/google-chrome")
+    monkeypatch.setattr(sl, "_chrome_version_string", lambda path: "Google Chrome 151")
+    assert sl.describe_chrome() == {"path": "/usr/bin/google-chrome",
+                                    "version": "Google Chrome 151", "message": ""}

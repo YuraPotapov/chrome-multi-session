@@ -17,6 +17,23 @@ app-agnostic, since that will break things on purpose.
 ## [Unreleased]
 
 ### Added
+- **A standalone installer for Ubuntu 22.04** — `sudo apt install ./chrome_session_amd64.deb`
+  and the app is in the applications menu, with no Python, pip, git or virtualenv on
+  the machine. Both halves are frozen with PyInstaller (`packaging/pyinstaller/`) and
+  wrapped in a `.deb` by `packaging/build_deb.sh`, which writes versioned output to
+  `installers/linux/<version>/`. Playwright's Node driver is bundled — `connect_over_cdp`
+  goes through it — but no Chromium is: the app still attaches to the Google Chrome
+  already installed. See [packaging/README.md](packaging/README.md); Windows is
+  planned there and the runtime work it needs is already in place.
+- `runtime_paths.py` — one place that answers where things live, splitting the
+  resources that ship with the app (`flows/`, `extensions/`, `hud.js`) from the data
+  that belongs to the user (`users.json`, `user_sessions/`, `reports/`). Installed,
+  the second half is `~/ChromeMultiSession`, so an upgrade cannot touch a session,
+  a credential or a report. **In a source checkout both still resolve to the checkout,
+  exactly as before** — nothing about working on the project changes.
+- `--describe` now reports `chrome`: the browser the core found, its version, and a
+  message saying how to install one when there is none. The GUI shows it once at
+  startup, so a missing browser is a sentence rather than a failed launch.
 - **A desktop GUI** in `gui/` (PySide6, its own virtualenv, `python3 gui/bootstrap.py`):
   environments, a `users.json` editor, a builder covering every launcher flag, and a
   live run view — step tree, log stream, session lifecycle and artifacts. It never
@@ -53,6 +70,12 @@ app-agnostic, since that will break things on purpose.
   compiles the real tree when one is present, and skips when it is not.
 
 ### Changed
+- `find_chrome()` prefers a candidate that answers `--version` over one that merely
+  exists on `PATH`. Ubuntu 22.04's `chromium-browser` is a 2 KB shim that redirects to
+  a snap: findable, executable, and not a browser. It also now looks in the Windows
+  registry and Program Files, where Chrome is never on `PATH`.
+- Chrome is started with a scrubbed `LD_LIBRARY_PATH` so that a packaged build's own
+  bundled libraries are not forced on it.
 - The auto-login extension's source moved out of a Python string literal into
   `extensions/_autologin/` as ordinary editable JS. Credentials and the login-form
   selectors are generated per profile into a `config.js` that the source reads, so
@@ -60,6 +83,12 @@ app-agnostic, since that will break things on purpose.
   in JavaScript.
 
 ### Fixed
+- Windows: profile folder names now drop the characters NTFS rejects, so an env like
+  `localhost:8069` produces a usable directory. Linux and macOS names are unchanged —
+  renaming them would orphan every existing logged-in session.
+- Windows: `seed_password()` no longer writes a credential blob Chrome cannot decrypt
+  there (its password store is AES-256-GCM under a DPAPI-wrapped key). It skips the
+  step with a note; auto-login is unaffected, since that is the extension's job.
 - `--init-users-json` wrote a config that then refused to load: it emitted
   `"tests": []`, and an empty list is rejected. The template is now generated with
   `json.dumps` (it had also been hand-quoted into invalid JSON) and omits the key

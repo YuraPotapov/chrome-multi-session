@@ -15,6 +15,8 @@ import os
 import threading
 import time
 
+import runtime_paths
+
 from domain.result import FlowResult, RunResult, StepResult, PASS, FAIL, ERROR
 from engine import artifacts, assertions, compiler, events, loader
 from engine.context import RunContext
@@ -123,7 +125,7 @@ def _make_overlay(overlay_components, adapter, session_name=None):
 
 DEFAULT_TIMEOUT_MS = 30000        # generous: covers the post-login readiness gate
 DEVTOOLS_WAIT_S = 30              # how long to wait for Chrome to open its debug port
-DEFAULT_REPORTS_DIR = os.path.join(loader.PROJECT_ROOT, "reports")
+DEFAULT_REPORTS_DIR = runtime_paths.reports_dir()
 
 
 def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,

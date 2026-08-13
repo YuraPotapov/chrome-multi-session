@@ -118,7 +118,26 @@ python3 session_launcher.py --init-users-json
 This writes a one-line example `users.json` (only if one doesn't already exist);
 edit it to add your users.
 
-## Getting started
+## Install (Ubuntu 22.04)
+
+For using the app rather than working on it. Nothing needs to be installed first —
+no Python, no pip, no git — because the Python runtime, PySide6 and Playwright all
+ship inside the package. Google Chrome is the one thing that does not, and the app
+says so on startup if it cannot find one.
+
+```bash
+sudo apt install ./chrome_session_amd64.deb
+```
+
+Then launch **Chrome Multi Session** from the applications menu, or run
+`chrome-multi-session` for the CLI.
+
+Your sessions, credentials and reports live in `~/ChromeMultiSession`, separate
+from the installed program, so installing a newer version over the top keeps all
+of them. Building the package, what lands where, and the Windows plan:
+[packaging/README.md](packaging/README.md).
+
+## Getting started (from source)
 
 ```bash
 # 1. Chrome or Chromium must be on PATH

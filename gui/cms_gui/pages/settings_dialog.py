@@ -32,21 +32,32 @@ class SettingsDialog(QDialog):
         column.addSpacing(12)
 
         detected_script, detected_python = core_mod.autodetect()
-        self.script = QLineEdit(settings.core_script or detected_script or "")
+        current_script = settings.core_script or detected_script or ""
+        self.script = QLineEdit(current_script)
         self.script.setProperty("mono", True)
         self.script.setPlaceholderText("path to session_launcher.py")
         column.addWidget(widgets.field("Core script",
                                        widgets.row(self.script,
                                                    self._browse_button(self._pick_script))))
 
-        self.interpreter = QLineEdit(settings.interpreter or detected_python or sys.executable)
+        # An installed build's core is an executable, so there is no interpreter to
+        # choose - leave the field empty and say why rather than offering a Python
+        # that could not run it anyway.
+        packaged = not core_mod.needs_interpreter(current_script)
+        self.interpreter = QLineEdit(
+            "" if packaged else (settings.interpreter or detected_python or sys.executable))
         self.interpreter.setProperty("mono", True)
-        self.interpreter.setPlaceholderText("python that has playwright + cryptography")
+        self.interpreter.setPlaceholderText(
+            "not needed: the core is a packaged executable" if packaged
+            else "python that has playwright + cryptography")
+        self.interpreter_browse = self._browse_button(self._pick_interpreter)
+        self.interpreter.setEnabled(not packaged)
+        self.interpreter_browse.setEnabled(not packaged)
         column.addWidget(widgets.field(
-            "Interpreter", widgets.row(self.interpreter,
-                                       self._browse_button(self._pick_interpreter)),
-            "The core's own .venv is detected automatically when gui/ sits inside the "
-            "core checkout."))
+            "Interpreter", widgets.row(self.interpreter, self.interpreter_browse),
+            "Only used for a session_launcher.py; a packaged core runs itself. "
+            "The core's own .venv is detected automatically when gui/ sits inside "
+            "the core checkout."))
 
         self.config = QLineEdit(settings.config)
         self.config.setProperty("mono", True)

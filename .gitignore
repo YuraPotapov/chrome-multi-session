@@ -34,3 +34,8 @@ dist/
 
 # The GUI's own virtualenv (created by gui/bootstrap.py)
 gui/.venv/
+
+# Built installers: the .deb is ~96 MB. The versioned directory and its
+# SHA256SUMS are committed (they record what was released); the payload is not.
+installers/**/*.deb
+installers/**/*.exe

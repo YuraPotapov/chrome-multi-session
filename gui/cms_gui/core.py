@@ -5,12 +5,26 @@ environments independent (the GUI needs PySide6, the core needs playwright and
 cryptography, and on Windows they are often not the same Python), and it means
 the core stays the single source of truth: what environments, users, scenarios
 and extensions exist all come from ``--describe``.
+
+That boundary survives packaging unchanged, because an installed build ships the
+core as its own executable next to the GUI's. The only thing that differs is the
+shape of the command: a checkout runs ``<python> session_launcher.py ...``, an
+installed build runs ``<core-exe> ...``. Both are expressed here as a script plus
+an *optional* interpreter - an empty interpreter means the script runs itself.
 """
 
 import json
 import os
 import subprocess
 import sys
+
+#: The core executable an installed build ships. Its name is fixed by the
+#: PyInstaller spec (packaging/pyinstaller/core.spec).
+CORE_EXE = "chrome-multi-session-core" + (".exe" if os.name == "nt" else "")
+
+#: Points the GUI at a core executable explicitly. The .deb's launcher wrapper
+#: sets it; it is also the way to test one build's GUI against another's core.
+CORE_EXE_ENV = "CMS_CORE_EXE"
 
 
 class CoreError(Exception):
@@ -26,12 +40,59 @@ def _venv_python(root):
     return None
 
 
+def needs_interpreter(path):
+    """True when ``path`` is a Python source file rather than a program.
+
+    The one rule that tells the two layouts apart, and it is the honest one: a
+    ``.py`` has to be handed to an interpreter, anything else does not.
+    """
+    return bool(path) and os.path.splitext(path)[1].lower() in (".py", ".pyw")
+
+
+def user_data_root():
+    """Where an installed core keeps users.json, profiles and reports.
+
+    A deliberate mirror of ``runtime_paths.user_data_root`` in the core, not an
+    import of it: the GUI depends on PySide6 and nothing else, and the two are
+    frozen into separate bundles. Keep the two in step - see runtime_paths.py.
+    """
+    override = os.environ.get("CMS_HOME", "").strip()
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    return os.path.join(os.path.expanduser("~"), "ChromeMultiSession")
+
+
+def frozen_core():
+    """The bundled core executable, when this GUI is itself a frozen build.
+
+    The installed layout puts the two bundles side by side
+    (``<prefix>/gui/`` and ``<prefix>/core/``), so that is checked before the
+    flat case of both executables sharing one directory.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    override = os.environ.get(CORE_EXE_ENV, "").strip()
+    if override and os.path.isfile(override):
+        return override
+    here = os.path.dirname(os.path.abspath(sys.executable))
+    for candidate in (os.path.join(os.path.dirname(here), "core", CORE_EXE),
+                      os.path.join(here, CORE_EXE)):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 def autodetect():
     """Guess (script, interpreter) for the core, or (None, None).
 
-    Looks next to the GUI first - ``gui/`` lives inside the core checkout, which
-    is the normal layout - then at the current directory.
+    An installed build answers with its bundled core executable and no
+    interpreter. Otherwise this looks next to the GUI first - ``gui/`` lives
+    inside the core checkout, which is the normal layout - then at the current
+    directory.
     """
+    executable = frozen_core()
+    if executable:
+        return executable, ""
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # gui/
     for root in (os.path.dirname(here), os.getcwd()):
         script = os.path.join(root, "session_launcher.py")
@@ -50,13 +111,37 @@ class Core:
     def __init__(self, script=None, interpreter=None, config=None):
         auto_script, auto_python = autodetect()
         self.script = script or auto_script
-        self.interpreter = interpreter or auto_python or sys.executable
+        if not needs_interpreter(self.script):
+            # A native executable runs itself, and no interpreter can change that -
+            # so a stale ``core/interpreter`` setting left over from a source
+            # checkout must not turn into "python chrome-multi-session-core".
+            self.interpreter = ""
+        else:
+            self.interpreter = interpreter or auto_python or sys.executable
         self.config = config or ""
 
     # -- shape of a command ---------------------------------------------------
     @property
+    def prefix(self):
+        """The argv slots that name the program: 1 for an exe, 2 for a script."""
+        if not self.script:
+            return []
+        return [self.interpreter, self.script] if self.interpreter else [self.script]
+
+    @property
     def root(self):
-        return os.path.dirname(self.script) if self.script else ""
+        """The directory to run the core in, and to resolve its config against.
+
+        For a checkout that is the checkout. For an installed build the executable
+        sits somewhere read-only, so it is the user's own data directory instead -
+        the same one ``runtime_paths.user_data_root`` picks, mirrored rather than
+        imported so the GUI keeps needing nothing but PySide6.
+        """
+        if not self.script:
+            return ""
+        if needs_interpreter(self.script):
+            return os.path.dirname(self.script)
+        return user_data_root()
 
     @property
     def config_path(self):
@@ -68,13 +153,13 @@ class Core:
 
     def is_configured(self):
         return bool(self.script and os.path.isfile(self.script)
-                    and self.interpreter and os.path.isfile(self.interpreter))
+                    and (not self.interpreter or os.path.isfile(self.interpreter)))
 
     def argv(self, *args):
-        """Full command line: interpreter, script, --config, then ``args``."""
+        """Full command line: the program, --config, then ``args``."""
         if not self.script:
             raise CoreError("No core script configured (Settings -> Core script).")
-        command = [self.interpreter, self.script]
+        command = list(self.prefix)
         if self.config:
             command.append("--config=" + self.config)
         command.extend(a for a in args if a)
@@ -83,8 +168,9 @@ class Core:
     def display_argv(self, *args):
         """The same command, shortened for reading: basenames, no interpreter path."""
         command = self.argv(*args)
-        return " ".join([os.path.basename(command[0]), os.path.basename(command[1])]
-                        + command[2:])
+        cut = len(self.prefix)
+        return " ".join([os.path.basename(part) for part in command[:cut]]
+                        + command[cut:])
 
     # -- one-shot calls -------------------------------------------------------
     def run(self, *args, timeout=60):
@@ -174,6 +260,28 @@ class Inventory:
     @property
     def warnings(self):
         return list(self.payload.get("warnings", []))
+
+    @property
+    def chrome(self):
+        """{path, version, message} - the browser the core found, if any.
+
+        Empty for a core older than this key, which reads as "cannot tell" rather
+        than "missing": never warn about a Chrome we simply did not ask about.
+        """
+        value = self.payload.get("chrome")
+        return dict(value) if isinstance(value, dict) else {}
+
+    def chrome_problem(self):
+        """The "install Chrome" message, or "" when there is nothing to say.
+
+        Keyed on ``message`` rather than on ``path``, because a browser that is
+        present but cannot run is a problem too - and the core is the one that
+        knows the difference.
+        """
+        chrome = self.chrome
+        if not chrome:
+            return ""   # a core too old to have been asked; not "missing"
+        return chrome.get("message") or ""
 
     def env_aliases(self):
         return [e.get("alias", "") for e in self.envs]
