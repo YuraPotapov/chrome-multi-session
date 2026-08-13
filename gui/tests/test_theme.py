@@ -99,6 +99,67 @@ def test_a_primary_button_keeps_its_fill_inside_a_styled_container(qapp):
     assert _dominant_colour(page.run_button).lower() == theme.ACCENT.lower()
 
 
+def test_a_ticked_box_actually_has_a_tick_in_it(qapp):
+    """Regression: a stylesheet can fill an indicator but cannot mark it.
+
+    `::indicator:checked` only ever set a background, so a ticked box was an
+    accent square with nothing inside - indistinguishable at a glance from a
+    disabled one. The mark is painted by the style now, which this proves is
+    still reached: a stylesheet rule for `::indicator` would silently take the
+    drawing back off it, and the box would go blank again.
+    """
+    from PySide6.QtWidgets import QCheckBox
+    box = QCheckBox("Leave the windows open")
+    box.setChecked(True)
+    box.show()
+    qapp.processEvents()
+    inside = _indicator(box).copy(3, 3, theme.INDICATOR - 6, theme.INDICATOR - 6)
+    lightnesses = [inside.pixelColor(x, y).lightness()
+                   for x in range(inside.width()) for y in range(inside.height())]
+    assert min(lightnesses) < 160, "no accent fill"
+    assert max(lightnesses) > 200, "filled, but nothing drawn in it"
+
+
+def test_an_unticked_box_is_not_filled(qapp):
+    from PySide6.QtWidgets import QCheckBox
+    box = QCheckBox("Leave the windows open")
+    box.show()
+    qapp.processEvents()
+    inside = _indicator(box).copy(3, 3, theme.INDICATOR - 6, theme.INDICATOR - 6)
+    darkest = min(inside.pixelColor(x, y).lightness()
+                  for x in range(inside.width()) for y in range(inside.height()))
+    assert darkest > 200
+
+
+def test_the_rows_of_a_list_get_the_same_tick_as_a_standalone_box(qapp):
+    """The Accounts, Extensions and Scenarios lists are check boxes too.
+
+    Those indicators are drawn by the style rather than by a widget, so they are
+    the half of the change a stylesheet could never have covered.
+    """
+    from cms_gui import widgets
+    check_list = widgets.CheckList()
+    check_list.add("role_admin", "role_admin", "VRR Admin")
+    check_list.set_checked(["role_admin"])
+    check_list.resize(300, 160)
+    check_list.show()
+    qapp.processEvents()
+    image = check_list.list.viewport().grab().toImage()
+    accent = theme.color(theme.ACCENT).lightness()
+    assert any(abs(image.pixelColor(x, y).lightness() - accent) < 12
+               for x in range(min(image.width(), theme.INDICATOR * 2))
+               for y in range(min(image.height(), theme.INDICATOR * 2)))
+
+
+def _indicator(box):
+    """The tick box cropped out of a rendered QCheckBox."""
+    from PySide6.QtWidgets import QStyle, QStyleOptionButton
+    option = QStyleOptionButton()
+    option.initFrom(box)
+    rect = box.style().subElementRect(QStyle.SE_CheckBoxIndicator, option, box)
+    return box.grab().toImage().copy(rect)
+
+
 def test_scoped_style_does_not_reach_children(qapp):
     from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
     from cms_gui import widgets

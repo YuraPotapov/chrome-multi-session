@@ -15,8 +15,9 @@ def main(argv=None):
     app.setApplicationName("chrome-multi-session GUI")
     app.setOrganizationName("chrome-multi-session")
     # Fusion is the one style that looks the same on all three platforms, which
-    # is what makes a single stylesheet enough to carry the design.
-    app.setStyle("Fusion")
+    # is what makes a single stylesheet enough to carry the design - plus the
+    # indicators, which are painted because a stylesheet cannot draw them.
+    app.setStyle(theme.app_style())
     theme.load_fonts()
     app.setStyleSheet(theme.stylesheet())
     # Set on the application as well as the window: on Wayland and on Windows the

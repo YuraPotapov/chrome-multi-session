@@ -31,7 +31,7 @@ def qapp():
     # Same two lines as app.main(). Without them a widget renders in Fusion's own
     # colours, so anything asserting on what the design paints - a primary
     # button's fill, a status colour - would be measuring the wrong thing.
-    app.setStyle("Fusion")
+    app.setStyle(theme.app_style())
     theme.load_fonts()
     app.setStyleSheet(theme.stylesheet())
     yield app

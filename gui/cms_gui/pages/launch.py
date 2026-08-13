@@ -12,13 +12,14 @@ separated list to assemble by hand. The one exception is Advanced, folded away,
 where a power user who does know what a flows directory is can still set one.
 """
 
+import json
 import os
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog,
                                QGridLayout, QHBoxLayout, QInputDialog, QLabel,
                                QLineEdit, QMessageBox, QPushButton, QRadioButton,
-                               QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+                               QScrollArea, QVBoxLayout, QWidget)
 
 from .. import launch, store, theme, widgets
 
@@ -49,6 +50,10 @@ class LaunchSessionsPage(QWidget):
         self.inventory = None
         self.core = None
         self._building = False
+        # The saved configuration as it was when it was opened, so an edit made
+        # since can be told from the file on disk. None while nothing is opened.
+        self._baseline = None
+        self._dirty = False
         self._developer = bool(settings.developer_mode)
         self._configs = store.NamedConfigs(
             os.path.join(store.app_data_dir(), "configs.json"))
@@ -100,7 +105,7 @@ class LaunchSessionsPage(QWidget):
         self.config_combo = QComboBox()
         self.config_combo.setMinimumWidth(240)
         self.config_combo.currentTextChanged.connect(self._config_selected)
-        save = QPushButton("Save")
+        self.config_save = save = QPushButton("Save")
         save.clicked.connect(self.save_configuration)
         duplicate = QPushButton("Duplicate")
         duplicate.clicked.connect(self.duplicate_configuration)
@@ -168,8 +173,7 @@ class LaunchSessionsPage(QWidget):
     def _sessions_panel(self):
         panel = widgets.BlueprintPanel()
         panel.layout().addWidget(widgets.kicker("Sessions"))
-        self.jobs = QSpinBox()
-        self.jobs.setRange(1, 64)
+        self.jobs = widgets.Stepper(1, 64)
         self.jobs.valueChanged.connect(self._changed)
         self.jobs_all = QCheckBox("All at once")
         self.jobs_all.toggled.connect(self._jobs_all_toggled)
@@ -300,7 +304,7 @@ class LaunchSessionsPage(QWidget):
         self.summary.setStyleSheet("font-size: 12px; color: %s;" % theme.NEUTRAL[800])
         reset = QPushButton("Reset")
         reset.clicked.connect(self.reset)
-        save = QPushButton("Save")
+        self.footer_save = save = QPushButton("Save")
         save.clicked.connect(self.save_configuration)
         self.run_button = QPushButton(theme.labelled("run", "RUN"))
         self.run_button.setProperty("variant", "primary")
@@ -467,6 +471,7 @@ class LaunchSessionsPage(QWidget):
         self.preview.setText(launch.preview(config, self.inventory, self.core))
         self.preview.setVisible(self._developer)
 
+        self._update_dirty(config)
         self.settings.save_launch_state(config)
         self.state_changed.emit()
 
@@ -683,6 +688,66 @@ class LaunchSessionsPage(QWidget):
                 return
         self.env_note.setText("")
 
+    # -- unsaved changes ------------------------------------------------------
+    # A saved configuration is a file, and the controls are a working copy of it.
+    # Nothing writes back on its own - a run does not save, and switching away
+    # would drop the edit - so the page has to say when the two have parted: both
+    # Save buttons go red the moment the working copy stops matching what was
+    # opened, and go quiet again the moment it is written or another one is
+    # opened.
+    #
+    # "(unsaved)" is the same story with no file at the end of it: the settings
+    # being built there are not stored anywhere, so an edit is flagged just the
+    # same, and Save - which asks for a name - is the thing that settles it. The
+    # baseline is taken when the page arrives at (unsaved) rather than being the
+    # defaults, so opening the app to yesterday's restored settings is quiet and
+    # only what happens next is flagged.
+
+    @staticmethod
+    def _comparable(config):
+        """A configuration reduced to what "the same settings" means.
+
+        Compared as text, through :func:`launch.merged`, so a file written before
+        a key existed does not read as an edit; the lists are sorted because the
+        order the tick boxes happen to be in is not part of the configuration -
+        the inventory arriving can reorder them without anything having changed.
+        """
+        def norm(value):
+            if isinstance(value, dict):
+                return {key: norm(value[key]) for key in sorted(value)}
+            if isinstance(value, list):
+                return sorted(str(item) for item in value)
+            return value
+
+        return json.dumps(norm(launch.merged(config)), sort_keys=True)
+
+    def is_dirty(self):
+        """Whether the controls have moved away from the saved configuration."""
+        return self._dirty
+
+    def _mark_clean(self, config=None):
+        """What is on screen now is the thing to measure later edits against."""
+        self._baseline = self._comparable(config if config is not None
+                                          else self.state())
+        self._update_dirty()
+
+    def _update_dirty(self, config=None):
+        name = self._current_config_name()
+        dirty = self._baseline is not None and \
+            self._comparable(config if config is not None else self.state()) \
+            != self._baseline
+        self._dirty = dirty
+        tip = ("Unsaved changes to \"%s\"" % name if name else
+               "These settings are not saved as a configuration")
+        for button in (self.config_save, self.footer_save):
+            button.setProperty("dirty", "true" if dirty else "false")
+            button.setToolTip(tip if dirty else "")
+            # A stylesheet rule keyed on a property is only re-read when the
+            # widget is re-polished; without this the button keeps the colour it
+            # was built with.
+            button.style().unpolish(button)
+            button.style().polish(button)
+
     # -- saved configurations -------------------------------------------------
     def _reload_configs(self, select=None):
         self.config_combo.blockSignals(True)
@@ -707,6 +772,7 @@ class LaunchSessionsPage(QWidget):
             saved = self._configs.get(name)
             if saved is not None:
                 self.set_state(saved)
+        self._mark_clean()
 
     def save_configuration(self):
         name = self._current_config_name()
@@ -717,16 +783,20 @@ class LaunchSessionsPage(QWidget):
             if not ok or not name:
                 return
             name = self._configs.unique_name(name)
-        self._configs.put(name, self.state())
+        state = self.state()
+        self._configs.put(name, state)
         self.settings.launch_config_name = name
         self._reload_configs(select=name)
+        self._mark_clean(state)
 
     def duplicate_configuration(self):
         base = self._current_config_name() or "Launch configuration"
         name = self._configs.unique_name(base)
-        self._configs.put(name, self.state())
+        state = self.state()
+        self._configs.put(name, state)
         self.settings.launch_config_name = name
         self._reload_configs(select=name)
+        self._mark_clean(state)
 
     def rename_configuration(self):
         old = self._current_config_name()
@@ -742,6 +812,9 @@ class LaunchSessionsPage(QWidget):
         self._configs.rename(old, self._configs.unique_name(new))
         self.settings.launch_config_name = new
         self._reload_configs(select=new)
+        # The settings did not move, only the name they are filed under: an edit
+        # that was unsaved before the rename is still unsaved after it.
+        self._update_dirty()
 
     def delete_configuration(self):
         name = self._current_config_name()
@@ -756,6 +829,7 @@ class LaunchSessionsPage(QWidget):
         self._configs.remove(name)
         self.settings.launch_config_name = ""
         self._reload_configs(select=UNSAVED)
+        self._mark_clean()
 
     # -- helpers --------------------------------------------------------------
     def reset(self):
@@ -771,3 +845,12 @@ class LaunchSessionsPage(QWidget):
     def _restore(self):
         saved = self.settings.launch_state()
         self.set_state(saved if saved else launch.DEFAULTS)
+        # A named configuration is measured against its file, so an edit left
+        # unsaved when the window closed is still an unsaved edit when it comes
+        # back. With no name there is no file, and the restored settings are
+        # where this session starts from.
+        name = self._current_config_name()
+        stored = self._configs.get(name) if name else None
+        self._baseline = self._comparable(stored if stored is not None
+                                          else self.state())
+        self._update_dirty()

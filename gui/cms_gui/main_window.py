@@ -12,6 +12,7 @@ than in either page, so neither page has to know the other exists.
 """
 
 import os
+import platform
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (QDialog, QFrame, QLabel, QMainWindow, QMessageBox
 
 from . import (commands, core as core_mod, history as history_mod, icon,
                launch as launch_mod, theme, widgets)
+from . import version as gui_version
 from .runner import LauncherProcess, RunState
 from .settings import Settings
 from .pages.artifacts import ArtifactsPage
@@ -78,6 +80,7 @@ class MainWindow(QMainWindow):
         self._run_source = self.settings.run_source
         self._entry_id = None
         self._stopping = False
+        self._chrome_warned = False
         self._build_menu()
         self._build_ui()
         self._connect_process()
@@ -388,6 +391,24 @@ class MainWindow(QMainWindow):
         if self.inventory.warnings:
             self.status_right.setText(self.inventory.warnings[0][:90])
         self._update_status()
+        self._warn_about_chrome()
+
+    def _warn_about_chrome(self):
+        """Say so, once, when the core cannot find a browser to launch.
+
+        Everything this app does ends in a Chrome window, so learning at startup
+        beats learning halfway through a launch. Shown once per session: it is a
+        prerequisite the user has to go away and fix, not a recurring alert.
+        """
+        problem = self.inventory.chrome_problem()
+        if not problem:
+            self._chrome_warned = False
+            return
+        self.status_right.setText("Google Chrome not found")
+        if getattr(self, "_chrome_warned", False):
+            return
+        self._chrome_warned = True
+        QMessageBox.warning(self, "Google Chrome is required", problem)
 
     def open_settings(self):
         dialog = SettingsDialog(self.settings, self)
@@ -592,13 +613,45 @@ class MainWindow(QMainWindow):
             label.setToolTip(path or "")
 
     def about(self):
-        QMessageBox.about(
-            self, "chrome-multi-session GUI",
-            "A front-end for session_launcher.py.\n\n"
-            "The GUI never imports the core: it spawns the launcher through the "
-            "configured interpreter, reads --describe for what exists, and follows "
-            "--events=- for what happens.\n\ncore: %s\nPySide6: %s"
-            % (self.inventory.version or "not detected", _pyside_version()))
+        """Who both halves are, and where the core half was found.
+
+        The GUI and the core are separate processes and can be separate builds -
+        a checkout of one against an installed copy of the other is a normal
+        thing to be running - so About names both versions rather than one, and
+        says which file the core one came from.
+        """
+        QMessageBox.about(self, "chrome-multi-session GUI", self.about_text())
+
+    def about_text(self):
+        return ("A front-end for session_launcher.py.\n\n"
+                "The GUI never imports the core: it spawns the launcher through "
+                "the configured interpreter, reads --describe for what exists, "
+                "and follows --events=- for what happens.\n\n"
+                "GUI: %s\ncore: %s\nfrom: %s\n\nPySide6: %s\nPython: %s"
+                % (gui_version(), self._core_version(),
+                   self.core.script or "no core configured", _pyside_version(),
+                   platform.python_version()))
+
+    def _core_version(self):
+        """What the core answers when asked what it is.
+
+        --describe carries it, so normally this costs nothing. Before the first
+        describe - or after one that failed - the core is asked directly rather
+        than reporting "not detected" for a launcher that is sitting right there
+        and working.
+        """
+        if self.inventory.version:
+            return self.inventory.version
+        try:
+            banner = self.core.version()
+        except Exception:
+            return "not detected"
+        # --version prints "chrome-multi-session <number>"; --describe carries
+        # the number alone. Say the same thing either way.
+        parts = (banner or "").split(None, 1)
+        if len(parts) == 2 and not parts[0][:1].isdigit():
+            return parts[1]
+        return banner or "not detected"
 
     def closeEvent(self, event):
         if self.process.is_running():

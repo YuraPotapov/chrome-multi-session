@@ -11,7 +11,9 @@ means editing this file, not hunting through six pages.
 
 import os
 
-from PySide6.QtGui import QColor, QFontDatabase
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPen
+from PySide6.QtWidgets import QProxyStyle, QStyle, QStyleFactory
 
 # --- palette (from the design system's OKLCH ramps) -------------------------
 BG = "#f2f2f3"
@@ -35,6 +37,8 @@ DIVIDER_STRONG = "#a8a8ab"
 OK = ACCENT_RAMP[700]
 WARN = "#a8712a"
 BAD = "#a33a2e"
+# The wash behind a red mark - a failure tag, an unsaved-changes button.
+BAD_TINT = "#f7e7e5"
 
 # --- type -------------------------------------------------------------------
 # The design asks for Barlow / Barlow Condensed / JetBrains Mono. They are web
@@ -118,6 +122,13 @@ _GLYPH_CANDIDATES = {
     "pending": ("·", "•", "."),
     "group": ("▸", "►", ">"),
     "browse": ("…", "...", "..."),
+    # A folded section needs a mark that says "there is more here": a chevron
+    # that turns. The collapsed state used to be a middle dot, which reads as a
+    # bullet - decoration, not a control.
+    "disclosure_open": ("▾", "▼", "v"),
+    "disclosure_closed": ("▸", "►", ">"),
+    "minus": ("−", "–", "-"),
+    "plus": ("+",),
 }
 _glyph_cache = {}
 
@@ -219,6 +230,16 @@ QPushButton[variant="nav"]:hover {{ background: {n200}; }}
 QPushButton[variant="nav"][active="true"] {{
     background: {a200}; color: {a900}; border-left: 3px solid {accent};
 }}
+/* Set on Save while the controls no longer match the saved configuration they
+   came from. Last of the button rules on purpose: an attribute selector and a
+   pseudo-class carry the same weight in Qt, so the later one is the one that
+   paints, and "there is something unsaved here" has to win over :hover. */
+QPushButton[dirty="true"] {{
+    color: {bad}; border-color: {bad}; background: {bad_tint};
+}}
+QPushButton[dirty="true"]:hover, QPushButton[dirty="true"]:pressed {{
+    color: {bg}; background: {bad}; border-color: {bad};
+}}
 
 /* --- inputs -------------------------------------------------------------- */
 QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit {{
@@ -244,14 +265,36 @@ QComboBox QAbstractItemView {{
     selection-background-color: {a200}; selection-color: {a900};
     outline: none;
 }}
-QCheckBox {{ spacing: 8px; }}
-QCheckBox::indicator {{
-    width: 14px; height: 14px;
-    border: 1px solid {divider_strong}; background: {surface}; border-radius: 0;
+/* Tick boxes and radio dots are painted by :class:`IndicatorStyle`, not styled
+   here: a stylesheet can fill an indicator but cannot draw a mark inside it, so
+   a ticked box came out as a plain accent square with nothing in it. Deliberately
+   no `::indicator` rule below - one would take the drawing back off the style. */
+/* `spacing` is the gap between the box and its label; the padding is the gap
+   between one row and the next. Stacked tick boxes with none of it - the flag
+   list on the Command page, the artifacts in Reports - run together into a
+   single block of text. */
+QCheckBox, QRadioButton {{ spacing: 8px; padding: 3px 0; background: transparent; }}
+QListView::item {{ padding: 2px 2px; }}
+QCheckBox:disabled, QRadioButton:disabled {{ color: {n500}; }}
+
+/* The two ends of the number stepper (:class:`widgets.Stepper`). Styled as
+   buttons rather than as `QSpinBox::up-button`: a stylesheet lays those out
+   against the frame rather than inside it, so they came out as two floating
+   grey squares beside the box, and `::up-arrow` has no way to draw a triangle
+   without a bitmap. The edge rules drop the border the neighbour already has,
+   which is what makes [-][ 4 ][+] read as one object and not as three. */
+QPushButton[variant="step"] {{
+    font-family: {mono}; font-size: 15px; font-weight: 500; color: {n700};
+    background: {n100}; border: 1px solid {divider}; border-radius: 0;
+    padding: 0; min-width: 26px;
 }}
-QCheckBox::indicator:hover {{ border-color: {accent}; }}
-QCheckBox::indicator:checked {{ background: {accent}; border-color: {accent}; }}
-QCheckBox::indicator:disabled {{ border-color: {n300}; background: {n200}; }}
+QPushButton[variant="step"]:hover {{ background: {a200}; color: {a800}; }}
+QPushButton[variant="step"]:pressed {{ background: {a300}; }}
+QPushButton[variant="step"]:disabled {{
+    background: {n200}; color: {n400}; border-color: {n300};
+}}
+QPushButton[variant="step"][edge="left"] {{ border-right: none; }}
+QPushButton[variant="step"][edge="right"] {{ border-left: none; }}
 
 /* --- tables -------------------------------------------------------------- */
 QTableView, QTreeView, QListView {{
@@ -313,11 +356,121 @@ QStatusBar::item {{ border: none; }}
 def stylesheet():
     return STYLESHEET.format(
         bg=BG, surface=SURFACE, text=TEXT, accent=ACCENT,
+        bad=BAD, bad_tint=BAD_TINT,
         divider=DIVIDER, divider_strong=DIVIDER_STRONG,
         body=BODY_CSS, heading=HEADING_CSS, mono=MONO_CSS,
         n100=NEUTRAL[100], n200=NEUTRAL[200], n300=NEUTRAL[300], n400=NEUTRAL[400],
         n500=NEUTRAL[500], n600=NEUTRAL[600], n700=NEUTRAL[700], n800=NEUTRAL[800],
         n900=NEUTRAL[900],
         a100=ACCENT_RAMP[100], a200=ACCENT_RAMP[200], a300=ACCENT_RAMP[300],
-        a600=ACCENT_RAMP[600], a700=ACCENT_RAMP[700], a900=ACCENT_RAMP[900],
+        a600=ACCENT_RAMP[600], a700=ACCENT_RAMP[700], a800=ACCENT_RAMP[800],
+        a900=ACCENT_RAMP[900],
     )
+
+
+# --- painted indicators ------------------------------------------------------
+# The one part of the design a Qt stylesheet cannot express. `::indicator` can be
+# given a size, a border and a fill, but nothing that puts a mark inside it short
+# of `image: url(...)`, which would mean shipping bitmaps next to a design system
+# whose whole point is that the colours live in this file. Painting the primitive
+# keeps the tick sharp at any scale factor, and it reaches the check boxes in the
+# list rows (Accounts, Extensions, Scenarios) with the same code as the standalone
+# ones - those are drawn by the style, never by the stylesheet.
+
+INDICATOR = 16          # the box, in px; Fusion's default is 13 and reads cramped
+_CHECK = ((0.24, 0.53), (0.42, 0.71), (0.76, 0.30))     # tick path, as fractions
+
+
+def _indicator_colors(state):
+    """(fill, edge, mark) for a set of QStyle state flags."""
+    enabled = bool(state & QStyle.State_Enabled)
+    marked = bool(state & (QStyle.State_On | QStyle.State_NoChange))
+    hover = bool(state & QStyle.State_MouseOver) and enabled
+    if not enabled:
+        return NEUTRAL[200], NEUTRAL[300], NEUTRAL[500] if marked else None
+    if marked:
+        accent = ACCENT_RAMP[600] if hover else ACCENT
+        return accent, accent, BG
+    return SURFACE, ACCENT if hover else DIVIDER_STRONG, None
+
+
+def _paint_box(painter, rect, state):
+    side = min(rect.width(), rect.height())
+    box = QRectF(0, 0, side - 1, side - 1)
+    box.moveCenter(QRectF(rect).center())
+    # Snap to the half-pixel grid: a 1px border drawn on an integer coordinate is
+    # spread over two rows and comes out grey.
+    box.moveTopLeft(QPointF(round(box.left()) + 0.5, round(box.top()) + 0.5))
+    fill, edge, mark = _indicator_colors(state)
+
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(QPen(QColor(edge), 1))
+    painter.setBrush(QColor(fill))
+    painter.drawRect(box)               # square, like every other object here
+    if mark:
+        pen = QPen(QColor(mark), max(1.6, side * 0.13))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        if state & QStyle.State_NoChange:
+            # "some of these are ticked" - a bar, not a half-drawn tick.
+            painter.drawLine(QPointF(box.left() + side * 0.26, box.center().y()),
+                             QPointF(box.left() + side * 0.74, box.center().y()))
+        else:
+            points = [QPointF(box.left() + x * side, box.top() + y * side)
+                      for x, y in _CHECK]
+            painter.drawPolyline(points)
+    painter.restore()
+
+
+def _paint_dot(painter, rect, state):
+    side = min(rect.width(), rect.height())
+    circle = QRectF(0, 0, side - 1, side - 1)
+    circle.moveCenter(QRectF(rect).center())
+    fill, edge, mark = _indicator_colors(state)
+
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(QPen(QColor(edge), 1))
+    painter.setBrush(QColor(fill))
+    painter.drawEllipse(circle)
+    if mark:
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(mark))
+        painter.drawEllipse(circle.center(), side * 0.17, side * 0.17)
+    painter.restore()
+
+
+class IndicatorStyle(QProxyStyle):
+    """Fusion, with the tick boxes and radio dots painted by this file.
+
+    Fusion is the one style that looks the same on all three platforms, which is
+    what makes a single stylesheet enough to carry the design; this wraps it so
+    the two primitives the sheet cannot reach are ours as well.
+    """
+
+    def drawPrimitive(self, element, option, painter, widget=None):
+        if element in (QStyle.PE_IndicatorCheckBox,
+                       QStyle.PE_IndicatorItemViewItemCheck):
+            _paint_box(painter, option.rect, option.state)
+        elif element == QStyle.PE_IndicatorRadioButton:
+            _paint_dot(painter, option.rect, option.state)
+        else:
+            super().drawPrimitive(element, option, painter, widget)
+
+    def pixelMetric(self, metric, option=None, widget=None):
+        if metric in (QStyle.PM_IndicatorWidth, QStyle.PM_IndicatorHeight,
+                      QStyle.PM_ExclusiveIndicatorWidth,
+                      QStyle.PM_ExclusiveIndicatorHeight):
+            return INDICATOR
+        if metric in (QStyle.PM_CheckBoxLabelSpacing,
+                      QStyle.PM_RadioButtonLabelSpacing):
+            return 8
+        return super().pixelMetric(metric, option, widget)
+
+
+def app_style(base="Fusion"):
+    """The style to hand to ``QApplication.setStyle``."""
+    return IndicatorStyle(QStyleFactory.create(base) if isinstance(base, str)
+                          else base)

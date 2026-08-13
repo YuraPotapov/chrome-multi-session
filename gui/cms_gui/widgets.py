@@ -10,7 +10,7 @@ import itertools
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QPushButton, QSizePolicy,
+                               QListWidgetItem, QPushButton, QSizePolicy, QSpinBox,
                                QVBoxLayout, QWidget)
 
 from . import theme
@@ -46,7 +46,7 @@ class Tag(QLabel):
         "outline": ("transparent", theme.ACCENT, theme.ACCENT),
         "neutral": (theme.NEUTRAL[100], theme.NEUTRAL[800], theme.NEUTRAL[300]),
         "warn": ("#f7efe2", theme.WARN, "transparent"),
-        "bad": ("#f7e7e5", theme.BAD, "transparent"),
+        "bad": (theme.BAD_TINT, theme.BAD, "transparent"),
     }
 
     def __init__(self, text="", variant="neutral", parent=None):
@@ -107,6 +107,88 @@ class Segmented(QWidget):
 
     def current(self):
         return self._current
+
+
+class Stepper(QWidget):
+    """A small number with a button on each side: [-][ 4 ][+].
+
+    The stock spin box puts two 7px arrows stacked inside the frame - a target
+    nobody can hit, and the first thing anyone notices about a form built out of
+    them. Here each end is a full-height button, the number sits in the middle
+    and is still typeable, and the three pieces share their hairlines so the
+    control reads as one object.
+
+    It carries the part of QSpinBox's interface the pages use, so it can stand in
+    for one: :meth:`value`, :meth:`setValue`, :meth:`setRange` and the
+    ``valueChanged`` signal.
+    """
+
+    valueChanged = Signal(int)
+
+    def __init__(self, minimum=0, maximum=99, value=None, width=52, parent=None):
+        super().__init__(parent)
+        line = QHBoxLayout(self)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(0)
+
+        self.down = self._button("minus", "left", -1)
+        self.spin = QSpinBox()
+        self.spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.spin.setAlignment(Qt.AlignCenter)
+        self.spin.setRange(minimum, maximum)
+        self.spin.setFixedWidth(width)
+        self.up = self._button("plus", "right", +1)
+
+        line.addWidget(self.down)
+        line.addWidget(self.spin)
+        line.addWidget(self.up)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        self.spin.valueChanged.connect(self._on_value)
+        self.setValue(minimum if value is None else value)
+        self._match_heights()
+
+    def _button(self, mark, edge, step):
+        button = QPushButton(theme.glyph(mark))
+        button.setProperty("variant", "step")
+        button.setProperty("edge", edge)
+        button.setCursor(Qt.PointingHandCursor)
+        # The number keeps the focus: tabbing onto a plus sign helps nobody.
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setAutoRepeat(True)
+        button.setAutoRepeatDelay(400)
+        button.setAutoRepeatInterval(90)
+        button.clicked.connect(lambda _checked=False, s=step: self.step_by(s))
+        return button
+
+    def _match_heights(self):
+        height = self.spin.sizeHint().height()
+        for button in (self.down, self.up):
+            button.setFixedHeight(height)
+
+    # -- the QSpinBox interface the pages use ---------------------------------
+    def value(self):
+        return self.spin.value()
+
+    def setValue(self, value):
+        self.spin.setValue(int(value))
+        self._update_limits()
+
+    def setRange(self, minimum, maximum):
+        self.spin.setRange(minimum, maximum)
+        self._update_limits()
+
+    def step_by(self, step):
+        self.spin.setValue(self.spin.value() + step)
+
+    def _on_value(self, value):
+        self._update_limits()
+        self.valueChanged.emit(value)
+
+    def _update_limits(self):
+        """Grey the end that would do nothing, rather than let it click on."""
+        self.down.setEnabled(self.spin.value() > self.spin.minimum())
+        self.up.setEnabled(self.spin.value() < self.spin.maximum())
 
 
 class ElidedLabel(QLabel):
@@ -324,8 +406,12 @@ class Disclosure(QWidget):
 
     def _on_toggled(self, checked):
         self._body.setVisible(checked)
-        self.button.setText("%s  %s" % (theme.glyph("group") if checked else
-                                        theme.glyph("pending"), self._title))
+        # A chevron that turns: pointing down at an open section, right at a
+        # folded one. Whatever the mark, it has to say "this opens" while the
+        # section is shut, which is the state most people meet it in.
+        self.button.setText("%s  %s" % (theme.glyph("disclosure_open") if checked
+                                        else theme.glyph("disclosure_closed"),
+                                        self._title))
         self.toggled.emit(checked)
 
 
