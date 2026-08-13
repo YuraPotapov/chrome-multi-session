@@ -1,0 +1,45 @@
+# Multi-company - group the OPEN list by Company and require exactly one group.
+#
+# Starts from an already-open list view: each multicompany_* scenario navigates to
+# the list that role actually has, then uses this block. That is the whole point of
+# the check - the action is domain-filtered to the user's default company, so even
+# though the access rules allow their other companies, the list must contain rows
+# from exactly ONE company.
+#
+# "Exactly one" is expressed with the two primitives the engine has: at least one
+# group header exists, and a SECOND one does not (:nth-match is Playwright's own
+# selector engine). A leaked second company therefore fails on group_header_second.
+#
+# LANGUAGE GATE (deliberate): the group-by steps match Ukrainian labels, so a user
+# whose Odoo language is not Ukrainian fails here. See the header of the
+# multicompany block in flows/selectors.yaml.
+#
+## Pinned 2026-07-31 from reports/20260731-150722 (first live run). The custom group
+# picker is a native <select>, so the field is chosen with `select` by option value -
+# clicking the <option> does nothing at all, which is how that run reached the
+# grouping assert with an ungrouped 80-row list.
+id: multicompany.group_by_company
+name: "Multi-company - list groups into exactly one company (Ukrainian UI)"
+steps:
+  - wait_for: list_view
+  # Ukrainian gate on the search panel itself, before any label-matching below.
+  - assert_visible: uk_search_placeholder
+  - click: searchview_dropdown_toggler
+  - type: assert_visible
+    target: uk_groupby_section
+    timeout: 5000
+  # Ukrainian gate on the field label, then select by the language-independent value.
+  - type: assert_exists
+    target: uk_groupby_company_option
+    timeout: 5000
+  - type: select
+    target: groupby_custom_select
+    value: company_id
+  # The list is now grouped. One header must exist...
+  - type: assert_visible
+    target: group_header
+    timeout: 10000
+  # ...and a second must not: that is "grouped items == 1".
+  - type: assert_not_visible
+    target: group_header_second
+    timeout: 2500

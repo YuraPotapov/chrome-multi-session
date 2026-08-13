@@ -1,0 +1,16 @@
+# PARKED (blocked): fine appeal needs the fine's department to have employees (appealed_by is limited
+# to department employees, with NO "Unknown" fallback). The allowed fine departments here are
+# closed-type test departments with no employees -> appealed_by is always empty on synthetic data.
+# Unblock by pointing add_fine at a department that is both fine-valid AND has employees.
+id: simple_fine_appeal
+name: Simple - add fine, distribute, appeal fine (PARKED - needs a dept with employees)
+tags: [fine, appeal, blocked, write]
+steps:
+  - use: auth.login
+  - use: reclamation.create_reclamation
+  - use: reclamation.assign
+  - use: reclamation.take_to_work
+  - use: reclamation.make_decision_refuse
+  - use: reclamation.add_fine
+  - use: reclamation.distribute_fine
+  - use: reclamation.appeal_fine

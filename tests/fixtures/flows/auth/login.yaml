@@ -1,0 +1,7 @@
+# Mirrors the real auth.login: the launcher's extension has already signed in by
+# the time the engine attaches, so this only GATES on the app being ready.
+id: auth.login
+name: Host is up, then wait for the signed-in dashboard
+steps:
+  - use: common.host_up
+  - assert_visible: dashboard

@@ -1,0 +1,9 @@
+# DEMO-526 - direct-URL denial of the admin-only Email Condition Rules.
+#
+# The menu is admin-only and the model (reclamation.email.condition.rules) grants ACL
+# only to group_reclamation_admin, so manager/agent get an AccessError -> .o_error_dialog.
+id: access.deny_email_rules
+name: Direct-URL to Email Condition Rules is access-denied
+steps:
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.reclamation_email_condition_rules_action"
+  - assert_visible: error_dialog

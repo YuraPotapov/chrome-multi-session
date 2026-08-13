@@ -1,0 +1,4 @@
+# Development / test dependencies (not needed to run the launcher or flows).
+#   pytest - runs the engine's pure-logic unit tests under tests/.
+-r requirements.txt
+pytest>=7.0

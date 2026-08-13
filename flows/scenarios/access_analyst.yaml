@@ -1,0 +1,57 @@
+# DEMO-526 access matrix - Analytics Guest, CAN appeal (log in as role_analyst).
+# Task DEMO-526.txt (analyst-by-agent role). analyst_can_appeal = True.
+id: access_analyst
+name: "Access matrix - Analytics Guest (can appeal)"
+tags: [DEMO-526, role:analyst, access, template]   # template: excluded from --run-tests=all; run per-role by id / tag:access
+steps:
+  - use: access.open_app
+  # Analyst read-only sections (distinct xmlids, same labels as the working ones).
+  - assert_visible: menu_reclamations_analyst
+  - assert_visible: menu_compensations_analyst
+  - assert_visible: menu_fines_analyst
+  - assert_visible: menu_reporting
+  - type: assert_not_visible
+    target: menu_settings
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_1c_logistics
+    timeout: 2500
+  # Agent-scoped: only agent_a (76SEED Agent A) tickets are visible; a non-agent ticket
+  # (the AGENT2 foreign ticket) is filtered out by the record rule.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_analyst"
+  - wait_for: list_view
+  - fill:
+      target: searchview_input
+      value: "76SEED"
+  - press: Enter
+  # Matched on the ticket-number CELL, not the whole row: seeded names are data (identical in
+  # every UI language), but a row-wide match can also hit the Customer/Investigator columns.
+  - type: assert_visible
+    target: '.o_data_row td[name="name"]:has-text("agent-matched ticket")'
+    timeout: 10000
+  - type: assert_not_visible
+    target: '.o_data_row td[name="name"]:has-text("[AGENT2] foreign ticket")'
+    timeout: 3000
+  # Open the refused agent-matched ticket: readonly, but action_appeal IS shown
+  # (analyst_can_appeal); downstream decision/approve/reject stay hidden.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_analyst"
+  - wait_for: list_view
+  - fill:
+      target: searchview_input
+      value: "[ANALYST] refused ticket"
+  - press: Enter
+  - click: first_list_row
+  - wait_for: form_view
+  - type: assert_not_visible      # readonly proof: no editable input/textarea in the sheet
+    target: form_editable_field
+    timeout: 2500
+  - assert_visible: btn_ticket_appeal
+  - type: assert_not_visible
+    target: btn_ticket_make_decision
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_ticket_appeal_approve
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_ticket_appeal_reject
+    timeout: 2500

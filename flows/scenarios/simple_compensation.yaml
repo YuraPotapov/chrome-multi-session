@@ -1,0 +1,13 @@
+# Category 1 (simple) - full compensation lifecycle:
+#   create -> assign -> investigation -> make decision (compensate recipient) -> Compensation Approved.
+# Assumes the needed settings/data exist (VRR investigators, departments). Writes a real
+# reclamation + compensation each run.
+id: simple_compensation
+name: Simple - reclamation compensation lifecycle
+tags: [simple, lifecycle, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_reclamation
+  - use: reclamation.assign
+  - use: reclamation.take_to_work
+  - use: reclamation.make_decision_compensate

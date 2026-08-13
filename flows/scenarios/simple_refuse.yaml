@@ -1,0 +1,11 @@
+# Category 1 (simple) - refuse lifecycle:
+#   create -> assign -> investigation -> make decision (refuse) -> Refused.
+id: simple_refuse
+name: Simple - reclamation refuse lifecycle
+tags: [simple, lifecycle, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_reclamation
+  - use: reclamation.assign
+  - use: reclamation.take_to_work
+  - use: reclamation.make_decision_refuse

@@ -1,0 +1,10 @@
+# TEMPLATE - Demo claim app (app-dev / app-stg).
+#
+# Ships as a composition example. Fill in the real navigation path and the
+# `contacts_page` selector (in flows/selectors.yaml) before running against a
+# Demo environment. Not exercised by the localhost smoke run.
+id: contacts.open_contacts
+name: Open the contacts list
+steps:
+  - goto: "{{env.origin}}/odoo/contacts"       # placeholder path - confirm on the real app
+  - assert_visible: contacts_page

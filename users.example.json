@@ -1,0 +1,25 @@
+[
+  {
+    "_comment": "Copy this file to users.json (git-ignored) and put your real logins in it. Keys the launcher reads: env, class, login, password, run-tests. Anything else - like this comment - is ignored.",
+    "env": "localhost:8069",
+    "class": "Admin",
+    "login": "admin",
+    "password": "CHANGE-ME"
+  },
+  {
+    "_comment": "env is the environment this user belongs to: a URL or host:port. --env selects it by short name (--env=localhost), supplies its URL so --url is optional, and names the profile folder <env>-<login>. The env+login pair must be unique.",
+    "env": "localhost:8069",
+    "class": "Agent",
+    "login": "agent",
+    "password": "CHANGE-ME",
+    "run-tests": ["smoke_odoo"]
+  },
+  {
+    "_comment": "The same login can repeat under a different env - that is how one user set covers several environments, each with its own profile and its own scenarios. run-tests takes scenario ids or tag:NAME selectors, and --run-tests=config gives each window its own list.",
+    "env": "https://staging.example.com/",
+    "class": "Agent",
+    "login": "agent",
+    "password": "CHANGE-ME",
+    "run-tests": ["smoke_odoo", "tag:access"]
+  }
+]

@@ -1,0 +1,13 @@
+# Category 1 (simple) - refuse, add a fine, then distribute it:
+#   ... -> refuse -> add fine -> open fine -> distribute (culprit line) -> distribution exists.
+id: simple_fine_distribute
+name: Simple - add fine then distribute it
+tags: [simple, lifecycle, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_reclamation
+  - use: reclamation.assign
+  - use: reclamation.take_to_work
+  - use: reclamation.make_decision_refuse
+  - use: reclamation.add_fine
+  - use: reclamation.distribute_fine

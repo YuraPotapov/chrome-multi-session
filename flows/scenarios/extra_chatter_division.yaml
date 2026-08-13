@@ -1,0 +1,23 @@
+# DEMO-526 extra - chatter follows record visibility. QA doc section 11.
+#
+# TEMPLATE: a Division Manager opens an own-department fine (readonly form) and can still
+# post a chatter comment. The chatter composer may need a "Send message" toggle before the
+# input appears - pin the composer flow on the first live run. Tagged `template`: run by id.
+id: extra_chatter_division
+name: "Extra - Division Manager can post chatter on a readonly fine"
+tags: [DEMO-526, role:division, access, manual, template]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_fines_restricted"
+  - wait_for: list_view
+  - click: first_list_row
+  - wait_for: form_view
+  - assert_visible: chatter
+  - click: chatter_composer_input
+  - fill:
+      target: chatter_composer_input
+      value: "AUTOTEST chatter note from division"
+  - click: chatter_send_button
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000

@@ -1,0 +1,53 @@
+# DEMO-526 write-flow - VRR Manager has full CRUD on dictionaries. QA doc 3.3.
+#
+# Full cycle on ONE representative dictionary, reclamation.reason (manager ACL row is 1/1/1/1
+# like the other Settings dictionaries): create "UITEST-DICT" -> edit its code -> DELETE it via
+# the form cog. SELF-CLEANING: the record the test creates is the record it deletes, so
+# re-runs leave no residue - the delete doubles as the QA "delete works" check.
+# manual: writes data, excluded from --run-tests=all.
+id: write_manager_dictionary
+name: "Write - VRR Manager: dictionary create + edit + delete (reclamation.reason)"
+tags: [DEMO-526, role:manager, access, write, manual]
+steps:
+  - use: access.open_app
+
+  # --- create -------------------------------------------------------------------------------
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_reason"
+  - wait_for: list_view
+  - click: new_button
+  - assert_visible: form_view
+  - fill: {target: reason_name_input, value: "UITEST-DICT"}   # only `name` is required
+  - click: save_button
+  # Saved -> the breadcrumb becomes the reason name. assert_text_contains reads the CURRENT
+  # text (no built-in wait), so retry until the save round-trip lands - the 2026-07-28 dev
+  # run failed here with the breadcrumb still 'Новий' while the artifact DOM showed the save
+  # had succeeded a moment later.
+  - type: assert_text_contains
+    target: breadcrumb
+    value: "UITEST-DICT"
+    timeout: 2000
+    retry: {attempts: 15, delay: 1}
+
+  # --- edit ---------------------------------------------------------------------------------
+  - fill: {target: reason_code_input, value: "UITESTD"}
+  - click: save_button
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000
+
+  # --- delete (form cog -> Delete -> confirmation dialog) -----------------------------------
+  - click: list_cog_toggle
+  - click: cog_delete_item
+  - wait_for: dialog
+  - click: confirm_dialog_primary
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000
+  # Back on the list; THIS run's record is gone. Matched on the CODE cell, not the name:
+  # the code (UITESTD, set in the edit step) uniquely marks the record this run created, so
+  # a leftover UITEST-DICT from an earlier run that failed mid-flow (before its delete step)
+  # does not false-fail the check - exactly what happened on the 2026-07-28 dev runs.
+  - wait_for: list_view
+  - type: assert_not_visible
+    target: '.o_data_row td[name="code"]:text-is("UITESTD")'
+    timeout: 3000

@@ -1,0 +1,8 @@
+# Selector map for the ENGINE'S OWN tests. Deliberately app-neutral: the engine
+# must not be tested against whatever app happens to live in ../flows, or
+# replacing that tree (see --flows-dir) red-lines tests that are about the
+# compiler, not about any app.
+dashboard:      ".app-root"          # the de-facto reserved "we are signed in" selector
+user_menu:      ".app-user-menu"
+apps_button:    "button.app-apps"
+search_input:   "input.app-search"

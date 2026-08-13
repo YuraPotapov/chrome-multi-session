@@ -1,0 +1,5 @@
+id: demo_simple
+name: A second scenario, for tag filtering
+tags: [simple]
+steps:
+  - use: common.host_up

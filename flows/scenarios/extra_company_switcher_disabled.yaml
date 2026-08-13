@@ -1,0 +1,13 @@
+# DEMO-526 extra - multi-company switcher is DISABLED for restricted roles. QA doc section 9.
+#
+# TEMPLATE: requires a second company and the user granted access to BOTH (default = main).
+# The DEMO-76 build ports a static company switcher that renders but is disabled for these
+# roles. Seed the 2nd company + multi-company access first (see the seed script note), then
+# run this by id. Pin the disabled-state selector on the first live run.
+id: extra_company_switcher_disabled
+name: "Extra - company switcher shown but disabled for a restricted role"
+tags: [DEMO-526, role:restricted, access, manual, template]
+steps:
+  - use: access.open_app
+  - assert_visible: company_switcher
+  - assert_visible: company_switcher_disabled

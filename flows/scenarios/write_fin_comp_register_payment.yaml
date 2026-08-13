@@ -1,0 +1,26 @@
+# DEMO-526 write-flow - Compensation Finance registers a payment. QA doc 4.4.
+#
+# TEMPLATE: state-dependent. The Register Payment button only shows while the
+# compensation is in a payable status (scheduled / submitted / partially). The 76SEED
+# service_offset compensation must be in such a status first (set it up as manager, or
+# extend the seed). Pin the amount field / confirm selectors on the first live run.
+# Tagged `template` so it is excluded from --run-tests=all; run it explicitly by id.
+id: write_fin_comp_register_payment
+name: "Write - Compensation Finance registers a payment"
+tags: [DEMO-526, role:fin_comp, access, write, manual, template]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_compensation_finance"
+  - wait_for: list_view
+  - click: first_list_row
+  - wait_for: form_view
+  - click: btn_comp_register_payment
+  - wait_for: dialog
+  # The payment wizard's amount field - confirm the exact selector on first run.
+  - fill:
+      target: ".o_dialog .o_field_widget[name='amount'] input"
+      value: "50"
+  - click: dialog_confirm
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000

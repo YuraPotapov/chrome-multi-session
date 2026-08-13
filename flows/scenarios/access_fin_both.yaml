@@ -1,0 +1,41 @@
+# DEMO-526 access matrix - COMBINED finance roles (log in as role_fin_both). QA doc
+# section 7: one user holding both Compensation Finance (Service Offset) and Fine Finance
+# (Branch) sees both menus, and BOTH type-scopings apply at the same time.
+#
+# Requires the role_fin_both seed user (claim76_access_seed_probe.py) - template until the
+# target DB has been re-seeded; then run by id / tag:access like the other role scenarios,
+# against ONLY this user's session (--user=role_fin_both).
+id: access_fin_both
+name: "Access matrix - combined Compensation + Fine Finance"
+tags: [DEMO-526, role:fin_both, access, template]
+steps:
+  - use: access.open_app
+  # 7.2 Both finance sections visible; the working/settings sections still absent.
+  - assert_visible: menu_compensation
+  - assert_visible: menu_fines
+  - type: assert_not_visible
+    target: menu_reclamations
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_settings
+    timeout: 2500
+  # Compensations limited to Service Offset...
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_compensation_finance"
+  - wait_for: list_view
+  - type: assert_visible
+    target: row_comp_service_offset
+    timeout: 10000
+  - type: assert_not_visible
+    target: row_comp_inter_organization
+    timeout: 2500
+  # ...AND fines limited to Branch, simultaneously.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_fines_restricted"
+  - wait_for: list_view
+  - type: assert_visible
+    target: row_fine_branch
+    timeout: 10000
+  - type: assert_not_visible
+    target: row_fine_carrier
+    timeout: 2500
+  # Tickets stay blocked for the combined user too.
+  - use: access.deny_tickets

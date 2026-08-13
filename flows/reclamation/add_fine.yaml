@@ -1,0 +1,28 @@
+# Add a fine to a refused / compensation_approved ticket. action_add_fine opens the reclamation.fine
+# form in a dialog (fine_type defaults to "branch"). Fills department + amount + reason, saves, then
+# opens the ticket's Fines tab and asserts a fine row exists. Does NOT change the ticket state.
+#
+# NOTE: first fines block - the save button (special="save"), the conditional department field, and
+# the Fines-tab/row selectors are the parts most likely to need pinning from the first run artifacts.
+# Data deps: at least one fine reason and a selectable department must exist.
+id: reclamation.add_fine
+name: Add a fine (creates reclamation.fine)
+steps:
+  - click: btn_add_fine
+  - wait_for: dialog
+  # Department (many2one) - first match. NOTE: for a synthetic (fake-TTN) reclamation the fine's
+  # allowed departments are closed-type TEST departments with no employees, so the resulting fine has
+  # no culprit partners -> distribute_fine can't be completed. Distributing needs a real parcel-backed
+  # reclamation (real TTN) whose branch/department has employees. See simple_fine_distribute notes.
+  - click: fine_department_input
+  - press: ArrowDown
+  - click: m2o_first_option
+  - fill: {target: fine_amount_input, value: "10"}
+  - click: fine_reason_input            # fine reason (many2one, required)
+  - press: ArrowDown
+  - click: m2o_first_option
+  - click: fine_save
+  - click: tab_fines                    # back on the ticket: open the Fines tab
+  - type: assert_visible
+    target: fine_row
+    retry: {attempts: 10, delay: 1}

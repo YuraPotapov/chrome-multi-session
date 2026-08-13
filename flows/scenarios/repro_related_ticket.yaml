@@ -1,0 +1,51 @@
+# DEMO-526 repro - agent opens the cross-company counterpart via the Related Ticket
+# button, starting from ticket 07-2026-0454.
+#
+# The ticket is FOUND by searching the list rather than opened by record id, so the flow
+# does not depend on ids that differ per database (the earlier 855/856 pair was specific
+# to claim_dev_1607).
+#
+# Reported symptom: the page keeps reloading itself after the click. After the click the
+# flow requires the counterpart form to SETTLE - a reload loop bounces the breadcrumb back
+# to 0454, and an access dialog raises the error_dialog assert; the url/console reports
+# then show what happened.
+id: repro_related_ticket
+name: "Repro - Related Ticket cross-company open (agent, 07-2026-0454)"
+tags: [DEMO-526, repro, manual, dev]
+steps:
+  - use: auth.login
+  # Find the ticket by number. The number is data, identical in every UI language, and is
+  # matched on the ticket-number CELL so the Customer/Investigator columns cannot match it.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_all"
+  - wait_for: list_view
+  - fill:
+      target: searchview_input
+      value: "07-2026-0454"
+  - press: Enter
+  - type: assert_visible
+    target: '.o_data_row td[name="name"]:has-text("07-2026-0454")'
+    timeout: 10000
+  - click: first_list_row
+  - wait_for: form_view
+  - type: assert_text_contains
+    target: breadcrumb
+    value: "07-2026-0454"
+    timeout: 5000
+    retry: {attempts: 10, delay: 1}
+  - click: btn_related_ticket
+  # The counterpart's own number is not asserted (it is a different record per database);
+  # what the repro needs to prove is that the click LANDS somewhere and stays there.
+  - wait_for: form_view
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 2500
+  # Settle check: a reload loop returns to the starting ticket, so 0454 reappearing in the
+  # breadcrumb after navigation is the failure signal. Retried so a slow-but-successful
+  # navigation is not read as a bounce.
+  - type: assert_not_visible
+    target: '.o_last_breadcrumb_item:has-text("07-2026-0454")'
+    timeout: 3000
+    retry: {attempts: 3, delay: 2}
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 2500

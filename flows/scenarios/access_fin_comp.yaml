@@ -1,0 +1,51 @@
+# DEMO-526 access matrix - Compensation Finance (log in as role_fin_comp). QA doc section 4.
+id: access_fin_comp
+name: "Access matrix - Compensation Finance"
+tags: [DEMO-526, role:fin_comp, access, template]   # template: excluded from --run-tests=all; run per-role by id / tag:access
+steps:
+  - use: access.open_app
+  # 4.1 Only the Compensation section is visible.
+  - assert_visible: menu_compensation
+  - type: assert_not_visible
+    target: menu_reclamations
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_fines
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_reporting
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_settings
+    timeout: 2500
+  # 4.2 Compensations list: allowed type present; the blocked type NEVER renders for this
+  # role (record rule + ACL) regardless of environment -> a robust env-agnostic scoping check.
+  # The type is matched in the compensation_type COLUMN and in both UI languages (see the
+  # row_comp_* entries in selectors.yaml).
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_compensation_finance"
+  - wait_for: list_view
+  - type: assert_visible
+    target: row_comp_service_offset
+    timeout: 10000
+  - type: assert_not_visible
+    target: row_comp_inter_organization
+    timeout: 2500
+  # 4.3 Open the allowed compensation: readonly form, only Register Payment; edit-actions and
+  # the ticket jump ("Open Ticket") hidden. The readonly claim is structural: the view marks
+  # every input-capable field o_readonly_modifier, so no editable input/textarea renders.
+  - click: first_list_row
+  - wait_for: form_view
+  - type: assert_not_visible      # readonly proof: no editable input/textarea in the sheet
+    target: form_editable_field
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_comp_mark_failed
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_comp_change_type
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_comp_open_ticket
+    timeout: 2500
+  # 4.5 Direct-URL to any ticket -> access denied (no ticket, no chatter).
+  - use: access.deny_tickets

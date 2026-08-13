@@ -1,0 +1,49 @@
+# DEMO-526 access matrix - Division Manager on APP-DEV (log in as role_division).
+# Dev twin of access_division minus the department-scoping row checks: those match the 76SEED
+# department names, which do not exist on dev. What remains is still meaningful - menu
+# isolation, the fines list being reachable and non-empty, the readonly form, and the
+# forbidden buttons hidden. To also assert dept scoping on dev, tell the flow the name of the
+# division's OWN department and of a FOREIGN one and mirror access_division's row_dept_* steps
+# with those literals. Run by id on app-dev only (tags: manual).
+id: access_division_dev
+name: "Access matrix (app-dev) - Division Manager"
+tags: [DEMO-526, role:division, access, manual]
+steps:
+  - use: access.open_app
+  # Only the Fines section is visible.
+  - assert_visible: menu_fines
+  - type: assert_not_visible
+    target: menu_compensation
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_reclamations
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_reporting
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_settings
+    timeout: 2500
+  # Fines list reachable and scoped non-empty (dept-scoping rows: see header note).
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_fines_restricted"
+  - wait_for: list_view
+  - type: assert_visible
+    target: first_list_row
+    timeout: 10000
+  # Open a fine: readonly form; Register Payment + Write Off + Review Appeal hidden.
+  - click: first_list_row
+  - wait_for: form_view
+  - type: assert_not_visible      # readonly proof: no editable input/textarea in the sheet
+    target: form_editable_field
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_fine_register_payment
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_fine_write_off
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_fine_appeal_review
+    timeout: 2500
+  # Direct-URL to any ticket -> access denied.
+  - use: access.deny_tickets

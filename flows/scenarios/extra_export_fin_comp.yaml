@@ -1,0 +1,11 @@
+# DEMO-526 extra - Compensation Finance can export the list. QA doc 4.7.
+# Non-mutating: just opens the list cog menu and checks the Export item is offered.
+id: extra_export_fin_comp
+name: "Extra - Compensation Finance: list Export is available"
+tags: [DEMO-526, role:fin_comp, access, manual]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_compensation_finance"
+  - wait_for: list_view
+  - click: list_cog_toggle
+  - assert_visible: export_menu_item

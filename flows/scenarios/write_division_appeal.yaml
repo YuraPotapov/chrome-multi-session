@@ -1,0 +1,36 @@
+# DEMO-526 write-flow - Division Manager submits a fine appeal. QA doc 6.5.
+#
+# TEMPLATE: state-dependent twice over - Submit Appeal shows only on an appealable
+# (distributed) fine, and the "appealed by" many2one offers only the fine's CULPRITS, so the
+# fine must have been distributed first (write_division_distribute provides exactly that,
+# with the "AUTOTEST perpetrator" unknown culprit). Run distribute first, then this, by id.
+#
+# The wizard steps mirror flows/reclamation/appeal_fine.yaml, but from the division's
+# full-page readonly fine form instead of the ticket-tab dialog. Success = action_confirm
+# closes the wizard with no AccessError (the appeal itself is written via sudo - the division
+# role has NO ACL on reclamation.fine.appeal, which access.deny paths cover elsewhere).
+id: write_division_appeal
+name: "Write - Division Manager submits a fine appeal"
+tags: [DEMO-526, role:division, access, write, manual, template]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_fines_restricted"
+  - wait_for: list_view
+  # Open the distributed own-dept fine: after write_division_distribute the first row's
+  # status is "scheduled" - if Submit Appeal is missing below, distribute has not run.
+  - click: first_list_row
+  - wait_for: form_view
+  - click: btn_fine_appeal_form
+  - wait_for: dtop_dialog
+  - fill: {target: fine_appeal_reason, value: "AUTOTEST division appeal reason"}
+  - click: fine_appealed_by_input
+  - press: ArrowDown
+  - click: m2o_first_option
+  - click: dtop_confirm
+  - type: wait_for
+    target: dtop_confirm
+    state: "detached"
+    timeout: 20000
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000

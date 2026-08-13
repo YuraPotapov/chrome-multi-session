@@ -1,0 +1,29 @@
+# DEMO-526 access matrix - Analytics Guest, CANNOT appeal (log in as role_analyst2).
+# Same agent scoping as role_analyst but analyst_can_appeal = False, so the ticket
+# action_appeal button must be HIDDEN. Requires the seed to create role_analyst2
+# (added to scripts/claim76_access_seed_probe.py).
+id: access_analyst2
+name: "Access matrix - Analytics Guest (cannot appeal)"
+tags: [DEMO-526, role:analyst2, access, template]   # template: excluded from --run-tests=all; run per-role by id / tag:access
+steps:
+  - use: access.open_app
+  - assert_visible: menu_reclamations_analyst
+  - assert_visible: menu_fines_analyst
+  # Open the same refused agent-matched ticket: readonly, and action_appeal is HIDDEN.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_analyst"
+  - wait_for: list_view
+  - fill:
+      target: searchview_input
+      value: "[ANALYST] refused ticket"
+  - press: Enter
+  - click: first_list_row
+  - wait_for: form_view
+  - type: assert_not_visible      # readonly proof: no editable input/textarea in the sheet
+    target: form_editable_field
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_ticket_appeal
+    timeout: 3000
+  - type: assert_not_visible
+    target: btn_ticket_make_decision
+    timeout: 2500

@@ -1,0 +1,20 @@
+# Make decision = refuse: investigation -> refused.
+# Same wizard as compensate, resolution="Refuse". Required for refuse: refused_reason_id (m2o),
+# refusal_justification (textarea, custom template-picker widget), investigation_conclusion.
+# Assumes at least one refused reason is configured.
+id: reclamation.make_decision_refuse
+name: Make decision - refuse (-> refused)
+steps:
+  - click: btn_make_decision
+  - wait_for: dialog
+  - click: decision_resolution_toggle
+  - click: opt_refuse
+  - click: decision_refused_reason_input     # refused reason (many2one)
+  - press: ArrowDown
+  - click: m2o_first_option
+  - fill: {target: decision_refusal_justification, value: "AUTOTEST refusal justification"}
+  - fill: {target: decision_conclusion_input, value: "AUTOTEST investigation conclusion"}
+  - click: dialog_confirm
+  - type: assert_visible
+    target: state_refused           # data-value, not the label -> language-independent
+    retry: {attempts: 15, delay: 1}

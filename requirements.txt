@@ -1,0 +1,8 @@
+cryptography>=3.4
+
+# Flow-execution engine (only imported when --run-tests is used):
+#   playwright  - drives the launched Chrome via connect_over_cdp (no bundled
+#                 browser download needed - it attaches to the system Chrome).
+#   pyyaml      - reads the declarative flow/scenario definitions under flows/.
+playwright>=1.40
+pyyaml>=6.0

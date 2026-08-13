@@ -1,0 +1,10 @@
+# TEMPLATE - Demo claim app (app-dev / app-stg).
+#
+# Ships as a composition example. Fill in the real navigation path and the
+# `reclamation_page` selector (in flows/selectors.yaml) before running against a
+# Demo environment. Not exercised by the localhost smoke run.
+id: reclamation.open_reclamation
+name: Open the reclamation list
+steps:
+  - goto: "{{env.origin}}/odoo/reclamations"   # placeholder path - confirm on the real app
+  - assert_visible: reclamation_page

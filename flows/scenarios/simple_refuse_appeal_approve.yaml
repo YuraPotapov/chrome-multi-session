@@ -1,0 +1,13 @@
+# Category 1 (simple) - refuse, appeal, approve appeal:
+#   ... -> refuse -> appeal -> approve -> back to Investigation.
+id: simple_refuse_appeal_approve
+name: Simple - refuse -> appeal -> approve (-> Investigation)
+tags: [simple, lifecycle, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_reclamation
+  - use: reclamation.assign
+  - use: reclamation.take_to_work
+  - use: reclamation.make_decision_refuse
+  - use: reclamation.appeal
+  - use: reclamation.approve_appeal

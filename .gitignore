@@ -1,0 +1,33 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtualenv
+.venv/
+
+# Per-user Chrome profiles + generated auto-login extensions (contain cookies/passwords)
+user_sessions/
+
+# User config holds logins/passwords - copy users.example.json, or scaffold your
+# own with --init-users-json
+users.json
+
+# Run artifacts: screenshots and full-page DOM dumps of whatever the flows visited,
+# so they carry the app's data. Regenerated on every --run-tests run.
+reports/
+!reports/.gitkeep
+
+# Local IDE run configurations: they name real environments and users
+# (--env=..., --user=...), so they stay on the machine that uses them.
+.vscode/
+.idea/
+
+# Build artifacts (setuptools drops these in the source tree; an *.egg-info left
+# behind also makes importlib.metadata report a version from an uninstalled tree)
+build/
+dist/
+*.egg-info/
+
+# Local archives/snapshots
+*.tar.gz
+*.zip

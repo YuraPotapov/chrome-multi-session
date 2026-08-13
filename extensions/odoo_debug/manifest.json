@@ -1,0 +1,43 @@
+{
+"update_url": "https://clients2.google.com/service/update2/crx",
+
+    "manifest_version": 3,
+    "name": "Odoo Debug",
+    "version": "5.1",
+    "description": "Minimal and fast extension to toggle debug mode of Odoo",
+    "action": {
+        "default_title": "- Click for normal debug \n- Double click for debug with assets",
+        "default_icon": {
+            "16": "/images/icons/off_16.png",
+            "32": "/images/icons/off_32.png",
+            "48": "/images/icons/off_48.png"
+        }
+    },
+    "icons": {
+        "16": "/images/icons/off_16.png",
+        "32": "/images/icons/off_32.png",
+        "48": "/images/icons/off_48.png"
+    },
+    "author": "Droggol Infotech Private Limited",
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [{
+        "matches": ["<all_urls>"],
+        "js": ["contentScript.js"]
+    }],
+    "commands": {
+        "_execute_action": {
+            "suggested_key": {
+                "default": "Ctrl+Period"
+            }
+        }
+    },
+    "incognito": "spanning",
+    "offline_enabled": true,
+    "permissions": ["tabs"],
+    "web_accessible_resources": [{ 
+        "resources": ["pageScript.js"],
+        "matches": ["<all_urls>"]
+    }]
+}

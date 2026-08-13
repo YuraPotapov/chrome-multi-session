@@ -1,0 +1,10 @@
+# The very first test: is the host answering at all?
+#
+# An HTTP-level reachability probe (independent of the browser). If the server is
+# down / unreachable, this fails in ~1s with a clear "host not answering" message,
+# instead of every later selector timing out. Referenced first by auth.login, so
+# every scenario checks the host before doing anything else.
+id: common.host_up
+name: Host is answering
+steps:
+  - assert_host_up: "{{env.origin}}"

@@ -1,0 +1,22 @@
+# Multi-company - the navbar shows the user's company, and it CANNOT be switched.
+#
+# Non-admin roles only: admin is allowed to switch companies, so admin scenarios
+# skip this block (they use multicompany.group_by_company on its own).
+#
+# The readonly proof is structural: Odoo renders the switcher button with
+# disabled="" (pinned 2026-07-31 from the app-dev DOM), so a role that CAN
+# switch renders it without that attribute and company_switcher_enabled matches.
+# Asserting both directions means neither a missing switcher nor an enabled one
+# can pass silently.
+id: multicompany.company_navbar_readonly
+name: "Multi-company - navbar company is shown and not selectable"
+steps:
+  # The company name renders at all (an empty systray would pass a disabled-only check).
+  - assert_visible: company_name_navbar
+  - assert_visible: company_switcher
+  - assert_visible: company_switcher_disabled
+  # ...and is NOT selectable. This is the assertion that fails if the default-company
+  # lock regresses and the user regains a working company picker.
+  - type: assert_not_visible
+    target: company_switcher_enabled
+    timeout: 2500

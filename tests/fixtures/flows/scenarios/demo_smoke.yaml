@@ -1,0 +1,9 @@
+# The fixture equivalent of a real smoke scenario: block composition (nested, to
+# exercise the plan tree), an action step, and a scenario-level assertion.
+id: demo_smoke
+name: Smoke - app loads and the menu opens
+tags: [smoke]
+steps:
+  - use: auth.login
+  - use: demo.open_menu
+  - assert_exists: user_menu

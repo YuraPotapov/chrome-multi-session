@@ -1,0 +1,42 @@
+# Create a reclamation through the UI: New -> fill required fields -> Save.
+#
+# Required fields (from reclamation_ticket_form_view.xml): shipment_number (TTN, a text
+# field), partner_id and reclamation_reason_id (both many2one). company_id is defaulted.
+# An invalid TTN only raises a warning banner (is_shipment_number_invalid is a compute, not
+# a constraint), so it does not block Save. This WRITES a real reclamation.ticket per run.
+#
+# The many2one fields are filled by keyboard - focus the input, ArrowDown to open the
+# dropdown and highlight the first record, Enter to select it - so no specific customer/
+# reason value is hardcoded (first match, as requested). These m2o steps and their
+# selectors are the parts most likely to need a tweak on the first live run; on failure the
+# artifacts (screenshot + dom.html) capture the real DOM to adjust flows/selectors.yaml.
+id: reclamation.create_reclamation
+name: Create a reclamation (New -> fill -> Save)
+steps:
+  - use: reclamation.open_reclamation          # open the All Reclamations list
+  - click: new_button                           # New
+  - assert_visible: form_view                   # the create form opened
+
+  - fill: {target: ttn_input, value: "1234"}   # TTN (invalid = warning only), prepared: AUTOTEST-0000000001
+  - fill: {target: claimed_amount_input, value: "100"}        # claimed amount (>0, so a compensation can be made)
+
+  - click: partner_input                        # Customer (many2one): focus the field
+  - press: ArrowDown                            # open the dropdown (+ start loading options)
+  - click: m2o_first_option                     # click the first record (Playwright auto-waits
+                                                #   for it to render - this is what makes it reliable)
+
+  # Selecting the Customer fires an onchange (server round-trip). The old version pressed Enter
+  # before the Reason dropdown had loaded, so Reason stayed empty and Save was rejected. Clicking
+  # the option auto-waits for it to actually render, which fixes that race.
+  - click: reason_input                         # Reclamation Reason (many2one)
+  - press: ArrowDown                            # open the dropdown (+ start loading options)
+  - click: m2o_first_option                     # click the first reason record
+
+  - click: save_button                          # Save
+  # A saved record's breadcrumb is its ticket number (sequence prefix "MM-YYYY-", so it
+  # contains "-"); an unsaved record shows "New" (no dash). Retry while the save round-trips.
+  - type: assert_text_contains
+    target: breadcrumb
+    value: "-"
+    timeout: 5000
+    retry: {attempts: 45, delay: 2}   # the 1C parcel lookup can be slow -> allow ~90s for the save to land

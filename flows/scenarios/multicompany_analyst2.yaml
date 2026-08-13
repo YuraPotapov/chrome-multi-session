@@ -1,0 +1,17 @@
+# DEMO-76 multi-company - Analyst2 sees only its default company.
+#
+# Actions are domain-filtered to the user's DEFAULT company while the access rules
+# still allow their other companies, so this role's list must group into exactly
+# one company. Ukrainian UI is required: the group-by steps match Ukrainian labels
+# and the flow FAILS for a user whose Odoo language is not Ukrainian.
+#
+id: multicompany_analyst2
+name: "Multi-company - Analyst2 (analyst tickets)"
+tags: [DEMO-76, multicompany, role:analyst2, manual]
+steps:
+  - use: access.open_app
+  # Ukrainian gate on the app menu itself, before anything else is asserted.
+  - assert_visible: uk_app_reclamations
+  - use: multicompany.company_navbar_readonly
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_analyst"
+  - use: multicompany.group_by_company

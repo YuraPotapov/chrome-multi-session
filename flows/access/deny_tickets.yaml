@@ -1,0 +1,12 @@
+# DEMO-526 - direct-URL denial of the reclamation ticket list.
+#
+# Navigates by the STABLE action xmlid (no per-DB record id needed, so it works on
+# localhost / dev / stg alike). A role without reclamation.ticket ACL (finance /
+# division) gets a server AccessError, which Odoo 19 renders as the WarningDialog
+# .o_error_dialog (web/.../core/errors/error_dialogs.js). Proves that even a pasted
+# URL cannot reach tickets - the "menu is simply absent" check is not enough on its own.
+id: access.deny_tickets
+name: Direct-URL to the ticket list is access-denied
+steps:
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_all"
+  - assert_visible: error_dialog

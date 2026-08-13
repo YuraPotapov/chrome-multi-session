@@ -1,0 +1,8 @@
+# Checkpoint: create a reclamation on the REAL parcel (TTN 1234) and confirm it saves.
+# Run this first to see how the real TTN behaves (auto-fill, timing) before the full deep-fine chain.
+id: real_create
+name: Real - create reclamation on TTN 1234
+tags: [real, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_real

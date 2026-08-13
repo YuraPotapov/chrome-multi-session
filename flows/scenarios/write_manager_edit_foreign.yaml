@@ -1,0 +1,33 @@
+# DEMO-526 write-flow - VRR Manager edits a ticket they neither created nor investigate.
+# QA doc 3.2: the manager is NOT limited by the agent "own tickets" write rule.
+#
+# Counterpart of write_agent_edit's deny half: the SAME UITEST-FOREIGN fixture ticket that
+# refuses an agent's save accepts the manager's. Run setup_manager_foreign_ticket first if the
+# fixture is missing (the guard step below distinguishes that from a real failure).
+#
+# NOTE the fixture is created by role_manager, so for THIS user it matches the rule's
+# create_uid branch anyway - which is fine: the manager rule has no own-ticket restriction at
+# all, and the meaningful cross-check stays "agent denied (write_agent_edit) vs manager saves
+# (here)" on one and the same record. manual: writes data, excluded from --run-tests=all.
+id: write_manager_edit_foreign
+name: "Write - VRR Manager: edit a non-own ticket saves"
+tags: [DEMO-526, role:manager, access, write, manual]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_new_vrr"
+  - wait_for: list_view
+  # Fixture guard: no tagged row = setup_manager_foreign_ticket has not been run here.
+  - type: assert_visible
+    target: row_uitest_foreign
+    timeout: 10000
+  - click: open_uitest_foreign
+  - wait_for: form_view
+  - fill:
+      target: claimed_amount_input
+      value: "222"
+  - click: save_button
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000
+  # Still on the saved form (an error would have kept the dirty state / shown the dialog).
+  - assert_visible: form_view

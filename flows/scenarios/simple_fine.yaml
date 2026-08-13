@@ -1,0 +1,12 @@
+# Category 1 (simple) - refuse then add a fine:
+#   create -> assign -> investigation -> refuse -> add fine -> a fine row appears on the ticket.
+id: simple_fine
+name: Simple - refuse then add a fine
+tags: [simple, lifecycle, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_reclamation
+  - use: reclamation.assign
+  - use: reclamation.take_to_work
+  - use: reclamation.make_decision_refuse
+  - use: reclamation.add_fine

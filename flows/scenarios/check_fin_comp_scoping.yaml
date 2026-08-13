@@ -1,0 +1,37 @@
+# DEMO-526 PROVISIONING CHECK - is Compensation Finance type-scoping actually
+# configured on this environment? Log in as role_fin_comp.
+#
+# Deliberately separate from the access matrix, because a failure here does NOT
+# mean the UI misbehaves - it means one of:
+#
+#   a) the user's "Allowed Compensation Types" list is EMPTY, so the record rule
+#      reclamation_compensation_finance_rule falls back to an empty domain and
+#      applies no filter at all (it fails OPEN, not closed); or
+#   b) the list is populated but includes the blocked type; or
+#   c) the rule genuinely leaks.
+#
+# Check (a) first - open role_fin_comp and look at Allowed Compensation Types.
+# An empty list is the usual answer, and it is a provisioning regression rather
+# than an environment quirk: this same assertion passed on app-dev on 2026-07-28
+# (reports 20260728-124548, 20260728-215104), and the identical fail-open was seen
+# on the fine side that day (run 124632, fixed by restricting the user to Branch).
+#
+# Expected everywhere once provisioned: service-offset rows visible,
+# inter-organization rows absent.
+id: check_fin_comp_scoping
+name: "Provisioning check - FinComp compensation-type scoping"
+tags: [DEMO-526, role:fin_comp, provisioning, manual]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_compensation_finance"
+  - wait_for: list_view
+  # The allowed type must be there at all, or the check below proves nothing: an
+  # empty list would satisfy "blocked type absent" for the wrong reason.
+  - type: assert_visible
+    target: row_comp_service_offset
+    timeout: 10000
+  # The finding. Matched on the compensation_type COLUMN in both UI languages, so
+  # a hit is a real record of the blocked type and not a label collision.
+  - type: assert_not_visible
+    target: row_comp_inter_organization
+    timeout: 2500

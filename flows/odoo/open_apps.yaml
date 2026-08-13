@@ -1,0 +1,9 @@
+# Reusable block for localhost Odoo: open the apps menu and confirm it appears.
+# Demonstrates an action (`click`) followed by an assertion. Selectors live in
+# flows/selectors.yaml so they can be tuned per Odoo version without touching
+# this flow.
+id: odoo.open_apps
+name: Open the Odoo apps menu
+steps:
+  - click: apps_menu_toggle
+  - assert_visible: apps_menu

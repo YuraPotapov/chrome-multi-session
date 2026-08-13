@@ -1,0 +1,11 @@
+# Scenario: create a reclamation end to end (host up -> logged in -> New -> fill -> Save).
+#
+# Tagged `manual` so `--run-tests=all` skips it - it writes a real record. Run it explicitly:
+#   python session_launcher.py --env=localhost --filter-users=admin \
+#       --run-tests=create_reclamation
+id: create_reclamation
+name: Create a reclamation (writes a record)
+tags: [reclamation, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_reclamation

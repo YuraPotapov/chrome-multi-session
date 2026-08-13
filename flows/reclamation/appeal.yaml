@@ -1,0 +1,13 @@
+# Submit an appeal: refused / compensation_approved -> appeal.
+# Opens reclamation.ticket.appeal.wizard (field: appeal_argumentation). Requires the ticket's
+# appeal_count to be below the company's vrr_appeal_limit (true for a fresh ticket).
+id: reclamation.appeal
+name: Submit appeal (-> appeal)
+steps:
+  - click: btn_appeal
+  - wait_for: dialog
+  - fill: {target: appeal_argumentation, value: "AUTOTEST appeal argumentation"}
+  - click: dialog_confirm
+  - type: assert_visible
+    target: state_appeal            # data-value, not the label -> language-independent
+    retry: {attempts: 10, delay: 1}

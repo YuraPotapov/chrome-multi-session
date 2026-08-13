@@ -1,0 +1,28 @@
+# Create a reclamation on a REAL parcel (TTN 1234, which exists in 1C). Unlike create_reclamation
+# (synthetic AUTOTEST TTN), a real TTN links a real parcel -> real branch/department (with employees
+# = culprits) and makes the 1C decision sync succeed. Used by the DEEP flows (distribute a fine,
+# genuine compensation) that a synthetic reclamation can't complete.
+#
+# The real TTN triggers an async 1C parcel lookup that may auto-populate partner/branch data; we still
+# fill the required partner/reason/amount (re-picking an auto-filled partner is harmless). Selectors
+# reuse the create_reclamation ones. Expect a possible pin around the parcel-lookup timing.
+id: reclamation.create_real
+name: Create a reclamation on a real parcel (TTN 1234)
+steps:
+  - use: reclamation.open_reclamation
+  - click: new_button
+  - assert_visible: form_view
+  - fill: {target: ttn_input, value: "1234"}
+  - fill: {target: claimed_amount_input, value: "100"}
+  - click: partner_input
+  - press: ArrowDown
+  - click: m2o_first_option
+  - click: reason_input
+  - press: ArrowDown
+  - click: m2o_first_option
+  - click: save_button
+  - type: assert_text_contains
+    target: breadcrumb
+    value: "-"
+    timeout: 5000
+    retry: {attempts: 45, delay: 2}   # real TTN 1C lookup can be slow -> allow ~90s for the save to land

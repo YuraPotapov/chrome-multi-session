@@ -1,0 +1,9 @@
+# Start investigation: assigned -> investigation. Direct transition, no wizard
+# (action_start_investigation writes state directly).
+id: reclamation.take_to_work
+name: Take to work (-> investigation)
+steps:
+  - click: btn_start_investigation
+  - type: assert_visible
+    target: state_investigation     # data-value, not the label -> language-independent
+    retry: {attempts: 10, delay: 1}

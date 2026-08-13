@@ -1,0 +1,36 @@
+# DEMO-526 access matrix - VRR Administrator (log in as role_admin). QA doc section 3 (admin).
+id: access_admin
+name: "Access matrix - VRR Administrator"
+tags: [DEMO-526, role:admin, access, template]   # template: excluded from --run-tests=all; run per-role by id / tag:access
+steps:
+  - use: access.open_app
+  # Full module: every working section incl. Settings + 1C Logistics.
+  - assert_visible: menu_reclamations
+  - assert_visible: menu_compensation
+  - assert_visible: menu_fines
+  - assert_visible: menu_reporting
+  - assert_visible: menu_settings
+  - assert_visible: menu_1c_logistics
+  # Inside the Settings dropdown the admin gets BOTH Team Roles and the admin-only
+  # Email Condition Rules item (the manager scenario asserts the latter absent).
+  - click: menu_settings
+  - assert_visible: menu_team_roles
+  - assert_visible: menu_email_rules
+  - press: Escape                     # close the dropdown before navigating on
+
+  # Admin CAN reach Email Condition Rules (has the ACL): the list opens, no error dialog.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.reclamation_email_condition_rules_action"
+  - wait_for: list_view
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 2500
+
+  # Review 24.07 item 6: same HR unlock as the manager (implied hr.group_hr_user) - the
+  # employee form with hr_homeworking's hr_user-gated field opens without the field error.
+  - goto: "{{env.origin}}/odoo/action-hr.open_view_employee_list_my"
+  - wait_for: kanban_card
+  - click: kanban_card
+  - wait_for: form_view
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 2500

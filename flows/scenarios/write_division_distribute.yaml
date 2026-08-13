@@ -1,0 +1,33 @@
+# DEMO-526 write-flow - Division Manager distributes an own-department fine. QA doc 6.4.
+#
+# TEMPLATE: opens a fine from the Division's own Fines list (a full-page form, not the
+# ticket-tab dialog that flows/reclamation/distribute_fine.yaml assumes), then drives the
+# distribute wizard. The culprit line amount must equal the opened fine's amount so the
+# remaining is 0 - since fines are nameless in the list, pin the amount to whichever fine
+# opens (the 76SEED own-dept fines are 300/310/320). Tagged `template`: run by id.
+id: write_division_distribute
+name: "Write - Division Manager distributes an own-dept fine"
+tags: [DEMO-526, role:division, access, write, manual, template]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_fines_restricted"
+  - wait_for: list_view
+  - click: first_list_row
+  - wait_for: form_view
+  - click: btn_fine_distribute_form          # full-form Distribute -> opens the distribute wizard
+  - wait_for: dtop_dialog
+  - click: dist_add_line
+  - fill:
+      target: dist_culprit_input
+      value: "unknown"
+  - click: dist_culprit_unknown
+  - fill:
+      target: dist_unknown_name
+      value: "AUTOTEST perpetrator"
+  - fill:
+      target: dist_line_amount
+      value: "300"                           # must equal the opened fine's amount - pin on first run
+  - click: dtop_confirm
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 5000

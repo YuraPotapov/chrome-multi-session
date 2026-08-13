@@ -1,0 +1,10 @@
+# Category 1 (simple) - partial lifecycle checkpoint: create -> assign -> investigation.
+# High-confidence step (one m2o + a plain button) to verify before the decision wizard.
+id: simple_assign_investigate
+name: Simple - reclamation reaches Investigation
+tags: [simple, lifecycle, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_reclamation
+  - use: reclamation.assign
+  - use: reclamation.take_to_work

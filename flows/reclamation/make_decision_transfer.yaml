@@ -1,0 +1,19 @@
+# Make decision = transfer: investigation -> transferred.
+# Same wizard, resolution="Transfer". Required for transfer: target_company_id (m2o, a company
+# other than the ticket's) + investigation_conclusion.
+# Assumes another company exists to transfer to (else the target dropdown is empty).
+id: reclamation.make_decision_transfer
+name: Make decision - transfer (-> transferred)
+steps:
+  - click: btn_make_decision
+  - wait_for: dialog
+  - click: decision_resolution_toggle
+  - click: opt_transfer
+  - click: decision_target_company_input     # target company (many2one)
+  - press: ArrowDown
+  - click: m2o_first_option
+  - fill: {target: decision_conclusion_input, value: "AUTOTEST transfer note"}
+  - click: dialog_confirm
+  - type: assert_visible
+    target: state_transferred       # data-value, not the label -> language-independent
+    retry: {attempts: 15, delay: 1}

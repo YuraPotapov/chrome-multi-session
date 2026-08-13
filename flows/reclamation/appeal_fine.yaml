@@ -1,0 +1,21 @@
+# Appeal a DISTRIBUTED fine. Continues in the fine dialog, opens the "Submit Appeal" wizard (nested),
+# fills the reason and who is appealing (a culprit of the fine - the "Unknown" perpetrator from
+# distribute is in the allowed list), and confirms. Success = the appeal wizard closes.
+id: reclamation.appeal_fine
+name: Appeal a fine
+steps:
+  # distribute_fine closes the fine dialog (back on the ticket), so re-open the fine first.
+  - click: tab_fines
+  - click: fine_row
+  - wait_for: dialog
+  - click: btn_fine_appeal             # Submit Appeal -> wizard (stacks on the fine dialog)
+  - wait_for: dtop_dialog
+  - fill: {target: fine_appeal_reason, value: "AUTOTEST fine appeal reason"}
+  - click: fine_appealed_by_input      # appealed by (many2one: the fine's culprits)
+  - press: ArrowDown
+  - click: m2o_first_option
+  - click: dtop_confirm
+  - type: wait_for
+    target: dtop_confirm
+    state: "detached"
+    timeout: 20000

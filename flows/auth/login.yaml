@@ -1,0 +1,14 @@
+# Reusable auth block.
+#
+# Login itself is handled by the launcher's auto-login extension - the isolated
+# login solution we deliberately do NOT reimplement here. By the time the engine
+# attaches over CDP, the extension has already submitted the login form, so this
+# block only GATES on the app being ready (i.e. we are signed in).
+#
+# Every scenario starts with `- use: auth.login`, so the readiness check is
+# written once and reused everywhere.
+id: auth.login
+name: Host is up, then wait for the signed-in dashboard
+steps:
+  - use: common.host_up              # first test: is the host answering at all?
+  - assert_visible: dashboard        # then: signed in (auto-login extension did the login)

@@ -1,0 +1,35 @@
+# Make decision = compensate recipient: investigation -> compensation_approved.
+# Opens reclamation.approve.compensation.wizard ("Make Decision"). Required fields for
+# compensate_recipient: resolution, responsible_department_id (m2o), investigation_conclusion,
+# compensation_type, amount. compensation_type = "Service Offset" is chosen because it avoids the
+# bank/card recipient sub-fields (fewest required inputs). resolution/compensation_type are Odoo 19
+# SelectMenu widgets (toggle, then click the option).
+#
+# NOTE: this is the most complex block. Its wizard selectors (esp. the SelectMenu options and the
+# department m2o) are the most likely to need pinning from the first run's failure artifacts.
+id: reclamation.make_decision_compensate
+name: Make decision - compensate recipient (-> compensation_approved)
+steps:
+  - click: btn_make_decision
+  - wait_for: dialog
+
+  - click: decision_resolution_toggle       # resolution (SelectMenu)
+  - click: opt_compensate_recipient
+
+  - click: decision_department_input        # responsible department (many2one)
+  - press: ArrowDown
+  - click: m2o_first_option
+
+  - fill: {target: decision_conclusion_input, value: "AUTOTEST investigation conclusion"}
+
+  - click: decision_comp_type_toggle        # compensation type (SelectMenu)
+  - click: opt_service_offset
+
+  # amount must be <= claimed (100) and, to avoid the required partial-justification field,
+  # NOT less than claimed -> use exactly the claimed amount.
+  - fill: {target: decision_amount_input, value: "100"}
+
+  - click: dialog_confirm
+  - type: assert_visible
+    target: state_compensation_approved   # data-value, not the label -> language-independent
+    retry: {attempts: 15, delay: 1}

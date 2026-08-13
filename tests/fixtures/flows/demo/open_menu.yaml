@@ -1,0 +1,5 @@
+id: demo.open_menu
+name: Open the apps menu
+steps:
+  - click: apps_button
+  - assert_visible: user_menu

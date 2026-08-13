@@ -1,0 +1,21 @@
+# DEMO-76 multi-company - VRR Admin sees only its default company.
+#
+# Actions are domain-filtered to the user's DEFAULT company while the access rules
+# still allow their other companies, so this role's list must group into exactly
+# one company. Ukrainian UI is required: the group-by steps match Ukrainian labels
+# and the flow FAILS for a user whose Odoo language is not Ukrainian.
+#
+# Admin is EXCLUDED from the navbar readonly check: admin may switch companies,
+# so multicompany.company_navbar_readonly is not used here - only the grouping.
+
+id: multicompany_admin
+name: "Multi-company - VRR Admin (All Reclamations)"
+tags: [DEMO-76, multicompany, role:admin, manual]
+steps:
+  - use: access.open_app
+  # Ukrainian gate on the app menu itself, before anything else is asserted.
+  - assert_visible: uk_app_reclamations
+  # The role has the Reclamations section: reach the list the way a user does.
+  - click: menu_reclamations
+  - click: menu_reclamations_all
+  - use: multicompany.group_by_company

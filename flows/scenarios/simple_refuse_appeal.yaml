@@ -1,0 +1,12 @@
+# Category 1 (simple) - refuse then submit appeal:
+#   create -> assign -> investigation -> refuse -> appeal -> Appeal.
+id: simple_refuse_appeal
+name: Simple - refuse then appeal (-> Appeal)
+tags: [simple, lifecycle, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_reclamation
+  - use: reclamation.assign
+  - use: reclamation.take_to_work
+  - use: reclamation.make_decision_refuse
+  - use: reclamation.appeal

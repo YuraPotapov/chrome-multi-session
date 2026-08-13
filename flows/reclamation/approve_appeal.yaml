@@ -1,0 +1,12 @@
+# Approve an appeal: appeal -> investigation (appeal_approved=True). Opens appeal.decision.wizard
+# with decision=approve (field: appeal_decision_note).
+id: reclamation.approve_appeal
+name: Approve appeal (-> investigation)
+steps:
+  - click: btn_appeal_approve
+  - wait_for: dialog
+  - fill: {target: appeal_decision_note, value: "AUTOTEST appeal approved"}
+  - click: dialog_confirm
+  - type: assert_visible
+    target: state_investigation     # data-value, not the label -> language-independent
+    retry: {attempts: 10, delay: 1}

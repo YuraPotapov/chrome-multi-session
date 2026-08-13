@@ -1,0 +1,28 @@
+# Register a payment on a DISTRIBUTED fine. Continues in the fine dialog (right after distribute_fine),
+# opens the "Register Payment" wizard (nested), sets the collected amount on the distribution line to
+# the full amount, and confirms. Success = the payment wizard closes.
+id: reclamation.pay_fine
+name: Register a fine payment
+steps:
+  # distribute_fine closes the fine dialog (back on the ticket), so re-open the fine first.
+  - click: tab_fines
+  - click: fine_row
+  - wait_for: dialog
+  - click: btn_fine_pay                # Register Payment -> wizard (stacks on the fine dialog)
+  - wait_for: dtop_dialog
+  # to_collect_amount defaults to 0 (amount/collected are readonly), and Confirm rejects a 0 payment.
+  # Set it to the full fine amount (10): the cell renders as text until clicked, so click to activate
+  # the cell, then fill the input that appears.
+  - click: pay_tocollect_cell
+  - fill: {target: pay_tocollect_input, value: "10"}
+  - click: dtop_confirm
+  - type: wait_for
+    target: dtop_confirm
+    state: "detached"
+    timeout: 20000
+  # VERIFY the payment applied. Unlike distribute, the fine dialog stays OPEN after paying, so read
+  # its collection status directly (bounded timeout so a missing element fails fast).
+  - type: assert_visible
+    target: fine_state_collected    # data-value, not the label -> language-independent
+    timeout: 5000
+    retry: {attempts: 10, delay: 1}

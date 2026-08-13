@@ -1,0 +1,15 @@
+# TEMPLATE scenario (Demo) - mirrors the design doc's smoke_contacts.
+#
+# Tagged `template`, so `--run-tests=all` skips it (it needs real selectors).
+# Run it explicitly with `--run-tests=smoke_contacts` once configured for a
+# Demo environment.
+id: smoke_contacts
+name: Smoke - contacts page loads
+tags: [smoke, template]
+steps:
+  - use: auth.login
+  - use: contacts.open_contacts
+  # Same URL-rewrite caveat as reclamation, and the breadcrumb title is translated - identify
+  # the page by a res.partner column header instead (`data-name` = technical field name).
+  # (Not yet run against this DB - adjust the column if the list differs.)
+  - assert_visible: "th[data-name='email']"

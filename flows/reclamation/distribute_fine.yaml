@@ -1,0 +1,40 @@
+# Distribute a fine: open the fine (from the ticket Fines tab), click Distribute, add one culprit
+# line whose amount equals the fine amount (10), confirm. Success = the "Change distribution" button
+# appears on the fine (it only shows once a distribution exists).
+#
+# This is the most complex block: the fine opens in a dialog and the distribute wizard STACKS on top
+# (top dialog = .o_dialog:not(.o_inactive_modal)), and the culprit line is entered in an editable o2m
+# grid. Data dep: the fine's department must have allowed culprit partners (else the culprit dropdown
+# is empty). Expect this one to need selector/flow pinning from the first run's artifacts.
+id: reclamation.distribute_fine
+name: Distribute a fine (one culprit line == amount)
+steps:
+  - click: fine_row                    # open the fine -> fine form dialog
+  - wait_for: dialog
+  - click: btn_fine_distribute         # Distribute -> distribute wizard (stacks on top)
+  - wait_for: dtop_dialog
+  - click: dist_add_line               # "Add a line" in the culprit grid (editable=bottom)
+  # The culprit m2o injects an "Unknown" option (show_unknown_m2o_option) - a built-in
+  # select-or-create that works WITHOUT any configured culprit data, so no real department needed.
+  - click: dist_culprit_input          # focus the culprit m2o
+  # The "Unknown" option only appears once something is typed (the component enables it when
+  # request.length > 0), so type any text to reveal it, then click it.
+  - fill: {target: dist_culprit_input, value: "unknown"}
+  - click: dist_culprit_unknown        # pick "Unknown" (picks/creates the unknown-culprit partner)
+  - fill: {target: dist_unknown_name, value: "AUTOTEST perpetrator"}   # "Name of unknown perpetrator" (required)
+  - fill: {target: dist_line_amount, value: "10"}   # == fine amount so remaining = 0
+  - click: dtop_confirm
+  # Success = the distribute wizard closed (Confirm accepted -> distribution created). Wait (bounded)
+  # for the wizard's Confirm button to detach, so a stuck wizard fails fast instead of hanging the run.
+  - type: wait_for
+    target: dtop_confirm
+    state: "detached"
+    timeout: 20000
+  # VERIFY the distribution applied. The ticket reloads after distribute (resetting the notebook to
+  # the first tab), so activate the Fines tab first, then confirm the fine is "Scheduled". Bounded
+  # timeout so a missing element fails fast instead of waiting the 30s default on every retry.
+  - click: tab_fines
+  - type: assert_visible
+    target: fine_row_scheduled      # status cell matched in EN + uk_UA (list cells have no data-value)
+    timeout: 5000
+    retry: {attempts: 10, delay: 1}

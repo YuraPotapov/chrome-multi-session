@@ -1,0 +1,48 @@
+# DEMO-526 write-flow - VRR Manager changes a department's Manager field.
+# Review 24.07 item 4 ("Керівник ВРР — меню, hr.employee": the role must be able to set
+# manager_id in hr.department; before the fix the employee form denied with the field-level
+# error on hr_homeworking's exceptional_location_id). The fix: group_reclamation_manager
+# implies hr.group_hr_user (security/reclamation_security_groups.xml, commit 2e0ed01).
+#
+# SEEDED env only (76SEED dept + employees) and SELF-RESTORING: the manager is swapped to
+# the seeded Deputy and back to the seeded Head in the same run, so re-runs are stable and
+# the division-manager fine scoping (which hangs off this department's manager) is left
+# exactly as seeded. The browser save is the part the ORM probe cannot cover: the form
+# WRITES through the full view payload, homeworking field included.
+id: write_manager_dept_manager
+name: "Write - VRR Manager sets hr.department Manager (swap + restore)"
+tags: [DEMO-526, role:manager, access, write, manual]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-hr.hr_department_tree_action"
+  - wait_for: list_view
+  - fill:
+      target: searchview_input
+      value: "76SEED"
+  - press: Enter
+  # Fixture guard: without the 76SEED seed there is no Own Dept row - stop distinguishably.
+  - type: assert_visible
+    target: open_dept_own
+    timeout: 10000
+  - click: open_dept_own
+  - wait_for: form_view
+
+  # --- swap: Manager := 76SEED Deputy ------------------------------------------------------
+  - fill:
+      target: dept_manager_input
+      value: "76SEED [DIVISION] Deputy"
+  - click: m2o_first_option
+  - click: save_button
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000
+
+  # --- restore: Manager := 76SEED Head (the division user's employee, as seeded) -----------
+  - fill:
+      target: dept_manager_input
+      value: "76SEED [DIVISION] Head"
+  - click: m2o_first_option
+  - click: save_button
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000

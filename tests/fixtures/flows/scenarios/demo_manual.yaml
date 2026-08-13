@@ -1,0 +1,6 @@
+# `manual` is in loader._SKIP_TAGS, so this must NOT appear in discover_scenarios.
+id: demo_manual
+name: Excluded from --run-tests=all
+tags: [manual, simple]
+steps:
+  - use: common.host_up

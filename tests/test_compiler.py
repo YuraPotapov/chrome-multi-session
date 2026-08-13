@@ -1,0 +1,172 @@
+import os
+import textwrap
+
+import pytest
+
+from domain.plan import GROUP, STEP
+from engine import compiler, loader
+from engine.context import ParamError, RunContext
+
+# The engine's OWN fixture flows - see tests/test_loader.py for why.
+FLOWS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "flows")
+
+
+def _walk(node):
+    yield node
+    for child in node.children:
+        yield from _walk(child)
+
+
+def _write(base, relpath, content):
+    path = os.path.join(str(base), relpath)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(textwrap.dedent(content))
+
+
+# --- parse_step: both YAML shapes -------------------------------------------
+def test_parse_shorthand_use():
+    step = compiler.parse_step({"use": "auth.login"})
+    assert step.action == "use" and step.target == "auth.login"
+
+
+def test_parse_shorthand_selector():
+    step = compiler.parse_step({"click": "submit_button"})
+    assert step.action == "click" and step.target == "submit_button"
+
+
+def test_parse_shorthand_selector_and_value():
+    step = compiler.parse_step({"fill": {"target": "login_input", "value": "admin"}})
+    assert step.target == "login_input" and step.value == "admin"
+
+
+def test_parse_verbose_form():
+    step = compiler.parse_step({"type": "assert_url_contains", "value": "/web"})
+    assert step.action == "assert_url_contains" and step.value == "/web"
+
+
+def test_parse_assert_host_up_is_value_only():
+    step = compiler.parse_step({"assert_host_up": "http://localhost:8069"})
+    assert step.action == "assert_host_up" and step.value == "http://localhost:8069"
+
+
+def test_parse_unknown_action_raises():
+    with pytest.raises(compiler.CompileError):
+        compiler.parse_step({"frobnicate": "x"})
+
+
+def test_parse_fill_needs_mapping():
+    with pytest.raises(compiler.CompileError):
+        compiler.parse_step({"fill": "not-a-mapping"})
+
+
+def test_parse_shorthand_must_be_single_key():
+    with pytest.raises(compiler.CompileError):
+        compiler.parse_step({"click": "a", "fill": "b"})
+
+
+# --- compile_scenario: expansion, selectors, params, cycles -----------------
+def test_compile_expands_use_blocks():
+    selectors = loader.load_selectors(FLOWS)
+    ctx = RunContext(env={"origin": "http://localhost:8069"})
+    steps = compiler.compile_scenario("demo_smoke", FLOWS, selectors, ctx)
+    actions = [s.action for s in steps]
+    assert "use" not in actions            # all blocks expanded away
+    assert actions[0] == "assert_host_up"  # first test: host answered (via auth.login)
+    assert "assert_visible" in actions     # dashboard readiness gate
+    assert "click" in actions              # from demo.open_menu
+
+
+def test_compile_resolves_named_selectors():
+    selectors = loader.load_selectors(FLOWS)
+    ctx = RunContext(env={"origin": "http://localhost:8069"})
+    steps = compiler.compile_scenario("demo_smoke", FLOWS, selectors, ctx)
+    targets = [s.target for s in steps]
+    assert ".app-root" in targets       # dashboard -> css
+
+
+def test_compile_substitutes_params(tmp_path):
+    _write(tmp_path, "nav/go.yaml", """
+        id: nav.go
+        steps:
+          - goto: "{{env.origin}}/web"
+    """)
+    _write(tmp_path, "scenarios/s.yaml", """
+        id: s
+        steps:
+          - use: nav.go
+    """)
+    ctx = RunContext(env={"origin": "http://localhost:8069"})
+    steps = compiler.compile_scenario("s", str(tmp_path), {}, ctx)
+    assert steps[0].target == "http://localhost:8069/web"
+
+
+# The single test that compiles the REAL flows tree, if one is present. Everything
+# else above runs against tests/fixtures/flows, so the compiler stays testable
+# when the app's scenarios move to their own repo (--flows-dir).
+REAL_FLOWS = loader.DEFAULT_FLOWS_DIR
+
+
+@pytest.mark.skipif(not os.path.isdir(os.path.join(REAL_FLOWS, "scenarios")),
+                    reason="no flows/ tree here - they live in their own repo")
+def test_every_real_scenario_compiles():
+    """Catch a broken selector name or a missing block across the whole tree."""
+    selectors = loader.load_selectors(REAL_FLOWS)
+    ctx = RunContext(user={"login": "u", "class": "C"},
+                     env={"origin": "http://localhost:8069", "url": "http://localhost:8069"})
+    ids = loader.discover_scenarios(REAL_FLOWS, include_templates=True)
+    assert ids, "a flows/ tree exists but contains no scenarios"
+    for scenario_id in ids:
+        steps, _root = compiler.compile_plan(scenario_id, REAL_FLOWS, selectors, ctx)
+        assert steps, "%s compiled to no steps" % scenario_id
+        assert "use" not in [s.action for s in steps], "%s left a use: unexpanded" % scenario_id
+
+
+# --- compile_plan: the execution tree (for the overlay) ---------------------
+def test_compile_plan_leaves_match_flat_steps():
+    selectors = loader.load_selectors(FLOWS)
+    ctx = RunContext(env={"origin": "http://localhost:8069"})
+    steps, root = compiler.compile_plan("demo_smoke", FLOWS, selectors, ctx)
+    flat = compiler.compile_scenario("demo_smoke", FLOWS, selectors, ctx)
+    # compile_plan's flat list is identical to compile_scenario's
+    assert [s.action for s in steps] == [s.action for s in flat]
+    assert [s.target for s in steps] == [s.target for s in flat]
+    # leaf order + indices line up 1:1 with the flat step list (== runner order)
+    leaves = list(root.leaves())
+    assert [leaf.step_index for leaf in leaves] == list(range(len(steps)))
+    assert [leaf.action for leaf in leaves] == [s.action for s in steps]
+
+
+def test_compile_plan_builds_group_hierarchy_with_stable_ids():
+    selectors = loader.load_selectors(FLOWS)
+    ctx = RunContext(env={"origin": "http://localhost:8069"})
+    _steps, root = compiler.compile_plan("demo_smoke", FLOWS, selectors, ctx)
+    assert root.kind == GROUP and root.id == "0" and root.label
+    ids = [n.id for n in _walk(root)]
+    assert len(ids) == len(set(ids))              # ids are unique
+    # every use:-d block became a nested group (auth.login, demo.open_menu, ...)
+    groups = [n for n in _walk(root) if n.kind == GROUP]
+    assert len(groups) >= 3
+    # leaf labels use the friendly (named) target, not the resolved CSS
+    assert any("apps_button" in leaf.label for leaf in root.leaves())
+
+
+def test_compile_plan_leaf_targets_are_resolved_css():
+    selectors = loader.load_selectors(FLOWS)
+    ctx = RunContext(env={"origin": "http://localhost:8069"})
+    steps, _root = compiler.compile_plan("demo_smoke", FLOWS, selectors, ctx)
+    # the flat steps still carry resolved CSS (dashboard -> .app-root)
+    assert ".app-root" in [s.target for s in steps]
+
+
+def test_compile_detects_cycles(tmp_path):
+    _write(tmp_path, "a.yaml", "id: a\nsteps:\n  - use: b\n")
+    _write(tmp_path, "b.yaml", "id: b\nsteps:\n  - use: a\n")
+    with pytest.raises(compiler.CompileError):
+        compiler.compile_scenario("a", str(tmp_path), {}, RunContext())
+
+
+def test_compile_unknown_param_raises(tmp_path):
+    _write(tmp_path, "scenarios/s.yaml", 'id: s\nsteps:\n  - goto: "{{env.missing}}"\n')
+    with pytest.raises(ParamError):
+        compiler.compile_scenario("s", str(tmp_path), {}, RunContext(env={}))

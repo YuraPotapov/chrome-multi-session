@@ -1,0 +1,45 @@
+# DEMO-526 write-flow - VRR Manager SETS and UPDATES hr.department.manager_id.
+# Review 24.07 item 4.3: "ця роль повинна мати можливість встановити manager_id в
+# hr.department". Env-agnostic twin of write_manager_dept_manager (which swap+restores the
+# 76SEED dept and therefore cannot run on dev): here the manager CREATES a throwaway
+# department "UITEST-DEPT", sets its Manager to the first employee offered (SET), saves,
+# then changes it to the second employee (UPDATE) and saves again. Both saves must pass
+# without an error dialog - the form write carries the full view payload, so this also
+# covers the hr_homeworking field unlock end-to-end.
+#
+# No existing department is touched. RE-RUNS add another UITEST-DEPT (the manager ACL has
+# no unlink - same accepted precedent as setup_manager_foreign_ticket's tickets); an admin
+# can clean them up occasionally. Needs >= 2 employees in the company (any env has that).
+id: write_manager_dept_manager_any
+name: "Write - VRR Manager: set + update Manager on a throwaway department"
+tags: [DEMO-526, role:manager, access, write, manual]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-hr.hr_department_tree_action"
+  - wait_for: list_view
+  - click: new_button
+  - wait_for: form_view
+  - fill: {target: dept_name_input, value: "UITEST-DEPT"}
+
+  # --- SET: Manager := first employee offered -----------------------------------------------
+  - click: dept_manager_input
+  - press: ArrowDown
+  - click: m2o_first_option
+  - click: save_button
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000
+  - type: assert_text_contains          # saved -> breadcrumb is the department name
+    target: breadcrumb
+    value: "UITEST-DEPT"
+    timeout: 2000
+    retry: {attempts: 10, delay: 1}
+
+  # --- UPDATE: Manager := a different (second) employee -------------------------------------
+  - fill: {target: dept_manager_input, value: ""}   # clear so the dropdown is unfiltered
+  - press: ArrowDown
+  - click: m2o_second_option
+  - click: save_button
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000

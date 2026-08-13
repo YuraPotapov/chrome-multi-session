@@ -1,0 +1,63 @@
+# DEMO-526 write-flow - Team Roles wizard security, as the MANAGER. QA doc section 8.
+#
+# Three parts, each starting from a fresh wizard (a goto both reopens it and clears any
+# dialog left by the previous part):
+#   (a) QA 8.1 positive: a manager may grant the Agent role. Granting it to role_agent2 -
+#       who already IS an agent - is idempotent, so the positive path is exercised without
+#       actually changing anyone's role (the same trick the server probe uses).
+#   (b) QA 8.1 deny: picking an ADMIN user (role_admin) blocks ANY apply - the wizard guard
+#       (reclamation_user_roles_wizard.py:107) raises when the target holds the admin group.
+#   (c) QA 8.1 deny: role = VRR Administrator for a plain user -> only an admin may grant it.
+# Both deny paths render the AccessError as .o_error_dialog; nothing is written anywhere.
+#
+# Users are picked by LOGIN: res.users.name_search matches an exact login before any name
+# (base res_users.py), so this works on every environment no matter how the users were
+# named there. RACE GUARD: picking the user fires an onchange that prefills their current
+# role and re-renders the radio group - a click during that re-render is silently lost
+# (2026-07-28 dev run). Every part therefore WAITS for the prefilled :checked state before
+# touching the radios, and for the new :checked state before applying.
+id: write_manager_team_roles
+name: "Write - Manager Team Roles: grant Agent ok; touching an admin / granting Admin denied"
+tags: [DEMO-526, role:manager, access, write, manual]
+steps:
+  - use: access.open_app
+
+  # --- (a) grant Agent to an existing agent -> wizard applies cleanly (idempotent) ---------
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_user_roles_wizard"
+  - wait_for: dialog
+  - fill:
+      target: roles_wizard_user_input
+      value: "role_agent2"
+  - click: m2o_first_option
+  - wait_for: roles_wizard_agent_checked     # onchange prefilled the target's current role
+  - click: roles_wizard_apply
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000
+  - type: assert_not_visible                 # applied cleanly -> the wizard closed itself
+    target: dialog
+    timeout: 5000
+
+  # --- (b) pick an ADMIN user -> apply is refused no matter the role ------------------------
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_user_roles_wizard"
+  - wait_for: dialog
+  - fill:
+      target: roles_wizard_user_input
+      value: "role_admin"
+  - click: m2o_first_option
+  - wait_for: roles_wizard_admin_checked     # prefill done (the admin's current role)
+  - click: roles_wizard_apply
+  - assert_visible: error_dialog
+
+  # --- (c) role = VRR Administrator for a plain user -> refused -----------------------------
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_user_roles_wizard"
+  - wait_for: dialog
+  - fill:
+      target: roles_wizard_user_input
+      value: "role_agent2"
+  - click: m2o_first_option
+  - wait_for: roles_wizard_agent_checked     # prefill done - now the radio group is stable
+  - click: roles_wizard_role_admin
+  - wait_for: roles_wizard_admin_checked     # our selection actually took
+  - click: roles_wizard_apply
+  - assert_visible: error_dialog

@@ -1,0 +1,4 @@
+id: common.host_up
+name: Host is answering
+steps:
+  - assert_host_up: "{{env.origin}}"

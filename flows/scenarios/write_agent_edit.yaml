@@ -1,0 +1,63 @@
+# DEMO-526 write-flow - VRR Agent edits own ticket (allowed) and a foreign one (denied).
+# QA doc 2.3 / 2.4. manual: excluded from --run-tests=all because it writes.
+#
+# FIXTURES - no odoo-shell seed needed, so this runs on app-dev / app-stg as-is:
+#   own     - created here BY THE AGENT. The agent write rule is
+#             ['|', ('investigator_id','=',user.id), ('create_uid','=',user.id)], so a
+#             self-created ticket is "own" through create_uid without any assignment (which the
+#             UI could not do anyway: investigator_id is limited to the company's
+#             vrr_investigator_ids pool). This also covers QA 2.5's "create a new ticket -> succeeds".
+#   foreign - the ticket left by setup_manager_foreign_ticket (run once as role_manager).
+#             Created by the manager and unassigned, so both branches above miss it.
+id: write_agent_edit
+name: "Write - VRR Agent: edit own ticket (ok), foreign ticket (denied)"
+tags: [DEMO-526, role:agent, access, write, manual]
+steps:
+  - use: access.open_app
+
+  # --- OWN ticket: the agent creates it, then edits it -> save succeeds -------------------
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_all"
+  - wait_for: list_view
+  - click: new_button                           # QA 2.5: creating is allowed for an agent
+  - assert_visible: form_view
+  - fill: {target: ttn_input, value: "UITEST-AGENT-OWN"}
+  - fill: {target: claimed_amount_input, value: "100"}
+  - click: partner_input
+  - press: ArrowDown
+  - click: m2o_first_option
+  - click: reason_input
+  - press: ArrowDown
+  - click: m2o_first_option
+  - click: save_button
+  - type: assert_text_contains                  # saved -> breadcrumb is the ticket number
+    target: breadcrumb
+    value: "-"
+    timeout: 5000
+    retry: {attempts: 45, delay: 2}
+  # QA 2.3 - edit a field on the ticket they created and save again: no access error.
+  - fill:
+      target: claimed_amount_input
+      value: "950"
+  - click: save_button
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000
+
+  # --- FOREIGN ticket: readable, but a write is refused ------------------------------------
+  # Opened from "New from VRR" (server-side domain, no searchview facet to pick) and selected by
+  # its TTN tag, so the agent's own ticket just created above - which also sits in this list -
+  # cannot be picked by mistake.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_new_vrr"
+  - wait_for: list_view
+  # Fixture guard: if this fails, setup_manager_foreign_ticket has not been run here.
+  - type: assert_visible
+    target: row_uitest_foreign
+    timeout: 10000
+  - click: open_uitest_foreign
+  - wait_for: form_view
+  - fill:
+      target: claimed_amount_input
+      value: "111"
+  - click: save_button
+  # QA 2.4 - the agent writes only tickets where they are investigator or creator.
+  - assert_visible: error_dialog

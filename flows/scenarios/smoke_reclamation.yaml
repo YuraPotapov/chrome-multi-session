@@ -1,0 +1,16 @@
+# TEMPLATE scenario (Demo) - mirrors the design doc's smoke_reclamation.
+#
+# Tagged `template`, so `--run-tests=all` skips it (it needs real selectors).
+# Run it explicitly with `--run-tests=smoke_reclamation` once configured for a
+# Demo environment.
+id: smoke_reclamation
+name: Smoke - reclamation page loads
+tags: [smoke, template]
+steps:
+  - use: auth.login
+  - use: reclamation.open_reclamation
+  # Odoo rewrites /odoo/reclamations -> /odoo/action-<id>, so the URL never contains
+  # "reclamation", and the breadcrumb title ("All Reclamations") is translated. Identify the
+  # page by a column only the reclamation list has - `data-name` is the technical field name,
+  # so it reads the same in every UI language.
+  - assert_visible: "th[data-name='shipment_number']"

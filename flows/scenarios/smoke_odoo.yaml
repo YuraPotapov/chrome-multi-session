@@ -1,0 +1,12 @@
+# The scenario wired to run green on localhost:8069 Odoo.
+#
+# It proves the whole vertical slice end to end: reusable block composition
+# (auth.login + odoo.open_apps), an action step, and assertions - all driven
+# over CDP against the already-logged-in window, with a report written out.
+id: smoke_odoo
+name: Smoke - Odoo web client loads and the apps menu opens
+tags: [smoke]
+steps:
+  - use: auth.login          # gate: signed in (extension did the login)
+  - use: odoo.open_apps      # action + assertion: open the apps menu
+  - assert_exists: user_menu # scenario-level assertion (mixing with `use`)

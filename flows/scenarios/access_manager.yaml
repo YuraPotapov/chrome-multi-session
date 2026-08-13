@@ -1,0 +1,58 @@
+# DEMO-526 access matrix - VRR Manager (log in as role_manager). QA doc section 3.
+id: access_manager
+name: "Access matrix - VRR Manager"
+tags: [DEMO-526, role:manager, access, template]   # template: excluded from --run-tests=all; run per-role by id / tag:access
+steps:
+  - use: access.open_app
+  # 3.1 All working menus incl. Settings.
+  - assert_visible: menu_reclamations
+  - assert_visible: menu_compensation
+  - assert_visible: menu_fines
+  - assert_visible: menu_reporting
+  - assert_visible: menu_settings
+  # NOTE: 1C Logistics is restricted to group_reclamation_admin in the menu XML
+  # (menu_1c_logistics_root groups=...group_reclamation_admin). QA prose 3.1 says the
+  # manager sees it; the CODE hides it. This asserts the implemented behaviour - flag
+  # the prose/code mismatch to the task owner if the prose is authoritative.
+  - type: assert_not_visible
+    target: menu_1c_logistics
+    timeout: 2500
+  # 3.1/3.4 Inside the Settings dropdown (items also carry data-menu-xmlid): Team Roles is
+  # offered to a manager, the admin-only Email Condition Rules item is not.
+  - click: menu_settings
+  - assert_visible: menu_team_roles
+  - type: assert_not_visible
+    target: menu_email_rules
+    timeout: 2500
+  - press: Escape                     # close the dropdown before leaving the page
+
+  # 3.4 Email Condition Rules is admin-only -> unreachable for a manager (menu + URL).
+  - use: access.deny_email_rules
+
+  # Review 24.07 item 4: the manager administers hr.department (Departments reachable and
+  # non-empty - the list's has_read_access domain resolves to all-departments only when the
+  # user can read hr.employee) and the Manager field on a department form is EDITABLE
+  # (an editable m2o renders an <input>). No save here: the write path runs in
+  # write_manager_dept_manager on the seeded env.
+  - goto: "{{env.origin}}/odoo/action-hr.hr_department_tree_action"
+  - wait_for: list_view
+  - type: assert_visible
+    target: first_list_row
+    timeout: 10000
+  - click: first_list_row
+  - wait_for: form_view
+  - assert_visible: dept_manager_input
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 2500
+
+  # Review 24.07 item 4.3: the employee form embeds hr_homeworking's hr_user-gated field
+  # (exceptional_location_id) - before the fix, opening it raised "not enough rights to
+  # access the field". Open the kanban and the first employee form: no error dialog.
+  - goto: "{{env.origin}}/odoo/action-hr.open_view_employee_list_my"
+  - wait_for: kanban_card
+  - click: kanban_card
+  - wait_for: form_view
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 2500

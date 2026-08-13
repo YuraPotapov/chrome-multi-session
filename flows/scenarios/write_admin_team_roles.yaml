@@ -1,0 +1,31 @@
+# DEMO-526 write-flow - Team Roles wizard as the ADMIN. QA doc 8.2: only a reclamation
+# administrator may grant the Administrator role - so as the admin it must APPLY cleanly.
+#
+# IDEMPOTENT: the role is granted to role_admin itself, who already holds it - the positive
+# path (the guard at reclamation_user_roles_wizard.py:107 does NOT fire for an admin caller)
+# is exercised without changing anyone's role. The manager-side denials live in
+# write_manager_team_roles. The user is picked by LOGIN (res.users.name_search matches an
+# exact login first - env-agnostic, display names differ per environment); the role is a
+# RADIO group, clicked by its data-value. manual: excluded from --run-tests=all.
+id: write_admin_team_roles
+name: "Write - Admin Team Roles: granting Administrator is allowed"
+tags: [DEMO-526, role:admin, access, write, manual]
+steps:
+  - use: access.open_app
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_user_roles_wizard"
+  - wait_for: dialog
+  - fill:
+      target: roles_wizard_user_input
+      value: "role_admin"
+  - click: m2o_first_option
+  # The user-onchange prefills the target's current role (admin) and re-renders the radio
+  # group; wait for that :checked state instead of racing it with a click of our own.
+  - wait_for: roles_wizard_admin_checked
+  - click: roles_wizard_apply
+  # Applied cleanly: no AccessError dialog, and the wizard dialog itself has closed.
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 3000
+  - type: assert_not_visible
+    target: dialog
+    timeout: 5000

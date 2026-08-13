@@ -1,0 +1,12 @@
+# Reject an appeal: appeal -> state_before_appeal (Refused here). Opens appeal.decision.wizard
+# with decision=reject (field: appeal_decision_note).
+id: reclamation.reject_appeal
+name: Reject appeal (-> refused)
+steps:
+  - click: btn_appeal_reject
+  - wait_for: dialog
+  - fill: {target: appeal_decision_note, value: "AUTOTEST appeal rejected"}
+  - click: dialog_confirm
+  - type: assert_visible
+    target: state_refused           # data-value, not the label -> language-independent
+    retry: {attempts: 10, delay: 1}

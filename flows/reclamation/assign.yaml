@@ -1,0 +1,16 @@
+# Assign an investigator: new_from_ccs/new_from_vrr -> assigned.
+# Opens reclamation.assign.wizard; investigator_id options are the company's configured VRR
+# investigators, so this assumes at least one investigator is configured (a settings precondition -
+# if the dropdown is empty, cover it in the "settings" test category instead).
+id: reclamation.assign
+name: Assign investigator (-> assigned)
+steps:
+  - click: btn_assign
+  - wait_for: dialog
+  - click: assign_investigator_input       # investigator (many2one)
+  - press: ArrowDown
+  - click: m2o_first_option
+  - click: dialog_confirm
+  - type: assert_visible
+    target: state_assigned          # data-value, not the label -> language-independent
+    retry: {attempts: 10, delay: 1}

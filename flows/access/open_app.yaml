@@ -1,0 +1,12 @@
+# DEMO-526 access matrix - shared readiness block.
+#
+# auth.login gates on being signed in (the launcher's extension already logged in);
+# this then lands on the single "Reclamations" app so its role-gated top-bar sections
+# render (Odoo opens the user's default/first app on /odoo). Every access scenario
+# starts with `- use: access.open_app`.
+id: access.open_app
+name: Land on the Reclamations app (its top-bar sections render)
+steps:
+  - use: auth.login
+  - goto: "{{env.origin}}/odoo"
+  - wait_for: dashboard

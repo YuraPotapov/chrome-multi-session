@@ -1,0 +1,351 @@
+# Named targets -> CSS selectors.
+#
+# Flows reference the NAMES (e.g. `dashboard`); the compiler resolves them to
+# the CSS below. Change a selector here and every flow that uses it updates.
+# A flow may also use raw CSS inline without listing it here.
+#
+# The Odoo selectors are the ones to confirm/tune against your localhost:8069
+# instance on the first run (see the plan's verification step) - they are the
+# stable, version-agnostic markers, but class names can vary by Odoo version.
+
+# --- Odoo web client (localhost:8069) ---
+dashboard: ".o_main_navbar"                     # top navbar: present once the web client is loaded
+apps_menu_toggle: ".o_navbar_apps_menu"         # grid icon that opens the apps menu
+apps_menu: ".o_menu_apps, .o-dropdown--menu"    # the opened apps menu / dropdown
+user_menu: ".o_user_menu"
+breadcrumb: ".o_last_breadcrumb_item"           # control-panel page title (stable per-page marker)
+
+# --- Login form (auto-login extension already uses these; kept for templates) ---
+login_input: "input[name='login']"
+password_input: "input[name='password']"
+submit_button: "button[type='submit']"
+
+# --- Demo claim app (TEMPLATE placeholders - confirm against the real app) ---
+reclamation_page: ".o_list_view"
+contacts_page: ".o_list_view"
+
+# --- Record create form (Odoo 19; confirmed against the odoo_19 web source) ---
+new_button: ".o_list_button_add"                              # "New" button on a list view
+form_view: ".o_form_view"                                     # a record form (create/edit)
+save_button: ".o_form_button_save"                            # form Save button
+ttn_input: ".o_field_widget[name='shipment_number'] input"   # reclamation TTN (required text)
+claimed_amount_input: ".o_field_widget[name='claimed_amount'] input"  # claimed/reclamation amount (monetary)
+partner_input: ".o_field_widget[name='partner_id'] input"    # Customer (many2one)
+reason_input: ".o_field_widget[name='reclamation_reason_id'] input"  # Reason (many2one)
+m2o_first_option: ".o-autocomplete--dropdown-item:not(.o_m2o_dropdown_option)"  # first record in an open m2o dropdown
+
+# --- Reclamation workflow: lifecycle buttons, wizard modal, statusbar (Odoo 19) ---
+# Workflow transitions are Odoo object buttons -> select by their method name (stable).
+btn_assign: "button[name='action_assign']"
+btn_start_investigation: "button[name='action_start_investigation']"
+btn_make_decision: "button[name='action_make_decision']"
+btn_appeal: "button[name='action_appeal']"
+btn_appeal_approve: "button[name='action_appeal_approve']"
+btn_appeal_reject: "button[name='action_appeal_reject']"
+btn_add_fine: "button[name='action_add_fine']"
+btn_change_decision: "button[name='action_change_decision']"
+dialog: ".o_dialog .modal-content"                                 # visible modal (the .o_dialog wrapper itself is zero-size/hidden)
+dialog_confirm: ".o_dialog button[name='action_confirm']"          # wizard Confirm/Assign button
+statusbar_current: ".o_statusbar_status .o_arrow_button_current"   # current lifecycle-state label (ticket)
+fine_status_current: ".o_dialog:not(.o_inactive_modal) .o_statusbar_status .o_arrow_button_current"  # fine collection status (in the fine dialog)
+
+# --- Lifecycle state, LANGUAGE-INDEPENDENT (preferred over the *_current text above) ---
+# Odoo renders the technical Selection key on every statusbar button as data-value, and marks the
+# active one .o_arrow_button_current. Asserting the pair therefore survives any UI language, while
+# the visible label does not: the same ticket reads "Assigned" on app-dev (English UI) and
+# "Призначена" on localhost:8069 (Ukrainian UI). Keys mirror reclamation_ticket.py `state`.
+state_new_from_ccs: ".o_statusbar_status .o_arrow_button_current[data-value='new_from_ccs']"
+state_new_from_vrr: ".o_statusbar_status .o_arrow_button_current[data-value='new_from_vrr']"
+state_assigned: ".o_statusbar_status .o_arrow_button_current[data-value='assigned']"
+state_investigation: ".o_statusbar_status .o_arrow_button_current[data-value='investigation']"
+state_refused: ".o_statusbar_status .o_arrow_button_current[data-value='refused']"
+state_appeal: ".o_statusbar_status .o_arrow_button_current[data-value='appeal']"
+state_compensation_approved: ".o_statusbar_status .o_arrow_button_current[data-value='compensation_approved']"
+state_transferred: ".o_statusbar_status .o_arrow_button_current[data-value='transferred']"
+
+# Fine collection_status, same trick, scoped to the ACTIVE (top) dialog. Keys mirror
+# reclamation_fine.py `collection_status`.
+fine_state_pending: ".o_dialog:not(.o_inactive_modal) .o_statusbar_status .o_arrow_button_current[data-value='pending_distribution']"
+fine_state_scheduled: ".o_dialog:not(.o_inactive_modal) .o_statusbar_status .o_arrow_button_current[data-value='scheduled']"
+fine_state_collected: ".o_dialog:not(.o_inactive_modal) .o_statusbar_status .o_arrow_button_current[data-value='collected']"
+fine_state_partially_collected: ".o_dialog:not(.o_inactive_modal) .o_statusbar_status .o_arrow_button_current[data-value='partially_collected']"
+fine_state_appeal_pending: ".o_dialog:not(.o_inactive_modal) .o_statusbar_status .o_arrow_button_current[data-value='appeal_pending']"
+
+# Assign wizard (reclamation.assign.wizard)
+assign_investigator_input: ".o_dialog .o_field_widget[name='investigator_id'] input"
+
+# Make-decision wizard (reclamation.approve.compensation.wizard). Selection fields are the Odoo 19
+# SelectMenu (click toggler, then click the option by text) - NOT a native <select>. The option
+# menu renders in a body-level overlay, so option selectors are not scoped to .o_dialog.
+#
+# LANGUAGE: SelectMenu options carry no technical value in the DOM, so text is the only handle.
+# Each option therefore lists BOTH the English source label and the uk_UA translation
+# (i18n/uk_UA.po) - app-dev renders English, localhost:8069 renders Ukrainian, and Playwright
+# takes the first match of a selector list, so one entry works on both.
+# `:text-is()` (EXACT) rather than `:has-text()` (substring) because the Ukrainian resolution
+# labels nest: "Компенсувати" is a prefix of "Компенсувати відправнику",
+# "Компенсувати іншій організації", "Компенсувати відправнику ЕП" and
+# "Компенсувати іншій організації (Міст Корп)" - a substring match would grab the wrong option.
+decision_resolution_toggle: ".o_dialog .o_field_widget[name='resolution'] .o_select_menu_toggler"
+opt_compensate_recipient: '.o_select_menu_item:text-is("Compensate recipient"), .o_select_menu_item:text-is("Компенсувати")'
+decision_department_input: ".o_dialog .o_field_widget[name='responsible_department_id'] input"
+decision_conclusion_input: ".o_dialog .o_field_widget[name='investigation_conclusion'] textarea"
+decision_comp_type_toggle: ".o_dialog .o_field_widget[name='compensation_type'] .o_select_menu_toggler"
+opt_service_offset: '.o_select_menu_item:text-is("Service Offset"), .o_select_menu_item:text-is("В рахунок послуг")'
+decision_amount_input: ".o_dialog .o_field_widget[name='amount'] input"
+opt_refuse: '.o_select_menu_item:text-is("Refuse"), .o_select_menu_item:text-is("Відмовити")'
+opt_transfer: '.o_select_menu_item:text-is("Transfer"), .o_select_menu_item:text-is("Передати іншій організації")'
+decision_refused_reason_input: ".o_dialog .o_field_widget[name='refused_reason_id'] input"
+decision_refusal_justification: ".o_dialog .o_field_widget[name='refusal_justification'] textarea"
+decision_target_company_input: ".o_dialog .o_field_widget[name='target_company_id'] input"
+appeal_argumentation: ".o_dialog .o_field_widget[name='appeal_argumentation'] textarea"
+appeal_decision_note: ".o_dialog .o_field_widget[name='appeal_decision_note'] textarea"
+
+# Fine form (reclamation.fine, opened in a dialog by action_add_fine). fine_type defaults to
+# "branch"; department_id/amount/reason_id are shown for it. The dialog has a custom footer with a
+# special="save" "Save" button (a separate mixed-only Save is hidden for branch). :visible/:has-text
+# keep us on the shown widgets. These are best-guess and may need one live pin.
+fine_department_input: ".o_dialog .o_field_widget[name='department_id'] input:visible"
+fine_amount_input: ".o_dialog .o_field_widget[name='amount'] input:visible"
+fine_reason_input: ".o_dialog .o_field_widget[name='reason_id'] input:visible"
+fine_save: '.o_dialog button.btn-primary:has-text("Save"):visible, .o_dialog button.btn-primary:has-text("Зберегти"):visible'
+tab_fines: '.o_notebook .nav-link:text-is("Fines"), .o_notebook .nav-link:text-is("Штрафи")'
+fine_ids_list: ".o_field_widget[name='fine_ids']"          # the ticket's Fines tab list (for status checks)
+fine_row: ".o_field_widget[name='fine_ids'] .o_data_row"
+# A LIST cell of a Selection field carries no data-value (unlike the statusbar), so the label is
+# the only handle - scope it to the cell and match EN + uk_UA. Used to confirm a distribution
+# landed without reopening the fine dialog (which the chained pay/appeal blocks rely on staying shut).
+fine_row_scheduled: ".o_field_widget[name='fine_ids'] td[name='collection_status']:text-is(\"Scheduled\"), .o_field_widget[name='fine_ids'] td[name='collection_status']:text-is(\"Заплановано\")"
+
+# Fine detail + distribute. NESTED dialogs: opening the fine is dialog #1, its distribute wizard
+# stacks on top; Odoo marks the background dialog .o_inactive_modal, so the ACTIVE/top dialog is
+# .o_dialog:not(.o_inactive_modal). Distribute needs a culprit line whose amount == the fine amount
+# (remaining must be 0). Data dep: the fine's department must have allowed culprit partners.
+# HARDEST block so far - editable o2m grid in a stacked dialog; expect live pinning.
+btn_fine_distribute: ".o_dialog button[name='action_distribute']"
+btn_fine_change_distribution: ".o_dialog button[name='action_change_distribution']"
+dtop_dialog: ".o_dialog:not(.o_inactive_modal) .modal-content"
+dtop_confirm: ".o_dialog:not(.o_inactive_modal) button[name='action_confirm']"
+dist_add_line: ".o_dialog:not(.o_inactive_modal) .o_field_x2many_list_row_add a"
+dist_line_amount: ".o_dialog:not(.o_inactive_modal) .o_selected_row .o_field_widget[name='amount'] input"
+# Culprit m2o. It has show_unknown_m2o_option, which injects an "Unknown" special option (a built-in
+# select-or-create: picks/creates the unknown-culprit partner) - works with NO configured culprit data.
+dist_culprit_input: ".o_dialog:not(.o_inactive_modal) .o_selected_row .o_field_widget[name='culprit_partner_id'] input"
+dist_culprit_unknown: ".o_m2o_dropdown_option_unknown_culprit"   # the injected "Unknown" culprit option
+dist_unknown_name: ".o_dialog:not(.o_inactive_modal) .o_selected_row .o_field_widget[name='unknown_culprit_name'] input"
+
+# Fine pay (Register Payment) + fine appeal wizards - nested on the fine dialog (top = :not(.o_inactive_modal)).
+btn_fine_pay: ".o_dialog button[name='action_open_register_payment_wizard']"
+btn_fine_appeal: ".o_dialog button[name='action_appeal']"      # the fine's "Submit Appeal"
+# In the payment grid, amount + collected_amount are readonly; "to_collect_amount" is the editable one.
+pay_tocollect_cell: ".o_dialog:not(.o_inactive_modal) .o_data_row td[name='to_collect_amount']"
+pay_tocollect_input: ".o_dialog:not(.o_inactive_modal) .o_field_widget[name='to_collect_amount'] input"
+fine_appeal_reason: ".o_dialog:not(.o_inactive_modal) .o_field_widget[name='appeal_reason'] textarea"
+fine_appealed_by_input: ".o_dialog:not(.o_inactive_modal) .o_field_widget[name='appealed_by_partner_id'] input"
+
+# ============================================================================
+# DEMO-526 - role/access matrix (browser autotests).
+#
+# Odoo 19 navbar menu items carry [data-menu-xmlid] (web/.../navbar/navbar.xml:
+# app anchors + section <li>), the stable, label-independent marker for
+# menu-visibility checks - important here because several menus share a label
+# ("Reclamations"/"Compensations"/"Fines" exist twice: a normal one and an
+# analyst-only one with a different xmlid). Verify/pin on first live run per this
+# file's convention (class names can shift by Odoo build).
+# ============================================================================
+
+# --- The single app + its top-bar sections (all parented on menu_reclamations_root) ---
+app_reclamations:           "[data-menu-xmlid='demo_reclamation_management.menu_reclamations_root']"
+menu_reclamations:          "[data-menu-xmlid='demo_reclamation_management.menu_reclamations_group']"
+menu_compensation:          "[data-menu-xmlid='demo_reclamation_management.menu_compensation_group']"
+menu_fines:                 "[data-menu-xmlid='demo_reclamation_management.menu_fines_group']"
+menu_reporting:             "[data-menu-xmlid='demo_reclamation_management.menu_reporting_group']"
+menu_settings:              "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_settings']"
+menu_1c_logistics:          "[data-menu-xmlid='demo_reclamation_management.menu_1c_logistics_root']"
+menu_access_rights:         "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_access_rights']"
+menu_team_roles:            "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_user_roles']"
+menu_email_rules:           "[data-menu-xmlid='demo_reclamation_management.reclamation_email_condition_rules_menu']"
+# analyst-only read sections (distinct xmlids, same visible labels):
+menu_reclamations_analyst:  "[data-menu-xmlid='demo_reclamation_management.menu_reclamations_analyst']"
+menu_compensations_analyst: "[data-menu-xmlid='demo_reclamation_management.menu_compensations_analyst']"
+menu_fines_analyst:         "[data-menu-xmlid='demo_reclamation_management.menu_fines_analyst']"
+# finance/division leaf lists (opened from their section):
+menu_compensation_finance:  "[data-menu-xmlid='demo_reclamation_management.menu_compensation_finance']"
+menu_fines_restricted:      "[data-menu-xmlid='demo_reclamation_management.menu_fines_restricted']"
+
+# --- Access-denied dialog (Odoo 19 WarningDialog: AccessError/AccessDenied/UserError
+#     all map to contentClass 'o_error_dialog' - web/.../core/errors/error_dialogs.js) ---
+error_dialog:               ".o_error_dialog"
+error_dialog_title:         ".modal-content:has(.o_error_dialog) .modal-title, .o_error_dialog .modal-title"
+
+# --- Record form/list state ---
+# NOTE: the module's finance/analyst "readonly" form views enforce readonly PER FIELD
+# (o_readonly_modifier on every input-capable widget), and Odoo 19 does NOT stamp
+# .o_form_readonly on the root for them (pinned from the 2026-07-28 dev run DOM: root has
+# neither o_form_readonly nor o_form_editable). The reliable readonly proof is structural:
+# a readonly field renders as a span, an editable one as an <input>/<textarea> - so assert
+# form_editable_field NOT visible. Display-only widgets (statusbar, badge, x2many lists,
+# disabled checkboxes, the chatter's hidden file input) contain no visible enabled input,
+# so they do not false-trip it.
+form_readonly:              ".o_form_view.o_form_readonly"     # only for true readonly-MODE forms
+form_editable_field:        ".o_form_view .o_form_sheet input:not([disabled]):not([type='file']), .o_form_view .o_form_sheet textarea:not([disabled])"
+list_view:                  ".o_list_view"
+first_list_row:             ".o_data_row"                 # click to open the first record in a list
+searchview_input:           ".o_searchview_input"         # type + Enter to filter the list
+# --- UI-provisioned fixture (setup_manager_foreign_ticket) ---
+# The manager-created "foreign" ticket is tagged by its TTN, because shipment_number is free
+# text, is a ticket-list column, and is DATA - so it reads identically on an English and a
+# Ukrainian client. Keep the literal in step with setup_manager_foreign_ticket.yaml.
+# `row_*` matches the tagged row's cell; `open_*` picks the whole row to click it.
+row_uitest_foreign:         ".o_data_row td[name='shipment_number']:text-is(\"UITEST-FOREIGN\")"
+open_uitest_foreign:        ".o_data_row:has(td[name='shipment_number']:text-is(\"UITEST-FOREIGN\"))"
+
+# --- Type-column record-rule checks (a blocked type NEVER renders for the role) ---
+# The type is a Selection LIST cell, which carries no data-value, so match its label - scoped to
+# the type column (not the whole row, which would also match a department or partner that happens
+# to contain the word) and given in EN + uk_UA so the same flow runs on app-dev and localhost.
+# Keys mirror reclamation_compensation.py `compensation_type` / reclamation_fine.py `fine_type`.
+row_comp_service_offset:    ".o_data_row td[name='compensation_type']:text-is(\"Service Offset\"), .o_data_row td[name='compensation_type']:text-is(\"В рахунок послуг\")"
+row_comp_inter_organization: ".o_data_row td[name='compensation_type']:text-is(\"Between organizations\"), .o_data_row td[name='compensation_type']:text-is(\"Між організаціями\")"
+row_fine_branch:            ".o_data_row td[name='fine_type']:text-is(\"Branch\"), .o_data_row td[name='fine_type']:text-is(\"Штраф підрозділу/філії\")"
+row_fine_carrier:           ".o_data_row td[name='fine_type']:text-is(\"Carrier\"), .o_data_row td[name='fine_type']:text-is(\"Перевізник\")"
+
+# --- Lifecycle / wizard buttons (Odoo object-button method names; stable across builds) ---
+btn_ticket_appeal:          "button[name='action_appeal']"
+btn_ticket_make_decision:   "button[name='action_make_decision']"
+btn_ticket_appeal_approve:  "button[name='action_appeal_approve']"
+btn_ticket_appeal_reject:   "button[name='action_appeal_reject']"
+btn_comp_register_payment:  "button[name='action_open_register_payment_wizard']"
+btn_comp_mark_failed:       "button[name='action_mark_failed']"
+btn_comp_change_type:       "button[name='action_open_change_compensation_type_wizard']"
+btn_comp_open_ticket:       "button[name='action_open_ticket']"
+btn_fine_distribute_form:   "button[name='action_distribute']"
+btn_fine_register_payment:  "button[name='action_open_register_payment_wizard']"
+btn_fine_write_off:         "button[name='action_write_off']"
+btn_fine_appeal_form:       "button[name='action_appeal']"
+btn_fine_appeal_review:     "button[name='action_open_appeal_review_wizard']"
+
+# --- Team Roles wizard (reclamation.user.roles.wizard, opens target=new dialog; QA 8) ---
+# The role field renders as a RADIO group (o_field_radio - pinned from the 2026-07-28 dev run
+# DOM), not a SelectMenu: pick by the input's data-value, which is the selection KEY - stable
+# across builds and UI languages, unlike the option labels.
+roles_wizard_user_input:    ".o_dialog .o_field_widget[name='user_id'] input"
+roles_wizard_apply:         ".o_dialog button[name='action_apply']"
+roles_wizard_role_agent:    ".o_dialog .o_field_widget[name='role'] input.o_radio_input[data-value='agent']"
+roles_wizard_role_admin:    ".o_dialog .o_field_widget[name='role'] input.o_radio_input[data-value='admin']"
+# :checked variants gate on the RESULT of a role change. Picking a user fires an onchange that
+# prefills their current role and re-renders the radio group - a click racing that re-render is
+# silently lost (seen on the 2026-07-28 dev run: apply fired with no radio checked, dialog just
+# stayed open). Wait for the prefill's checked state, click, then wait for the new checked state.
+roles_wizard_agent_checked: ".o_dialog .o_field_widget[name='role'] input.o_radio_input[data-value='agent']:checked"
+roles_wizard_admin_checked: ".o_dialog .o_field_widget[name='role'] input.o_radio_input[data-value='admin']:checked"
+
+# --- Systray multi-company switcher (QA 9: restricted roles see it DISABLED) ---
+company_switcher:           ".o_switch_company_menu"
+company_switcher_disabled:  ".o_switch_company_menu button[disabled], .o_switch_company_menu button.disabled"
+
+# --- Chatter (post a comment on a readonly form; QA 11) ---
+chatter:                    ".o-mail-Chatter"
+chatter_send_button:        ".o-mail-Chatter .o-mail-Composer-send, .o-mail-Chatter button:has-text('Send'), .o-mail-Chatter button:has-text('Надіслати')"
+chatter_composer_input:     ".o-mail-Chatter .o-mail-Composer-input"
+
+# --- List cog -> Export availability (QA 4.7) ---
+list_cog_toggle:            ".o_cp_action_menus button.dropdown-toggle"
+export_menu_item:           ".o-dropdown--menu .dropdown-item:has-text('Export'), .o-dropdown--menu .dropdown-item:has-text('Експорт')"
+
+# --- Department-column record-rule checks (QA 6.2, division manager) ---
+# Same data-not-label idea as the row_fine_* type checks: the 76SEED department NAMES
+# ("76SEED [DIVISION] Own Dept" / "... Other Dept") are records, so they render identically in
+# every UI language. "Own Dept"/"Other Dept" are the distinguishing substrings (neither contains
+# the other), matched in the department_id column only - a whole-row match could hit the ticket
+# name, which also carries the [DIVISION] tag.
+row_dept_own:               ".o_data_row td[name='department_id']:has-text(\"Own Dept\")"
+row_dept_other:             ".o_data_row td[name='department_id']:has-text(\"Other Dept\")"
+
+# --- app-dev analyst scoping (no 76SEED there; role_analyst/analyst2 are scoped to the
+#     REAL agent "TEMU" instead). The ticket list always shows the Agent column (agent_id,
+#     reclamation_ticket_list_view.xml), so scoping is asserted as "no visible row belongs to
+#     any other agent": with the record rule working, every row's agent cell contains TEMU,
+#     and the :not(:has(...)) selector matches nothing. Guard the vacuous-empty-list case by
+#     asserting a first row exists beforehand. ---
+row_agent_not_temu:         ".o_data_row:not(:has(td[name='agent_id']:has-text(\"TEMU\")))"
+# A ticket on which the analyst appeal button is DECIDABLE: the readonly-form override shows
+# action_appeal only for state in (refused, compensation_approved) - and only then does
+# can-appeal-ON (button present) vs OFF (absent) differ. State labels in EN + uk_UA.
+open_appealable_row:        ".o_data_row:has(td[name='state']:has-text(\"Refused\")), .o_data_row:has(td[name='state']:has-text(\"Відмова\")), .o_data_row:has(td[name='state']:has-text(\"Compensation Approved\")), .o_data_row:has(td[name='state']:has-text(\"Компенсацію схвалено\"))"
+
+# --- HR administration for Manager/Admin (review 24.07 item 4/6): Departments menu +
+#     hr.department Manager field + employee form readable despite the hr_homeworking
+#     field exceptional_location_id (groups=hr.group_hr_user on hr.employee - the fix is
+#     group_reclamation_manager/admin implying hr.group_hr_user, commit 2e0ed01). ---
+kanban_card:                ".o_kanban_record"                 # first card in a kanban (employees)
+dept_manager_input:         ".o_form_view .o_field_widget[name='manager_id'] input"
+open_dept_own:              ".o_data_row:has(td[name='name']:has-text(\"Own Dept\"))"   # 76SEED dept row
+dept_name_input:            ".o_form_view .oe_title .o_field_widget[name='name'] input"  # dept form title
+# Second REAL item of an open m2o dropdown - the update half of set/update needs a different
+# employee than the first pick. Special options (create/search-more) render after the record
+# items, so with >= 2 employees li #2 is a real one; pin on first run if a build reorders.
+m2o_second_option:          "li.o-autocomplete--dropdown-item:not(.o_m2o_dropdown_option):nth-of-type(2)"
+
+# --- Dictionary CRUD (QA 3.3, manager; reclamation.reason form) ---
+# The reason form renders `name` as an <h1> char field and `code` in a group; only name is
+# required (models/reclamation_reason.py). Delete goes through the form cog -> Delete -> Odoo
+# ConfirmationDialog, whose confirm is the primary button of the (only) open dialog.
+reason_name_input:          ".o_form_view .o_field_widget[name='name'] input"
+reason_code_input:          ".o_form_view .o_field_widget[name='code'] input"
+cog_delete_item:            ".o-dropdown--menu .dropdown-item:has-text('Delete'), .o-dropdown--menu .dropdown-item:has-text('Видалити')"
+confirm_dialog_primary:     ".o_dialog:not(.o_inactive_modal) .modal-footer .btn-primary"
+
+# --- Related Ticket cross-company repro (DEMO-526) ---
+btn_related_ticket:         "button[name='action_open_related_ticket']"
+
+# ============================================================================
+# --- Multi-company scoping (actions domain-filtered to the user's default
+#     company; access rules still allow the user's other allowed companies).
+#
+# LANGUAGE GATE: these entries deliberately match UKRAINIAN chrome. The rest of
+# this file is language-agnostic on purpose, but the multicompany_* scenarios
+# must FAIL when a user's Odoo language is not Ukrainian - that is part of what
+# they check. Odoo's language is a PER-USER setting, so a role left on English
+# fails these and passes everything else.
+#
+# Pinned 2026-07-31 from the app-dev DOM (reports/20260731-143022/...fin_comp):
+#   <div class="o_switch_company_menu ..."><button disabled="" title="Acme Logistics">
+#     <span class="oe_topbar_name ...">Acme Logistics</span>
+# and the Ukrainian chrome "Пошук...", "Повідомлення", "Дії" on the same page.
+# ============================================================================
+company_name_navbar:         ".o_switch_company_menu .oe_topbar_name"
+# Readonly proof: the switcher button carries disabled="". company_switcher_disabled
+# (above) asserts the disabled state; this is its negation, for an explicit failure
+# when the switcher IS selectable for a role that must not switch.
+company_switcher_enabled:    ".o_switch_company_menu button:not([disabled]):not(.disabled)"
+menu_reclamations_all:       "[data-menu-xmlid='demo_reclamation_management.menu_reclamations_all']"
+
+# Search panel -> Group By. All pinned 2026-07-31 from the first live run
+# (reports/20260731-150722/...role_agent/multicompany_manager/dom.html).
+#
+# The custom group picker is a NATIVE <select>, not a dropdown of clickable items:
+#   <select class="o_add_custom_group_menu o_menu_item dropdown-item o-navigable">
+#     <option value="" disabled selected hidden>Власне групування</option>
+#     ...<option value="company_id">Компанія</option>...
+# so the field is chosen with the `select` action by option VALUE. Clicking the
+# <option> is what the first run did, and it silently did nothing - an option has
+# no box to hit - which is why the list never grouped.
+searchview_dropdown_toggler: ".o_searchview_dropdown_toggler"
+uk_groupby_section:          ".o_group_by_menu .o_dropdown_title:text-is(\"Групувати за\")"
+groupby_custom_select:       "select.o_add_custom_group_menu"
+# Language gate for this step: the translated OPTION LABEL must be Ukrainian. Options
+# have no bounding box, so this is an existence check, not a visibility one.
+uk_groupby_company_option:   "select.o_add_custom_group_menu option:text-is(\"Компанія\")"
+# The value actually selected - a field name, identical in every UI language.
+groupby_company_value:       "company_id"
+
+# Grouped-list assertions. "Exactly one group" = at least one header AND no second
+# one; :nth-match is Playwright's own selector engine, so it works through
+# page.wait_for_selector like any CSS.
+group_header:                ".o_group_header"
+group_header_second:         ":nth-match(.o_group_header, 2)"
+
+# Ukrainian chrome gate (pinned from the app-dev DOM):
+uk_app_reclamations:         "[data-menu-xmlid='demo_reclamation_management.menu_reclamations_root']:text-is(\"Рекламації\")"
+uk_search_placeholder:       ".o_searchview_input[placeholder=\"Пошук...\"]"

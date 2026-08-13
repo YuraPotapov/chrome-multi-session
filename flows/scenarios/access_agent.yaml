@@ -1,0 +1,75 @@
+# DEMO-526 access matrix - VRR Agent (log in as role_agent). QA doc section 2.
+# Run only against the agent session: --user=role_agent (see run_access_matrix.sh).
+#
+# Read-only scenario: it asserts what the agent may SEE. The write half of QA 2.3/2.4
+# (edit own ticket = ok, edit foreign ticket = denied) lives in write_agent_edit.
+# QA 2.5's delete guard ("Deleting complaints is prohibited") is deliberately NOT
+# browser-tested - it would have to attempt a real delete on seeded data; the server
+# probe covers it ([AGENT] "unlink ticket", claim76_access_seed_probe.py).
+id: access_agent
+name: "Access matrix - VRR Agent"
+tags: [DEMO-526, role:agent, access, template]   # template: excluded from --run-tests=all; run per-role by id / tag:access
+steps:
+  - use: access.open_app
+  # 2.1 Menus: Reclamations / Compensation / Fines / Reporting visible; Settings + 1C hidden.
+  - assert_visible: menu_reclamations
+  - assert_visible: menu_compensation
+  - assert_visible: menu_fines
+  - assert_visible: menu_reporting
+  - type: assert_not_visible
+    target: menu_settings
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_1c_logistics
+    timeout: 2500
+
+  # 2.2 Reads tickets that are NOT theirs - the point of the rule is that the agent's read is
+  # company-wide, and only their WRITE is narrowed to own tickets (the record rule sets
+  # perm_read=False, so it never applies to reading).
+  #
+  # The fixture comes from setup_manager_foreign_ticket, run once as role_manager - no DB
+  # access needed, unlike the 76SEED odoo-shell seed. That ticket is created by the manager and
+  # left unassigned, so BOTH branches of the agent write domain
+  # ['|', ('investigator_id','=',user.id), ('create_uid','=',user.id)] miss it.
+  #
+  # "New from VRR" is used instead of "All Reclamations" because its domain
+  # [('state','=','new_from_vrr')] is applied SERVER-side: no searchview facet has to be picked
+  # (the searchbar defaults to Ticket Number, and choosing another field is position/label
+  # dependent), and the list stays short enough that the newest-first fixture is on page one.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_new_vrr"
+  - wait_for: list_view
+  # FIXTURE GUARD - keep this before the tagged-row assertion so the failure modes stay
+  # distinguishable: no rows at all = setup_manager_foreign_ticket has not been run against this
+  # environment; rows present but the tagged one missing = a real record-rule/scoping regression.
+  - type: assert_visible
+    target: first_list_row
+    timeout: 10000
+  - type: assert_visible
+    target: row_uitest_foreign
+    timeout: 10000
+
+  # 2.5 Creating tickets is allowed -> the list offers "New". (The create itself is a write;
+  # reclamation.create_reclamation exercises it.)
+  - assert_visible: new_button
+
+  # 2.6 Compensations and fines are fully reachable for the agent - unlike the finance roles,
+  # which each get a single scoped list. Reaching the list without an AccessError is the read
+  # half; editing them is working access covered by the server probe.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_compensation_all"
+  - wait_for: list_view
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 2500
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_fines_all"
+  - wait_for: list_view
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 2500
+
+  # Admin-only Email Condition Rules is unreachable even by direct URL.
+  - use: access.deny_email_rules
+
+  # 8.3 The Team Roles wizard is manager/admin-only (its ACL has no agent line): the menu is
+  # already absent with the whole Settings section, so probe the direct action URL too.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_user_roles_wizard"
+  - assert_visible: error_dialog

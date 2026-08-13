@@ -1,0 +1,74 @@
+# DEMO-526 - FIXTURE SETUP, run as role_manager. Provides the "foreign ticket" that the
+# VRR Agent access checks need, WITHOUT the odoo-shell seed - so the agent role can be verified
+# on app-dev / app-stg where you have no DB access.
+#
+# WHAT MAKES THE RESULT "FOREIGN"
+# The agent write rule (security/reclamation_ticket_rules.xml) is
+#     ['|', ('investigator_id','=',user.id), ('create_uid','=',user.id)]   perm_write only
+# so a ticket is foreign to an agent when BOTH branches miss. Created here by the manager and
+# left UNASSIGNED, it misses both - no investigator has to be set at all.
+#
+# WHY NOT ASSIGN AN INVESTIGATOR
+# Both routes to investigator_id (the form field and the assign wizard) are domain-limited to
+#     [('id', 'in', vrr_investigator_ids)]
+# i.e. the company's configured "VRR Investigators" pool. The odoo-shell seed sets
+# investigator_id directly through the ORM and bypasses that; a browser flow cannot. Assigning
+# is also unnecessary here: for the record-rule checks an unassigned manager-created ticket is
+# equivalent to one assigned to another agent - both miss the same two domain branches.
+# It does mean this fixture proves "reads a ticket that is not theirs" rather than QA 2.2's
+# literal "reads a ticket investigated by a DIFFERENT agent"; use the seed if you need that.
+#
+# RE-RUNNING is safe: each run just adds one more tagged ticket, and the agent checks only
+# need at least one to exist.
+id: setup_manager_foreign_ticket
+name: "Setup - Manager registers an unassigned ticket (foreign to every agent)"
+# Deliberately NOT tagged `access`: `tag:access` includes manual scenarios, and a fixture
+# provisioner should never fire as a side effect of running the access matrix. Run it by id,
+# or by `tag:setup`. `manual` keeps it out of --run-tests=all.
+tags: [DEMO-526, role:manager, setup, write, manual]
+steps:
+  - use: access.open_app
+
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_all"
+  - wait_for: list_view
+  - click: new_button
+  - assert_visible: form_view
+
+  # The TTN doubles as the fixture TAG: it is free text, it is a column in the ticket list, and
+  # it is data rather than a translated label, so the agent scenario can find the row in any UI
+  # language. An unknown TTN only raises a warning banner, it does not block Save.
+  - fill: {target: ttn_input, value: "UITEST-FOREIGN"}
+  - fill: {target: claimed_amount_input, value: "100"}
+
+  - click: partner_input                        # Customer (many2one) - first match
+  - press: ArrowDown
+  - click: m2o_first_option
+
+  - click: reason_input                         # Reclamation Reason (many2one) - first match
+  - press: ArrowDown
+  - click: m2o_first_option
+
+  - click: save_button
+  # Saved: the breadcrumb becomes the ticket number (sequence "MM-YYYY-", so it contains "-").
+  - type: assert_text_contains
+    target: breadcrumb
+    value: "-"
+    timeout: 5000
+    retry: {attempts: 45, delay: 2}   # the 1C parcel lookup can be slow -> allow ~90s
+
+  # The ticket must have stayed UNASSIGNED - that is the whole point of the fixture. create()
+  # jumps straight to `assigned` when investigator_id is set, so new_from_vrr proves it is empty.
+  - type: assert_visible
+    target: state_new_from_vrr
+    timeout: 10000
+
+  # Confirm the tag SURVIVED the save and is findable exactly the way access_agent will look for
+  # it. autofill_shipment_fields_from_api() rewrites shipment_number from the 1C lookup and will
+  # blank an unknown TTN if 1C answers; it is only preserved when the lookup errors (UserError is
+  # swallowed by _autofill_shipment_safe). If THIS step fails, 1C is live and normalising TTNs in
+  # this environment - tag with a real parcel number instead, or fall back to the odoo-shell seed.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_new_vrr"
+  - wait_for: list_view
+  - type: assert_visible
+    target: row_uitest_foreign
+    timeout: 10000

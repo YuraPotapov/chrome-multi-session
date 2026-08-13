@@ -1,0 +1,14 @@
+# Deep fine flow on REAL data: real parcel -> assign -> investigation -> refuse -> add fine
+# (real branch dept WITH culprits) -> distribute (pick a real culprit). This is what a synthetic
+# reclamation cannot complete.
+id: real_fine_distribute
+name: Real - refuse, add fine, distribute (TTN 1234)
+tags: [real, lifecycle, write, manual]
+steps:
+  - use: auth.login
+  - use: reclamation.create_real
+  - use: reclamation.assign
+  - use: reclamation.take_to_work
+  - use: reclamation.make_decision_refuse
+  - use: reclamation.add_fine
+  - use: reclamation.distribute_fine

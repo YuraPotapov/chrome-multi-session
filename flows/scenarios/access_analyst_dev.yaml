@@ -1,0 +1,54 @@
+# DEMO-526 access matrix - Analytics Guest on APP-DEV (log in as role_analyst).
+# app-dev has no 76SEED data; there role_analyst is scoped to the REAL agent "TEMU" with
+# analyst_can_appeal = ON (configured 2026-07-28). This is the dev twin of access_analyst -
+# same assertions, but data-generic: scoping is proven by "every visible row's Agent cell is
+# TEMU" instead of named 76SEED rows, and the appeal-button check opens any ticket in an
+# appealable state (refused / compensation approved - the only states where the button can
+# render at all, per the readonly-form override) instead of the seeded refused ticket.
+# tags: manual keeps it out of --run-tests=all; run by id on app-dev only.
+id: access_analyst_dev
+name: "Access matrix (app-dev) - Analytics Guest, agent TEMU, can appeal"
+tags: [DEMO-526, role:analyst, access, manual]
+steps:
+  - use: access.open_app
+  # Analyst read-only sections (distinct xmlids, same labels as the working ones).
+  - assert_visible: menu_reclamations_analyst
+  - assert_visible: menu_compensations_analyst
+  - assert_visible: menu_fines_analyst
+  - assert_visible: menu_reporting
+  - type: assert_not_visible
+    target: menu_settings
+    timeout: 2500
+  - type: assert_not_visible
+    target: menu_1c_logistics
+    timeout: 2500
+
+  # Agent-scoping: the list is non-empty AND no visible row belongs to another agent.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_analyst"
+  - wait_for: list_view
+  - type: assert_visible
+    target: first_list_row
+    timeout: 10000
+  - type: assert_not_visible
+    target: row_agent_not_temu
+    timeout: 2500
+
+  # Open a refused / compensation-approved TEMU ticket: readonly, appeal button PRESENT
+  # (analyst_can_appeal), downstream decision/approve/reject hidden. If this click times
+  # out, TEMU has no ticket in an appealable state on page 1 - scope the user to an agent
+  # that has one (or sort/filter the list) and re-run.
+  - click: open_appealable_row
+  - wait_for: form_view
+  - type: assert_not_visible      # readonly proof: no editable input/textarea in the sheet
+    target: form_editable_field
+    timeout: 2500
+  - assert_visible: btn_ticket_appeal
+  - type: assert_not_visible
+    target: btn_ticket_make_decision
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_ticket_appeal_approve
+    timeout: 2500
+  - type: assert_not_visible
+    target: btn_ticket_appeal_reject
+    timeout: 2500
