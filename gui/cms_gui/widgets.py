@@ -7,7 +7,6 @@ layout rather than as widget configuration.
 """
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPainter, QPen
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
 
@@ -15,15 +14,14 @@ from . import theme
 
 
 class BlueprintPanel(QFrame):
-    """A hairline-bordered box with the design's corner registration marks.
+    """A plain hairline-bordered box.
 
-    The marks sit *outside* the border in the original CSS (top: -6px), which is
-    why the panel reserves a small margin and paints them itself: they are the
-    one part of the look that is drawn, not styled.
+    The design's corner registration marks (a small cross at each corner) were
+    dropped: at this density they read as stray plus signs floating next to the
+    frame rather than as draughting marks, and they collided with the controls
+    sitting near the edges. The square, borderless-radius frame carries the
+    blueprint look on its own.
     """
-
-    MARK = 11        # arm length of a corner mark
-    INSET = 5        # how far the mark sits outside the frame
 
     def __init__(self, parent=None, padding=(16, 16, 16, 16)):
         super().__init__(parent)
@@ -35,21 +33,6 @@ class BlueprintPanel(QFrame):
 
     def layout(self):
         return self._layout
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        painter = QPainter(self)
-        pen = QPen(theme.color(theme.NEUTRAL[700]))
-        pen.setWidth(1)
-        painter.setPen(pen)
-        w, h, m, i = self.width(), self.height(), self.MARK, self.INSET
-        for x, y, dx, dy in ((0, 0, 1, 1), (w - 1, 0, -1, 1),
-                             (0, h - 1, 1, -1), (w - 1, h - 1, -1, -1)):
-            # Two short strokes meeting just inside the corner: the printer's
-            # registration mark the design uses to say "this is a drawing".
-            painter.drawLine(x + dx * i, y, x + dx * i, y + dy * m)
-            painter.drawLine(x, y + dy * i, x + dx * m, y + dy * i)
-        painter.end()
 
 
 class Tag(QLabel):

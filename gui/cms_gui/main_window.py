@@ -24,10 +24,12 @@ from .pages.log import LogPage
 from .pages.run import RunPage
 from .pages.settings_dialog import SettingsDialog
 
-CONFIGURE = [("environments", "Environments", "▤"),
-             ("credentials", "Credentials", "◍"),
-             ("commands", "Command", "⌗")]
-OBSERVE = [("run", "Run", "▶"), ("log", "Log", "≡"), ("artifacts", "Artifacts", "◫")]
+# (page key, label, glyph name resolved by theme.glyph at build time)
+CONFIGURE = [("environments", "Environments", "environments"),
+             ("credentials", "Credentials", "credentials"),
+             ("commands", "Command", "command")]
+OBSERVE = [("run", "Run", "run"), ("log", "Log", "log"),
+           ("artifacts", "Artifacts", "artifacts")]
 
 
 class MainWindow(QMainWindow):
@@ -118,18 +120,18 @@ class MainWindow(QMainWindow):
         bar.setProperty("role", "bar")
         bar_layout = QVBoxLayout(bar)
         bar_layout.setContentsMargins(12, 8, 12, 8)
-        self.run_button = QPushButton("▶ RUN")
+        self.run_button = QPushButton(theme.labelled("run", "RUN"))
         self.run_button.setProperty("variant", "primary")
         self.run_button.clicked.connect(self.start_run)
-        self.stop_button = QPushButton("■ Stop")
+        self.stop_button = QPushButton(theme.labelled("stop", "Stop"))
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_run)
-        self.copy_button = QPushButton("⧉ Copy command")
+        self.copy_button = QPushButton(theme.labelled("copy", "Copy command"))
         self.copy_button.clicked.connect(lambda: self.command.copy_command())
-        self.refresh_button = QPushButton("↻ Refresh describe")
+        self.refresh_button = QPushButton(theme.labelled("refresh", "Refresh describe"))
         self.refresh_button.clicked.connect(self.refresh_inventory)
         self.describe_label = widgets.mono("")
-        settings_button = QPushButton("⚙ Settings")
+        settings_button = QPushButton(theme.labelled("settings", "Settings"))
         settings_button.clicked.connect(self.open_settings)
         bar_layout.addWidget(widgets.row(
             self.run_button, self.stop_button, widgets.vline(), self.copy_button,
@@ -156,7 +158,7 @@ class MainWindow(QMainWindow):
             heading.setContentsMargins(14, 8, 14, 6)
             rail_layout.addWidget(heading)
             for key, label, glyph in entries:
-                button = QPushButton("%s   %s" % (glyph, label))
+                button = QPushButton("%s   %s" % (theme.glyph(glyph), label))
                 button.setProperty("variant", "nav")
                 button.setCursor(Qt.PointingHandCursor)
                 button.clicked.connect(lambda _c=False, k=key: self.show_page(k))
@@ -246,7 +248,7 @@ class MainWindow(QMainWindow):
             self.describe_label.setText("--describe failed")
             self.status_right.setText("describe failed")
             QMessageBox.warning(self, "Cannot read the core",
-                                "%s\n\nCheck Settings → Core script / Interpreter."
+                                "%s\n\nCheck Settings -> Core script / Interpreter."
                                 % exc)
             return
         self.inventory = core_mod.Inventory(payload)
@@ -272,7 +274,7 @@ class MainWindow(QMainWindow):
         """Run a command that just prints something, and show what it printed."""
         if not self.core.is_configured():
             QMessageBox.information(self, title, "Configure the core first "
-                                                 "(Settings → Core script).")
+                                                 "(Settings -> Core script).")
             return
         try:
             code, out, err = self.core.run(*args)
@@ -294,7 +296,7 @@ class MainWindow(QMainWindow):
             return
         if not self.core.is_configured():
             QMessageBox.information(self, "Run", "Configure the core first "
-                                                 "(Settings → Core script).")
+                                                 "(Settings -> Core script).")
             return
         args = self.command.argv()
         try:

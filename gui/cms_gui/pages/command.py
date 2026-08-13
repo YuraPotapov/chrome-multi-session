@@ -130,10 +130,10 @@ class CommandPage(QWidget):
         self.preview.setStyleSheet("font-family: %s; font-size: 12px; color: %s;"
                                    % (theme.MONO_CSS, theme.ACCENT_RAMP[800]))
         strip.addWidget(self.preview, 1)
-        self.copy_button = QPushButton("⧉ Copy")
+        self.copy_button = QPushButton(theme.labelled("copy", "Copy"))
         self.copy_button.clicked.connect(self.copy_command)
         strip.addWidget(self.copy_button)
-        self.run_button = QPushButton("▶ RUN")
+        self.run_button = QPushButton(theme.labelled("run", "RUN"))
         self.run_button.setProperty("variant", "primary")
         self.run_button.clicked.connect(self.run_requested.emit)
         strip.addWidget(self.run_button)
@@ -187,7 +187,7 @@ class CommandPage(QWidget):
         self._controls[flag.name] = edit
 
         if flag.kind == "path":
-            browse = QPushButton("…")
+            browse = QPushButton(theme.glyph("browse"))
             browse.setFixedWidth(38)
             browse.clicked.connect(lambda _c=False, e=edit: self._browse(e))
             return widgets.field(flag.name, widgets.row(edit, browse), flag.help)
@@ -196,7 +196,7 @@ class CommandPage(QWidget):
             pick.clicked.connect(self._pick_scenarios)
             return widgets.field(flag.name, widgets.row(edit, pick), flag.help)
         if flag.kind == "list" and flag.choices:
-            pick = QPushButton("…")
+            pick = QPushButton(theme.glyph("browse"))
             pick.setFixedWidth(38)
             pick.clicked.connect(lambda _c=False, f=flag: self._pick_list(f))
             return widgets.field(flag.name, widgets.row(edit, pick), flag.help)
@@ -323,9 +323,9 @@ class CommandPage(QWidget):
     def copy_command(self):
         from PySide6.QtWidgets import QApplication
         QApplication.clipboard().setText(self.preview.text())
-        self.copy_button.setText("✓ Copied")
+        self.copy_button.setText(theme.labelled("pass", "Copied"))
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(1400, lambda: self.copy_button.setText("⧉ Copy"))
+        QTimer.singleShot(1400, lambda: self.copy_button.setText(theme.labelled("copy", "Copy")))
 
     def set_running(self, running):
         self.run_button.setEnabled(not running)

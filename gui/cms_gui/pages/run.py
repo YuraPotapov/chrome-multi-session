@@ -24,7 +24,10 @@ STATE_TAGS = {
     "closed": ("CLOSED", "neutral"),
 }
 
-MARK = {"pass": "✓", "fail": "✖", "error": "✖", "running": "▸", "pending": "·"}
+def _mark(status):
+    """Status character, resolved against the installed font."""
+    name = {"error": "fail"}.get(status, status)
+    return theme.glyph(name if name in ("pass", "fail", "running") else "pending")
 
 
 class SessionPanel(widgets.BlueprintPanel):
@@ -110,7 +113,7 @@ def _step_row(node, depth, session):
     line = QVBoxLayout(row)
     line.setContentsMargins(0, 0, 0, 0)
 
-    mark = MARK.get(status, "·") if is_step else "▸"
+    mark = _mark(status) if is_step else theme.glyph("group")
     text = "%s%s  %s" % ("    " * depth, mark, node.get("label", ""))
     label = QLabel(text)
     if is_step:
