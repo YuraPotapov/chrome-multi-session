@@ -31,3 +31,6 @@ dist/
 # Local archives/snapshots
 *.tar.gz
 *.zip
+
+# The GUI's own virtualenv (created by gui/bootstrap.py)
+gui/.venv/

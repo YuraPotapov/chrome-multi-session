@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chrome-multi-session-gui"
+version = "0.1.0"
+description = "Desktop front-end for chrome-multi-session: environments, credentials, every launcher command, and live run events."
+readme = "README.md"
+# 3.9 matches the core's floor, so one interpreter can host both if you want it to.
+requires-python = ">=3.9"
+
+# Deliberately the only dependency. The GUI never imports the core - it spawns
+# session_launcher.py through a configured interpreter - so playwright,
+# cryptography and pyyaml stay in the core's environment where they belong.
+dependencies = [
+    "PySide6>=6.6,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0,<10"]
+
+[project.scripts]
+chrome-multi-session-gui = "cms_gui.app:main"
+
+[tool.setuptools.packages.find]
+include = ["cms_gui*"]
+
+[tool.setuptools.package-data]
+cms_gui = ["assets/fonts/*.ttf", "assets/fonts/*.otf"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -17,6 +17,22 @@ app-agnostic, since that will break things on purpose.
 ## [Unreleased]
 
 ### Added
+- **A desktop GUI** in `gui/` (PySide6, its own virtualenv, `python3 gui/bootstrap.py`):
+  environments, a `users.json` editor, a builder covering every launcher flag, and a
+  live run view — step tree, log stream, session lifecycle and artifacts. It never
+  imports the core; it spawns `session_launcher.py` through a configured interpreter,
+  so the two environments stay independent and the launcher remains the single source
+  of truth.
+- `--events=-|FILE` — a structured JSONL event stream for programs driving the
+  launcher: windows launched, CDP attached, every step, artifacts written, run summary,
+  windows exited. `-` writes to stdout, which stays free because log records go to
+  stderr. `engine/events.py` also provides the observer that feeds it, fanned out
+  alongside the in-page HUD by `engine.events.Tee`.
+- `--describe` — the whole inventory as JSON on stdout: environments, users (with
+  `has_password`, never the password), scenarios with tags and whether
+  `--run-tests=all` would run them, extensions, and the values each flag accepts. A
+  broken config degrades to `warnings` inside the payload rather than a plain-text
+  exit, so a caller always gets something it can render.
 - `--extensions=NAME[,NAME...]` — install Chrome Web Store extensions into every
   profile. Entries may be a known name (`odoo_debug`), a raw 32-character store id,
   or `name=id`, so a fork can install anything without editing the code.

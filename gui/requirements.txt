@@ -1,0 +1,4 @@
+# The GUI's only runtime dependency. Everything the launcher needs
+# (playwright, cryptography, pyyaml) belongs to the CORE environment, which the
+# GUI talks to as a subprocess - see README.md.
+PySide6>=6.6,<7

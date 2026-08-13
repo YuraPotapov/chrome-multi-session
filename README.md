@@ -159,6 +159,44 @@ No browser is launched: the suite drives the engine against fake adapters and it
 fixture flows in `tests/fixtures/flows/`. One integration test compiles the real `flows/`
 tree if there is one, and skips if there is not.
 
+## The GUI
+
+Everything below can also be driven from a desktop front-end that lives in
+[gui/](gui/) — environments, a `users.json` editor, a builder for every flag on this
+page, and a live view of a run (step tree, log, artifacts).
+
+```bash
+python3 gui/bootstrap.py     # creates gui/.venv, installs PySide6, starts the app
+```
+
+It is a *client* of this launcher, not a second implementation: it spawns
+`session_launcher.py` through an interpreter you configure, asks `--describe` what
+exists and follows `--events=-` for what happens. The two environments stay separate —
+the GUI needs PySide6, the launcher needs playwright and cryptography. See
+[gui/README.md](gui/README.md).
+
+### `--describe` and `--events`
+
+Both flags exist for programs rather than people, and are useful on their own:
+
+```bash
+# the whole inventory as JSON: environments, users (never passwords), scenarios
+# with their tags, extensions, and the values each flag accepts
+python3 session_launcher.py --describe
+
+# a structured JSONL event per transition, on stdout - log records stay on stderr,
+# so the two are clean, separate streams
+python3 session_launcher.py --env=localhost --run-tests=smoke_odoo --events=- \
+  1>events.jsonl 2>run.log
+```
+
+Event kinds: `launcher.start`, `window.launched`, `windows.ready`,
+`session.attached` / `session.attach_failed`, `session.start`, `flow.start` (carrying
+the same step tree the HUD draws), `step.start` / `step.end` / `step.retry`,
+`flow.end`, `artifacts.written`, `run.dir`, `run.summary`, `window.exited`. Each line
+has `ts`, a monotonic `seq`, `kind`, and — for anything inside a window — `session`.
+`--events=PATH` appends to a file instead.
+
 ## Compatibility
 
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The
