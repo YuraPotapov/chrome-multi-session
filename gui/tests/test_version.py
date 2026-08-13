@@ -51,6 +51,30 @@ def test_the_version_is_not_hard_coded_in_the_source():
                            % ", ".join(offenders))
 
 
+def test_a_packaged_build_reads_the_version_file_beside_it(tmp_path, monkeypatch):
+    """The path packaging depends on, and the one a checkout never exercises.
+
+    A frozen GUI has no distribution metadata and no pyproject.toml to fall back
+    on; all it has is the VERSION file build_deb.sh installs at the prefix above
+    the two bundles (/opt/chrome-multi-session/VERSION, with the executable in
+    gui/ beside core/). If that lookup ever stops matching the layout, About
+    silently reports "dev (not installed)" on every installed machine.
+    """
+    prefix = tmp_path / "opt" / "chrome-multi-session"
+    (prefix / "gui").mkdir(parents=True)
+    (prefix / "VERSION").write_text("9.9.9\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable",
+                        str(prefix / "gui" / "chrome-multi-session-gui"))
+    monkeypatch.setattr(cms_gui, "_version", None)
+    # No installed distribution in a freeze - that is what makes VERSION the answer.
+    monkeypatch.setattr(cms_gui, "_installed_version", lambda: "")
+    try:
+        assert cms_gui.version() == "9.9.9"
+    finally:
+        cms_gui._version = None
+
+
 def test_about_names_both_halves(qapp):
     """The GUI and the core can be two different builds, so About says both."""
     from cms_gui import main_window as main_window_mod

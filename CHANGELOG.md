@@ -16,6 +16,13 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-14
+
+The first release that installs. Everything below had been sitting in
+`[Unreleased]` since 0.4.0; cutting it is what gives the `.deb` a number to carry,
+and `cms_gui.version()` now reads that same number, so the GUI's About box, the
+core's `--version` and the package all answer alike.
+
 ### Added
 - **A standalone installer for Ubuntu 22.04** — `sudo apt install ./chrome_session_amd64.deb`
   and the app is in the applications menu, with no Python, pip, git or virtualenv on
@@ -34,6 +41,14 @@ app-agnostic, since that will break things on purpose.
 - `--describe` now reports `chrome`: the browser the core found, its version, and a
   message saying how to install one when there is none. The GUI shows it once at
   startup, so a missing browser is a sentence rather than a failed launch.
+- GUI: `cms_gui.version()`, resolving the release number the same three ways
+  `session_launcher.version()` does — an installed distribution, the `VERSION` file a
+  packaged build carries, then `pyproject.toml` in a checkout. About names both the
+  GUI's version and the core's, and says which file the core one came from; the core
+  is asked with `--version` when no `--describe` has succeeded yet.
+- GUI: Launch Sessions marks unsaved work — both Save buttons turn red once the
+  controls differ from the configuration they were opened from, and settle again if
+  the edit is undone by hand.
 - **A desktop GUI** in `gui/` (PySide6, its own virtualenv, `python3 gui/bootstrap.py`):
   environments, a `users.json` editor, a builder covering every launcher flag, and a
   live run view — step tree, log stream, session lifecycle and artifacts. It never
@@ -70,6 +85,12 @@ app-agnostic, since that will break things on purpose.
   compiles the real tree when one is present, and skips when it is not.
 
 ### Changed
+- GUI: the tick boxes and radio dots are painted by a `QProxyStyle` rather than by the
+  stylesheet, which can fill an indicator but cannot put a mark inside one — a ticked
+  box used to be an empty accent square. This also reaches the check rows in the
+  Accounts, Extensions and Scenarios lists, which the stylesheet never touched.
+- GUI: the Sessions counter is a stepper built from real widgets, replacing Fusion's
+  two stacked 7px arrows.
 - `find_chrome()` prefers a candidate that answers `--version` over one that merely
   exists on `PATH`. Ubuntu 22.04's `chromium-browser` is a 2 KB shim that redirects to
   a snap: findable, executable, and not a browser. It also now looks in the Windows
