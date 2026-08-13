@@ -81,7 +81,8 @@ class CommandPage(QWidget):
         self.settings = settings
         self.inventory = None
         self.core = None
-        self._controls = {}
+        self._controls = {}     # flag name -> the editing widget
+        self._flag_rows = {}    # flag name -> the whole row it lives in
         self._building = False
 
         outer = QVBoxLayout(self)
@@ -145,7 +146,13 @@ class CommandPage(QWidget):
         panel = widgets.BlueprintPanel(padding=(16, 16, 16, 18))
         panel.layout().addWidget(widgets.kicker(name))
         for flag in commands.flags_for(name):
-            panel.layout().addWidget(self._control(flag))
+            row = self._control(flag)
+            # Remember the whole row - label, control and any browse/pick button.
+            # Enabling and disabling happens here and NEVER on a parentWidget():
+            # a bare checkbox's parent is the panel itself, so disabling that
+            # would grey out --run-tests too and make the group unreachable.
+            self._flag_rows[flag.name] = row
+            panel.layout().addWidget(row)
         panel.layout().addStretch(1)
         return panel
 
@@ -234,12 +241,9 @@ class CommandPage(QWidget):
         run_tests = bool(str(state.get("--run-tests", "")).strip())
         for flag in commands.FLAGS:
             if flag.needs_run_tests:
-                control = self._controls.get(flag.name)
-                if control is not None:
-                    control.setEnabled(run_tests)
-                    parent = control.parentWidget()
-                    if parent is not None:
-                        parent.setEnabled(run_tests)
+                row = self._flag_rows.get(flag.name)
+                if row is not None:
+                    row.setEnabled(run_tests)
         self.preview.setText(commands.preview(state, self.core))
         self.settings.save_command_state(state)
         self.state_changed.emit()

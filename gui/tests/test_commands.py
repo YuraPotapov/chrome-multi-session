@@ -109,3 +109,50 @@ def test_no_catalogue_flag_is_unknown_to_the_core():
     unknown = set(commands.BY_NAME) - documented
     assert not unknown, ("this GUI offers flags the core does not accept: %s"
                          % ", ".join(sorted(unknown)))
+
+
+# ------------------------------------------------------- the dependency toggle
+
+def _page(qapp):
+    from cms_gui.pages.command import CommandPage
+    from cms_gui.settings import Settings
+    return CommandPage(Settings())
+
+
+def test_run_tests_stays_editable_while_its_dependents_are_disabled(qapp):
+    """The field that unlocks the group must never be disabled with it.
+
+    Regression: --close-after and --report-always are bare checkboxes, so their
+    parentWidget() is the whole panel. Disabling that greyed out --run-tests
+    too, leaving no way to enable flow execution from the UI at all.
+    """
+    page = _page(qapp)
+    page.set_state({"--run-tests": ""})
+    assert page._controls["--run-tests"].isEnabled()
+    assert page._flag_rows["--run-tests"].isEnabled()
+    for name in ("--jobs", "--execution-overlay", "--close-after", "--report-level"):
+        assert not page._flag_rows[name].isEnabled(), name
+
+
+def test_filling_run_tests_enables_the_flow_and_report_flags(qapp):
+    page = _page(qapp)
+    page.set_state({"--run-tests": "tag:access"})
+    for name in ("--jobs", "--execution-overlay", "--close-after", "--flows-dir",
+                 "--report-level", "--report-screen", "--report-always"):
+        assert page._flag_rows[name].isEnabled(), name
+
+
+def test_clearing_run_tests_disables_them_again(qapp):
+    page = _page(qapp)
+    page.set_state({"--run-tests": "smoke"})
+    page.set_state({"--run-tests": ""})
+    assert page._controls["--run-tests"].isEnabled()
+    assert not page._flag_rows["--jobs"].isEnabled()
+
+
+def test_general_flags_never_depend_on_run_tests(qapp):
+    page = _page(qapp)
+    page.set_state({"--run-tests": ""})
+    for name in ("--env", "--filter-users", "--user", "--password", "--url",
+                 "--extensions", "--log-level", "--detach"):
+        assert page._flag_rows[name].isEnabled(), name
