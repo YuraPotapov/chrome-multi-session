@@ -57,6 +57,7 @@ Usage: python session_launcher.py [--detach] [--env=NAME] [--user-session=PREFIX
    e.g. python session_launcher.py --env=dev
         python session_launcher.py --url=http://localhost:8069/web/login
 """
+import atexit
 import base64
 import collections
 import ctypes
@@ -75,6 +76,18 @@ import time
 from urllib.parse import urlsplit
 
 log = logging.getLogger("session_launcher")
+
+# engine.events once --events is given, else None. The module is imported lazily
+# (a plain launch must not pay for the engine package), but the window-lifecycle
+# emitters below are module-level functions, so they reach it through here.
+_events = None
+
+
+def _emit(kind, **fields):
+    """Emit a launcher lifecycle event; a no-op unless --events was given."""
+    if _events is not None:
+        _events.emit(kind, **fields)
+
 
 # Profiles + generated extensions default to next to this script, so the
 # project is self-contained and can be moved without editing paths. Both the
@@ -380,6 +393,83 @@ def environments_from_config(config_path, strict=True):
     return build_environments(values)
 
 
+def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
+    """Everything a front-end needs to populate its pickers, as one dict.
+
+    ``--describe`` prints this as JSON and exits. It exists so a GUI never has to
+    re-implement the config and flow parsing that lives here: the launcher stays
+    the single source of truth for what environments, users, scenarios and
+    extensions exist, and a change here reaches every front-end for free.
+
+    Passwords are deliberately absent - only ``has_password`` says whether one is
+    configured. Anything that cannot be read degrades to an empty list plus an
+    entry in ``warnings``, so one broken piece never denies the caller the rest.
+    """
+    warnings = []
+    users, envs = [], []
+    try:
+        rows = load_users(config_path)
+    except SystemExit as exc:          # load_users reports config errors this way
+        rows = []
+        warnings.append(str(exc))
+    for user in rows:
+        users.append({"env": user.env, "class": user.cls, "login": user.login,
+                      "tests": list(user.tests), "has_password": bool(user.password),
+                      "profile": session_dir_for("", user.env, user.login)})
+    for env in build_environments([u.env for u in rows]):
+        envs.append({"alias": env.alias, "value": env.value,
+                     "origin": env.origin, "count": env.count})
+
+    scenarios = []
+    flows_dir = flows_dir or os.path.join(SCRIPT_DIR, "flows")
+    try:
+        # Lazy: the loader needs pyyaml, which a plain launch never installs.
+        from engine import loader
+        skipped = loader._SKIP_TAGS
+        for scenario_id in loader.discover_scenarios(flows_dir, include_templates=True):
+            try:
+                flow = loader.load_flow(scenario_id, flows_dir)
+            except Exception as exc:
+                warnings.append("scenario %s: %s" % (scenario_id, exc))
+                continue
+            tags = list(flow.tags)
+            scenarios.append({"id": scenario_id, "name": flow.name,
+                              "description": flow.description, "tags": tags,
+                              "path": flow.source,
+                              # what --run-tests=all would actually run
+                              "in_all": not (set(tags) & skipped)})
+    except ImportError as exc:
+        warnings.append("scenarios unavailable (%s); install the 'flows' extra." % exc)
+
+    extensions = []
+    for name, path in sorted(local_extensions().items()):
+        ok, reason = validate_local_extension(path)
+        extensions.append({"name": name, "kind": "local", "value": path,
+                           "usable": ok, "reason": reason})
+    for name, ext_id in sorted(KNOWN_EXTENSIONS.items()):
+        extensions.append({"name": name, "kind": "store", "value": ext_id,
+                           "usable": True, "reason": ""})
+
+    return {
+        "version": version(),
+        "script": os.path.abspath(__file__),
+        "config_path": config_path,
+        "flows_dir": flows_dir,
+        "reports_dir": reports_dir or os.path.join(SCRIPT_DIR, "reports"),
+        "sessions_dir": sessions_dir or DEFAULT_SESSIONS_DIR,
+        "log_levels": ["DEBUG", "INFO", "WARNING", "ERROR"],
+        "overlay_components": list(_OVERLAY_COMPONENTS),
+        "report_artifacts": list(_REPORT_ARTIFACTS),
+        "report_screen_modes": list(_REPORT_SCREEN_MODES),
+        "tags": sorted({tag for s in scenarios for tag in s["tags"]}),
+        "envs": envs,
+        "users": users,
+        "scenarios": scenarios,
+        "extensions": extensions,
+        "warnings": warnings,
+    }
+
+
 def _shortening_example(envs):
     """An alias shortening that really is unambiguous, for the help text.
 
@@ -622,6 +712,11 @@ _PR_SET_PDEATHSIG = 1
 # sync with engine.overlay.KNOWN_COMPONENTS (defined here too so a plain launch
 # never imports the engine just to validate the flag).
 _OVERLAY_COMPONENTS = ("tree", "progress", "status", "logs", "highlight", "notifications")
+
+# Same deal for the report flags: mirrors engine.artifacts.ARTIFACTS / SCREEN_MODES
+# so --describe can advertise the choices without importing the engine.
+_REPORT_ARTIFACTS = ("console", "dom", "result", "screen", "url")
+_REPORT_SCREEN_MODES = ("start", "each", "finish")
 
 
 def _preexec_die_with_parent():
@@ -1310,15 +1405,18 @@ def close_all(procs):
         if proc.poll() is not None:
             continue  # already closed (e.g. user shut this window manually)
         log.info("Closing %s...", cls)
+        _emit("window.closing", cls=cls, pid=proc.pid)
         try:
             proc.terminate()  # SIGTERM to the browser -> graceful Chrome shutdown
         except ProcessLookupError:
             pass
     # Give Chrome time to persist cookies before force-killing anything still alive.
-    for _cls, proc in procs:
+    for cls, proc in procs:
         try:
             proc.wait(timeout=15)
+            _emit("window.exited", cls=cls, pid=proc.pid, returncode=proc.returncode)
         except subprocess.TimeoutExpired:
+            _emit("window.killed", cls=cls, pid=proc.pid)
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
@@ -1339,8 +1437,20 @@ def keep_open_until_closed(procs):
 
     log.info("Windows are tracked in this session. Press CTRL+C (or Stop) to close all of them.")
     try:
+        # poll() is already called every half-second here, so noticing a window
+        # that went away costs nothing extra beyond remembering which ones we
+        # have reported.
+        reported = set()
         while any(proc.poll() is None for _cls, proc in procs):
+            for cls, proc in procs:
+                code = proc.poll()
+                if code is not None and proc.pid not in reported:
+                    reported.add(proc.pid)
+                    _emit("window.exited", cls=cls, pid=proc.pid, returncode=code)
             time.sleep(0.5)
+        for cls, proc in procs:
+            if proc.pid not in reported:
+                _emit("window.exited", cls=cls, pid=proc.pid, returncode=proc.poll())
         log.info("All windows were closed manually.")
     except KeyboardInterrupt:
         log.info("Shutdown signal received - closing all windows...")
@@ -1386,6 +1496,11 @@ Options:
                             default set, "list" prints what is available.
   --log-level=LEVEL         DEBUG/INFO/WARNING/ERROR (default: INFO; also via
                             the OPEN_USERS_LOG_LEVEL env var).
+  --events=-|FILE           Emit a structured JSONL event stream for another
+                            program (the GUI) to follow: windows launched, CDP
+                            attached, every step, artifacts written, run summary.
+                            "-" is stdout - log records go to stderr, so the two
+                            never mix; anything else is a file to append to.
   --version, -V             Print the version and exit.
   --help, -h                Show this help and exit.
 
@@ -1432,6 +1547,7 @@ def main():
     cli_user = None
     cli_password = None
     init_config = False
+    describe_json = False # --describe: print the JSON inventory and exit
     users_filter = None   # None = launch every user in the config
     env_name = None       # --env=NAME; None = every environment
     run_tests = None      # None = just launch; "all" or [ids] = run flows then exit
@@ -1448,6 +1564,7 @@ def main():
     extensions_given = False
     excluded_extensions = set()   # from the deprecated --no-odoo-debug
     legacy_odoo_flag = None   # --odoo-debug / --no-odoo-debug, reported once after parsing
+    events_target = None  # --events: "-" (stdout) or a file path; None = off
     log_level = os.environ.get("OPEN_USERS_LOG_LEVEL", "INFO")
     bad_option = None     # unusable option we saw, reported once argv is fully parsed
     positional = []
@@ -1499,10 +1616,23 @@ def main():
             # Deprecated: now expressed as an exclusion from the default set.
             legacy_odoo_flag = arg
             excluded_extensions.add("odoo_debug")
+        elif arg.startswith("--events="):
+            # Structured JSONL event stream for a GUI or any other program
+            # driving the launcher: "-" is stdout (logging goes to stderr, so
+            # the two never mix), anything else is a file to append to.
+            events_target = arg.split("=", 1)[1].strip()
+            if not events_target:
+                sys.exit("--events= is empty. Use --events=- for stdout, or "
+                         "--events=PATH to append to a file.")
         elif arg.startswith("--log-level="):
             log_level = arg.split("=", 1)[1].strip()
         elif arg == "--init-users-json":
             init_config = True
+        elif arg == "--describe":
+            # Machine-readable inventory (environments, users, scenarios,
+            # extensions) for a front-end. Handled after the parse loop so
+            # --config/--flows-dir can appear in any order.
+            describe_json = True
         elif arg.startswith("--user-session="):
             session_prefix = arg.split("=", 1)[1].strip()
         elif arg.startswith("--url="):
@@ -1593,8 +1723,32 @@ def main():
         sys.exit("Invalid --log-level %r (use DEBUG, INFO, WARNING, ERROR)." % log_level)
     logging.basicConfig(level=level, format="%(asctime)s  %(levelname)-7s %(message)s",
                         datefmt="%H:%M:%S")
+    if events_target:
+        # basicConfig has already claimed stderr for log records, so events can
+        # own stdout. Imported here: a launch without --events must not pay for
+        # the engine package at all.
+        global _events
+        from engine import events as _events_module
+        _events = _events_module
+        _events.configure(events_target)
+        atexit.register(_events.close)
     if init_config:
         init_users_json(config_path)  # writes the starter config (if absent) and exits
+    if describe_json:
+        # Always valid JSON on stdout, even when it fails: the caller is a
+        # program, and an exit code plus a plain-text message would leave it
+        # parsing error strings.
+        try:
+            payload = describe(config_path, flows_dir=flows_dir,
+                               sessions_dir=sessions_dir, reports_dir=reports_dir)
+        except Exception as exc:  # noqa: BLE001 - the report IS the error report
+            json.dump({"error": "%s: %s" % (type(exc).__name__, exc)}, sys.stdout,
+                      indent=2)
+            print()
+            sys.exit(2)
+        json.dump(payload, sys.stdout, indent=2, ensure_ascii=False, default=str)
+        print()
+        sys.exit(0)
     if bad_option is not None:
         sys.exit(_bad_option_message(bad_option, config_path))
     if session_prefix and (os.sep in session_prefix or (os.altsep and os.altsep in session_prefix)):
@@ -1747,6 +1901,15 @@ def main():
     if not chrome:
         sys.exit("Chrome/Chromium not found in PATH.")
 
+    # Everything is resolved and valid from here on, so this event describes the
+    # run a consumer is about to watch (never the passwords, which stay in the
+    # config and the profile).
+    _emit("launcher.start", version=version(), url=url, origin=origin,
+          config=config_path, chrome=chrome, run_tests=run_tests,
+          env=selected.alias if selected is not None else None,
+          users=[{"login": u.login, "class": u.cls, "env": u.env, "tests": list(u.tests)}
+                 for u in users])
+
     # In the foreground (not --detach) on Linux, bind each window's lifetime to this
     # launcher with PR_SET_PDEATHSIG, so even a hard kill of the launcher - e.g. VS
     # Code's "Stop" button, which we can't trap in Python - still closes the windows.
@@ -1841,6 +2004,8 @@ def main():
             **spawn_kwargs,
         )
         procs.append((cls, proc))
+        _emit("window.launched", login=login, cls=cls, pid=proc.pid,
+              profile=profile, session=os.path.basename(profile))
         if run_tests:
             # user_tests is this user's own "tests" field; the runner uses it
             # when --run-tests=config, and ignores it otherwise.
@@ -1850,21 +2015,25 @@ def main():
     log.info("All %d windows launched. The auto-login extension signs each one in on the "
              "login page; profiles persist the session, so later launches open already "
              "logged in.", len(procs))
+    _emit("windows.ready", count=len(procs))
 
     if run_tests:
         # Flow-execution mode: attach to each launched window over CDP, run the
         # requested scenarios, and write reports. Import here so a normal launch
         # never loads playwright/yaml.
         from engine.runner import run_scenarios
+        rc = None   # stays None if the run raises: the event still says so
         try:
             rc = run_scenarios(sessions, run_tests, env={"origin": origin, "url": url},
                                flows_dir=flows_dir, reports_dir=reports_dir,
                                overlay_components=overlay_components, report=report_config,
                                jobs=len(sessions) if jobs == "all" else jobs)
         finally:
+            _emit("run.finished", exit_code=rc)
             if close_after:
                 close_all(procs)  # graceful teardown flushes each login session to disk
         if close_after:
+            _emit("launcher.exit", exit_code=rc)
             sys.exit(rc)
         # Default: reports/screenshots are done, but leave the windows open so the
         # final app state (and the Execution Overlay, if enabled) can be inspected.

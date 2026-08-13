@@ -910,3 +910,95 @@ def test_main_extensions_all_is_accepted(monkeypatch, config):
     assert "Chrome/Chromium not found" in _main(monkeypatch, config, "--env=dev",
                                                 "--filter-users=role_division",
                                                 "--extensions=all")
+
+
+# ------------------------------------------------------------------ --describe
+
+def _describe(monkeypatch, config_path, *args, capsys=None):
+    """Run main() with --describe and return the parsed JSON it printed."""
+    monkeypatch.setattr(sl, "find_chrome", lambda: None)
+    monkeypatch.setattr("sys.argv", ["session_launcher.py", "--config=" + config_path,
+                                     "--describe"] + list(args))
+    with pytest.raises(SystemExit) as exc:
+        sl.main()
+    out = capsys.readouterr().out
+    return json.loads(out), exc.value.code
+
+
+def test_describe_lists_environments_users_and_paths(monkeypatch, config, capsys):
+    payload, code = _describe(monkeypatch, config, capsys=capsys)
+    assert code == 0
+    assert [e["alias"] for e in payload["envs"]] == ["localhost", "app-dev", "app-stg"]
+    assert [u["login"] for u in payload["users"]] == ["admin", "role_division",
+                                                      "role_division"]
+    assert payload["config_path"] == config
+    # The choices a front-end renders as pickers come from here, not from a
+    # second copy of the flag definitions.
+    assert payload["log_levels"] == ["DEBUG", "INFO", "WARNING", "ERROR"]
+    assert "tree" in payload["overlay_components"]
+    assert "screen" in payload["report_artifacts"]
+
+
+def test_describe_never_emits_a_password(monkeypatch, tmp_path, capsys):
+    path = _config(tmp_path, [{"env": LOCAL, "class": "Admin", "login": "admin",
+                               "password": "s3cr3t-not-in-json"}])
+    payload, _code = _describe(monkeypatch, path, capsys=capsys)
+    assert "s3cr3t-not-in-json" not in json.dumps(payload)
+    assert payload["users"][0]["has_password"] is True
+    assert "password" not in payload["users"][0]
+
+
+def test_describe_reports_the_profile_folder_each_user_will_use(monkeypatch, config,
+                                                                capsys):
+    payload, _code = _describe(monkeypatch, config, capsys=capsys)
+    assert payload["users"][0]["profile"] == sl.session_dir_for("", LOCAL, "admin")
+
+
+def test_describe_survives_an_unreadable_config(monkeypatch, tmp_path, capsys):
+    # A front-end asking "what is there?" must get an answer it can render, not a
+    # plain-text death - the message belongs in the payload.
+    path = str(tmp_path / "broken.json")
+    _write(path, "{ not json")
+    payload, code = _describe(monkeypatch, path, capsys=capsys)
+    assert code == 0
+    assert payload["users"] == [] and payload["envs"] == []
+    assert payload["warnings"] and "broken.json" in payload["warnings"][0]
+
+
+def test_describe_reads_scenarios_from_flows_dir(monkeypatch, tmp_path, config, capsys):
+    flows = tmp_path / "flows" / "scenarios"
+    flows.mkdir(parents=True)
+    _write(str(flows / "demo.yaml"),
+           "id: demo\nname: Demo run\ntags: [smoke]\nsteps: []\n")
+    _write(str(flows / "wip.yaml"),
+           "id: wip\nname: Not in all\ntags: [manual]\nsteps: []\n")
+    payload, _code = _describe(monkeypatch, config,
+                               "--flows-dir=" + str(tmp_path / "flows"), capsys=capsys)
+    by_id = {s["id"]: s for s in payload["scenarios"]}
+    assert by_id["demo"]["name"] == "Demo run" and by_id["demo"]["in_all"] is True
+    # tagged manual: runnable by id, but not by --run-tests=all
+    assert by_id["wip"]["in_all"] is False
+    assert payload["tags"] == ["manual", "smoke"]
+
+
+# -------------------------------------------------------------------- --events
+
+def test_main_rejects_an_empty_events_target(monkeypatch, config):
+    assert "--events= is empty" in _main(monkeypatch, config, "--env=dev",
+                                         "--events=", "--url=http://x")
+
+
+def test_main_accepts_events_to_a_file(monkeypatch, config, tmp_path):
+    # Reaching the browser lookup proves parsing accepted it.
+    target = str(tmp_path / "events.jsonl")
+    assert "Chrome/Chromium not found" in _main(monkeypatch, config, "--env=dev",
+                                                "--filter-users=role_division",
+                                                "--events=" + target)
+
+
+def test_events_needs_no_run_tests(monkeypatch, config):
+    # Window lifecycle is worth watching on a plain launch too, so unlike the
+    # flow-execution flags this one does not require --run-tests.
+    assert "Chrome/Chromium not found" in _main(monkeypatch, config, "--env=dev",
+                                                "--filter-users=role_division",
+                                                "--events=-")

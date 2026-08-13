@@ -16,7 +16,7 @@ import threading
 import time
 
 from domain.result import FlowResult, RunResult, StepResult, PASS, FAIL, ERROR
-from engine import artifacts, assertions, compiler, loader
+from engine import artifacts, assertions, compiler, events, loader
 from engine.context import RunContext
 from engine.overlay import ExecutionOverlay, NullOverlay
 
@@ -101,11 +101,25 @@ def _install_session_prefix():
     return remove
 
 
-def _make_overlay(overlay_components, adapter):
-    """An :class:`ExecutionOverlay` when components are requested, else a no-op."""
+def _make_overlay(overlay_components, adapter, session_name=None):
+    """The observer the runner notifies at every execution transition.
+
+    Two independent consumers can want the same transitions: the in-page HUD
+    (``--execution-overlay``) and the JSONL event stream (``--events``). When
+    both are on they are wrapped in a :class:`events.Tee` so the runner keeps
+    its single ``overlay.*`` call site; when neither is, this is a no-op object
+    and nothing downstream has to test for it.
+    """
+    observers = []
     if overlay_components:
-        return ExecutionOverlay(overlay_components, adapter)
-    return NullOverlay()
+        observers.append(ExecutionOverlay(overlay_components, adapter))
+    if events.enabled():
+        observers.append(events.EventObserver(session_name))
+    if not observers:
+        return NullOverlay()
+    if len(observers) == 1:
+        return observers[0]
+    return events.Tee(observers)
 
 DEFAULT_TIMEOUT_MS = 30000        # generous: covers the post-login readiness gate
 DEVTOOLS_WAIT_S = 30              # how long to wait for Chrome to open its debug port
@@ -145,6 +159,7 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
     run = RunResult()
     run_dir = artifacts.new_run_dir(reports_dir)
     log.info("Reports -> %s", run_dir)
+    events.emit("run.dir", dir=run_dir)
 
     # Results are collected per session POSITION, not appended as they finish, so
     # the summary lists sessions in the order given no matter what order they
@@ -296,14 +311,20 @@ def _drive_session(session, session_name, scenarios, env, flows_dir, selectors,
     log.info("--- session %s: %s ---", session_name, ", ".join(scenarios))
     adapter = _attach(profile, session_name)
     if adapter is None:
+        events.emit("session.attach_failed", session=session_name, login=login,
+                    profile=profile, scenarios=list(scenarios))
         return [FlowResult(scenario=scenario_id, session=session_name,
                            status=ERROR, error="could not attach over CDP")
                 for scenario_id in scenarios]
+    events.emit("session.attached", session=session_name, login=login,
+                cls=cls, profile=profile, origin=origin)
     ctx = RunContext(user={"login": login, "class": cls},
                      env={"origin": origin, "url": env.get("url")})
-    overlay = _make_overlay(overlay_components, adapter)
+    overlay = _make_overlay(overlay_components, adapter, session_name)
     bridge = None
-    if overlay.enabled:
+    if overlay_components:
+        # Feeds the HUD's Logs widget only - the event stream's consumer already
+        # receives every log record on stderr.
         bridge = _OverlayLogBridge(overlay)
         logging.getLogger("flowengine").addHandler(bridge)
     # Show the whole plan up front, so a finished or failed scenario stays visible
@@ -513,3 +534,9 @@ def _print_summary(run):
     passed = sum(1 for flow in run.flows if flow.ok)
     log.info("  %d/%d passed", passed, len(run.flows))
     log.info("=============================================")
+    events.emit("run.summary", passed=passed, total=len(run.flows),
+                exit_code=run.exit_code,
+                flows=[{"session": f.session, "scenario": f.scenario,
+                        "status": f.status, "error": f.error,
+                        "duration_ms": round(f.duration_ms), "dir": f.artifacts_dir}
+                       for f in run.flows])

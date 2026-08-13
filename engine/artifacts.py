@@ -20,6 +20,8 @@ import os
 import time
 from dataclasses import asdict, dataclass
 
+from engine import events
+
 log = logging.getLogger("flowengine.artifacts")
 
 # Report artifacts selectable via --report-level, and the screenshot capture
@@ -179,6 +181,15 @@ class Reporter:
 
     def finalize(self, flow_result, failed):
         """Write the finish screenshot and the outcome's report artifacts."""
+        try:
+            self._finalize(flow_result, failed)
+        finally:
+            # Announce what actually landed on disk, whichever branch ran, so a
+            # consumer never has to guess the artifact names from the config.
+            events.emit_artifacts(self._out, scenario=flow_result.scenario,
+                                  session=flow_result.session)
+
+    def _finalize(self, flow_result, failed):
         if not self._cfg.configured:
             self._finalize_legacy(flow_result, failed)
             return
@@ -205,6 +216,8 @@ class Reporter:
         """
         if not self._cfg.configured or "result" in self._cfg.effective_level:
             write_result(flow_result, self._out)
+        events.emit_artifacts(self._out, scenario=flow_result.scenario,
+                              session=flow_result.session)
 
     def _finalize_legacy(self, flow_result, failed):
         if failed:
