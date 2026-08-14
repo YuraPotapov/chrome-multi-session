@@ -434,10 +434,15 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
                      "origin": env.origin, "count": env.count})
 
     scenarios = []
-    flows_dir = flows_dir or os.path.join(SCRIPT_DIR, "flows")
+    # ``flows_dir`` stays None unless it was given, so the loader resolves it the
+    # way a run will - the user's own tree, then the bundled one. Pinning it to a
+    # single directory here would hide every scenario the user has written and,
+    # worse, make the bundled tree look writable to the editor. What gets
+    # reported is where a new scenario would be written.
+    reported_flows_dir = flows_dir or runtime_paths.user_flows_dir()
     try:
         # Lazy: the loader needs pyyaml, which a plain launch never installs.
-        from engine import loader
+        from engine import flowfile, loader
         skipped = loader._SKIP_TAGS
         for scenario_id in loader.discover_scenarios(flows_dir, include_templates=True):
             try:
@@ -446,9 +451,14 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
                 warnings.append("scenario %s: %s" % (scenario_id, exc))
                 continue
             tags = list(flow.tags)
+            # Which tree it came from decides whether the editor may touch it:
+            # anything bundled with the app is replaced on the next upgrade.
+            writable = flowfile.is_writable(flow.source, flows_dir)
             scenarios.append({"id": scenario_id, "name": flow.name,
                               "description": flow.description, "tags": tags,
                               "path": flow.source,
+                              "source": "user" if writable else "bundled",
+                              "writable": writable,
                               # what --run-tests=all would actually run
                               "in_all": not (set(tags) & skipped)})
     except ImportError as exc:
@@ -467,13 +477,17 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
         "version": version(),
         "script": os.path.abspath(__file__),
         "config_path": config_path,
-        "flows_dir": flows_dir,
+        "flows_dir": reported_flows_dir,
         "reports_dir": reports_dir or runtime_paths.reports_dir(),
         "sessions_dir": sessions_dir or DEFAULT_SESSIONS_DIR,
         # The front-end needs to be able to say "install Chrome" before the user
         # tries to launch anything, so the answer travels with the inventory.
         "chrome": describe_chrome(),
         "log_levels": ["DEBUG", "INFO", "WARNING", "ERROR"],
+        # The step grammar, straight from the compiler, so a scenario editor can
+        # offer exactly the actions that exist and know the shape of each one's
+        # arguments without keeping its own copy of the list to drift out of step.
+        "flow_actions": flow_actions(),
         "overlay_components": list(_OVERLAY_COMPONENTS),
         "report_artifacts": list(_REPORT_ARTIFACTS),
         "report_screen_modes": list(_REPORT_SCREEN_MODES),
@@ -484,6 +498,96 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
         "extensions": extensions,
         "warnings": warnings,
     }
+
+
+def flow_actions():
+    """Every step action, grouped by the shape of its arguments.
+
+    Empty when the engine is not installed - a plain launch never needs it, and
+    --describe degrades rather than failing when the flows extra is missing.
+    """
+    try:
+        from engine import compiler
+    except ImportError:
+        return {}
+    return {
+        # target only, and the target is a named selector or raw CSS
+        "selector_only": sorted(compiler.SELECTOR_ONLY),
+        # target and value both required
+        "selector_and_value": sorted(compiler.SELECTOR_AND_VALUE),
+        # value only; there is nothing to point at
+        "value_only": sorted(compiler.VALUE_ONLY),
+        # target is a URL, never a selector
+        "url_target": sorted(compiler.URL_TARGET),
+        # composition: the target is another flow's id
+        "use": [compiler.USE],
+        # accepted by wait_for; anything else is Playwright's default
+        "states": ["visible", "attached", "hidden", "detached"],
+    }
+
+
+def run_flow_command(command, source, flows_dir=None):
+    """Serve one --flow-show/save/delete/import call: print JSON, then exit.
+
+    The scenario file format belongs to the engine, and the GUI depends on PySide6
+    and nothing else - it cannot read or write YAML. So these four commands are
+    the whole of the editing surface, and like --describe they always answer with
+    JSON, even on failure: the caller is a program, and an exit code plus a
+    plain-text message would leave it parsing error strings.
+    """
+    kind, argument = command
+    try:
+        # Lazy, like every other engine import here: a launch must not pay for
+        # pyyaml just because these flags exist.
+        from engine import flowfile
+        if kind == "show":
+            payload = flowfile.describe_flow(argument, flows_dir)
+        elif kind == "delete":
+            payload = flowfile.delete(argument, flows_dir)
+        elif kind == "import":
+            payload = flowfile.import_file(argument, flows_dir)
+        elif kind == "save":
+            payload = _save_flow(argument, source, flows_dir)
+        else:                                   # unreachable; kept honest anyway
+            raise ValueError("unknown flow command %r" % kind)
+    except Exception as exc:  # noqa: BLE001 - the report IS the error report
+        json.dump({"ok": False, "id": argument,
+                   "problems": ["%s: %s" % (type(exc).__name__, exc)]},
+                  sys.stdout, indent=2, ensure_ascii=False, default=str)
+        print()
+        sys.exit(2)
+    json.dump(payload, sys.stdout, indent=2, ensure_ascii=False, default=str)
+    print()
+    # "ok" is absent from a --flow-show payload, which is a read and cannot fail
+    # here; only the writes report one.
+    sys.exit(0 if payload.get("ok", True) else 1)
+
+
+def _save_flow(flow_id, source, flows_dir=None):
+    """--flow-save: read the JSON document at ``source`` and write the scenario.
+
+    The document is either ``{"yaml": "..."}`` - the text someone typed - or
+    ``{"meta": {...}, "steps": [...]}``, which is what a step editor and the
+    recorder produce. One writer either way, so both go through the same
+    validation and land in the same shape on disk.
+    """
+    from engine import flowfile
+    if not source:
+        return {"ok": False, "id": flow_id,
+                "problems": ["--flow-save needs --from=FILE (a JSON document)"]}
+    try:
+        with open(source, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "id": flow_id,
+                "problems": ["cannot read %s: %s" % (source, exc)]}
+    if not isinstance(document, dict):
+        return {"ok": False, "id": flow_id,
+                "problems": ["%s must contain a JSON object" % source]}
+    return flowfile.save(flow_id, flows_dir,
+                         yaml_text=document.get("yaml"),
+                         meta=document.get("meta"),
+                         steps=document.get("steps"))
 
 
 def _shortening_example(envs):
@@ -1638,6 +1742,18 @@ Options:
   --version, -V             Print the version and exit.
   --help, -h                Show this help and exit.
 
+Editing scenarios (answer with JSON on stdout, then exit):
+  --flow-show=ID            One scenario as JSON: its text, its parsed steps,
+                            whether it can be edited, and anything it references
+                            that does not resolve here.
+  --flow-save=ID --from=F   Write a scenario from the JSON document in file F -
+                            either {"yaml": "..."} or {"meta": {...},
+                            "steps": [...]}. Validated by compiling it first;
+                            nothing is written unless it compiles.
+  --flow-delete=ID          Delete a scenario. Refuses the ones that ship with
+                            the application - duplicate those instead.
+  --flow-import=FILE        Copy a scenario file in, validating it first.
+
 Flow execution (require --run-tests):
   --run-tests=LIST          Attach over CDP, run scenarios, write reports, then
                             exit (0 = all passed). Values: all, config (each user
@@ -1686,6 +1802,8 @@ def main():
     cli_password = None
     init_config = False
     describe_json = False # --describe: print the JSON inventory and exit
+    flow_command = None   # ("show"|"save"|"delete"|"import", id or path); JSON, then exit
+    flow_source = None    # --from=FILE: the JSON document --flow-save writes
     users_filter = None   # None = launch every user in the config
     env_name = None       # --env=NAME; None = every environment
     run_tests = None      # None = just launch; "all" or [ids] = run flows then exit
@@ -1771,6 +1889,22 @@ def main():
             # extensions) for a front-end. Handled after the parse loop so
             # --config/--flows-dir can appear in any order.
             describe_json = True
+        elif arg.startswith("--flow-show="):
+            # The scenario editing commands. All four answer with JSON and exit,
+            # like --describe, and all are handled after the parse loop so
+            # --flows-dir can appear on either side of them.
+            flow_command = ("show", arg.split("=", 1)[1].strip())
+        elif arg.startswith("--flow-save="):
+            flow_command = ("save", arg.split("=", 1)[1].strip())
+        elif arg.startswith("--flow-delete="):
+            flow_command = ("delete", arg.split("=", 1)[1].strip())
+        elif arg.startswith("--flow-import="):
+            flow_command = ("import", os.path.abspath(os.path.expanduser(
+                arg.split("=", 1)[1].strip())))
+        elif arg.startswith("--from="):
+            # The document --flow-save writes, as JSON in a file. A file rather
+            # than stdin so the command can be run and debugged from a shell.
+            flow_source = os.path.abspath(os.path.expanduser(arg.split("=", 1)[1].strip()))
         elif arg.startswith("--user-session="):
             session_prefix = arg.split("=", 1)[1].strip()
         elif arg.startswith("--url="):
@@ -1872,6 +2006,8 @@ def main():
         atexit.register(_events.close)
     if init_config:
         init_users_json(config_path)  # writes the starter config (if absent) and exits
+    if flow_command:
+        run_flow_command(flow_command, flow_source, flows_dir)
     if describe_json:
         # Always valid JSON on stdout, even when it fails: the caller is a
         # program, and an exit code plus a plain-text message would leave it

@@ -1051,3 +1051,119 @@ def test_describe_chrome_is_quiet_about_a_working_browser(monkeypatch):
     monkeypatch.setattr(sl, "_chrome_version_string", lambda path: "Google Chrome 151")
     assert sl.describe_chrome() == {"path": "/usr/bin/google-chrome",
                                     "version": "Google Chrome 151", "message": ""}
+
+
+# ------------------------------------------------------- editing scenarios
+# The four commands the Scenarios page is built on. The file format belongs to
+# the engine (see tests/test_flowfile.py); what is checked here is the wiring -
+# that each flag reaches it, that the answer is always JSON, and that the exit
+# code says whether it worked, because the caller is a program.
+
+FIXTURE_FLOWS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "fixtures", "flows")
+
+
+@pytest.fixture
+def flow_tree(tmp_path, monkeypatch):
+    """A writable tree in front of the fixture tree, as an installed build has."""
+    from engine import loader
+
+    user = tmp_path / "user-flows"
+    (user / "scenarios").mkdir(parents=True)
+    monkeypatch.setattr(loader.runtime_paths, "flows_search_path",
+                        lambda: [str(user), FIXTURE_FLOWS])
+    return user
+
+
+def _flow_cmd(monkeypatch, capsys, *args):
+    """Run main() with the given flags; returns (exit_code, parsed JSON)."""
+    monkeypatch.setattr("sys.argv", ["session_launcher.py"] + list(args))
+    with pytest.raises(SystemExit) as exc:
+        sl.main()
+    out = capsys.readouterr().out
+    return exc.value.code, json.loads(out)
+
+
+def test_flow_show_returns_the_text_and_the_steps(monkeypatch, capsys, flow_tree):
+    code, payload = _flow_cmd(monkeypatch, capsys, "--flow-show=demo_smoke")
+    assert code == 0
+    assert payload["source"] == "bundled" and not payload["writable"]
+    assert [s["action"] for s in payload["steps"]]
+    # The file as written, comments and all - the YAML view shows what is on
+    # disk, not a re-rendering of it, so opening a scenario cannot lose anything.
+    assert payload["yaml"].startswith("# The fixture equivalent")
+    assert "id: demo_smoke" in payload["yaml"]
+
+
+def test_flow_show_reports_a_missing_scenario_as_json(monkeypatch, capsys, flow_tree):
+    # Never a bare traceback: the caller parses this.
+    code, payload = _flow_cmd(monkeypatch, capsys, "--flow-show=no_such")
+    assert code == 2 and payload["ok"] is False
+    assert "no scenario" in payload["problems"][0]
+
+
+def test_flow_save_writes_from_a_step_document(monkeypatch, capsys, flow_tree, tmp_path):
+    doc = tmp_path / "doc.json"
+    doc.write_text(json.dumps({"meta": {"name": "Written", "tags": ["smoke"]},
+                               "steps": [{"action": "assert_visible",
+                                          "target": "dashboard"}]}),
+                   encoding="utf-8")
+    code, payload = _flow_cmd(monkeypatch, capsys,
+                              "--flow-save=written", "--from=%s" % doc)
+    assert code == 0 and payload["ok"]
+    assert (flow_tree / "scenarios" / "written.yaml").exists()
+
+
+def test_flow_save_exits_non_zero_when_it_does_not_compile(monkeypatch, capsys,
+                                                           flow_tree, tmp_path):
+    doc = tmp_path / "doc.json"
+    doc.write_text(json.dumps({"steps": [{"action": "nonsense", "target": "x"}]}),
+                   encoding="utf-8")
+    code, payload = _flow_cmd(monkeypatch, capsys,
+                              "--flow-save=broken", "--from=%s" % doc)
+    assert code == 1 and not payload["ok"]
+    assert not (flow_tree / "scenarios" / "broken.yaml").exists()
+
+
+def test_flow_save_without_from_says_so(monkeypatch, capsys, flow_tree):
+    code, payload = _flow_cmd(monkeypatch, capsys, "--flow-save=x")
+    assert code == 1 and "--from=FILE" in payload["problems"][0]
+
+
+def test_flow_delete_refuses_a_bundled_scenario(monkeypatch, capsys, flow_tree):
+    code, payload = _flow_cmd(monkeypatch, capsys, "--flow-delete=demo_smoke")
+    assert code == 1 and not payload["ok"]
+    assert "duplicate it instead" in payload["problems"][0]
+
+
+def test_flow_import_copies_a_file_in(monkeypatch, capsys, flow_tree, tmp_path):
+    source = tmp_path / "shared.yaml"
+    source.write_text("id: shared\nname: Shared\ntags: []\nsteps:\n"
+                      "  - assert_visible: dashboard\n", encoding="utf-8")
+    code, payload = _flow_cmd(monkeypatch, capsys, "--flow-import=%s" % source)
+    assert code == 0 and payload["ok"] and payload["id"] == "shared"
+    assert (flow_tree / "scenarios" / "shared.yaml").exists()
+
+
+def test_describe_says_which_scenarios_can_be_edited(monkeypatch, capsys, flow_tree,
+                                                     config):
+    # The page needs this to know whether to offer Save or only Duplicate.
+    from engine import flowfile
+    flowfile.save("mine", steps=[{"action": "assert_visible", "target": "dashboard"}])
+    code, payload = _flow_cmd(monkeypatch, capsys, "--config=" + config, "--describe")
+    assert code == 0
+    by_id = {s["id"]: s for s in payload["scenarios"]}
+    assert by_id["mine"]["source"] == "user" and by_id["mine"]["writable"]
+    assert by_id["demo_smoke"]["source"] == "bundled"
+    assert not by_id["demo_smoke"]["writable"]
+
+
+def test_describe_advertises_the_step_grammar(monkeypatch, capsys, flow_tree, config):
+    # So an editor's action menu cannot drift from what the compiler accepts.
+    from engine import compiler
+
+    _code, payload = _flow_cmd(monkeypatch, capsys, "--config=" + config, "--describe")
+    actions = payload["flow_actions"]
+    assert set(actions["selector_and_value"]) == compiler.SELECTOR_AND_VALUE
+    assert set(actions["selector_only"]) == compiler.SELECTOR_ONLY
+    assert "goto" in actions["url_target"] and "use" in actions["use"]

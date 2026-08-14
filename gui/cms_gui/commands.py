@@ -82,9 +82,12 @@ FLAGS = [
 BY_NAME = {f.name: f for f in FLAGS}
 GROUPS = [GENERAL, FLOW, REPORTS]
 
-# Flags the GUI drives itself rather than exposing as form controls.
+# Flags the GUI drives itself rather than exposing as form controls. The
+# --flow-* ones belong to the Scenarios page: they are how it reads and writes
+# scenario files, since the GUI has no YAML of its own.
 GUI_OWNED = ("--config", "--events", "--describe", "--init-users-json",
-             "--help", "-h", "--version", "-V")
+             "--flow-show", "--flow-save", "--flow-delete", "--flow-import",
+             "--from", "--help", "-h", "--version", "-V")
 
 # One-shot commands offered in the Tools menu: (label, args, needs a config).
 ONE_SHOTS = [
