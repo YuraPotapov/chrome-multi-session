@@ -374,8 +374,7 @@ class LaunchSessionsPage(QWidget):
         config = launch.merged(config)
         self._building = True
         try:
-            alias = config["environment"]
-            self.env_combo.setCurrentText(alias or ALL_ENVIRONMENTS)
+            self._select_env(config["environment"])
 
             users = config["users"]
             self.users_mode.set_current(
@@ -547,7 +546,7 @@ class LaunchSessionsPage(QWidget):
             self.env_combo.addItem(ALL_ENVIRONMENTS)
             for env in inventory.envs:
                 self.env_combo.addItem(env.get("alias", ""))
-            self.env_combo.setCurrentText(alias or ALL_ENVIRONMENTS)
+            self._select_env(alias)
             self.env_combo.blockSignals(False)
 
             self._populate_users(config["users"]["logins"])
@@ -670,6 +669,25 @@ class LaunchSessionsPage(QWidget):
             self.overlay_list.add(choice, choice)
         self.overlay_list.set_checked(keep)
 
+    def _select_env(self, alias):
+        """Put ``alias`` in the environment combo, adding it if it is not offered.
+
+        The same rule the accounts, extensions and scenario lists already follow:
+        a configured value the inventory does not have is kept, not dropped,
+        because dropping it silently rewrites a saved configuration. Here it also
+        has to be kept for a second reason - the combo is filled from --describe,
+        which answers ~100ms after the page is built, so at restore time every
+        environment is "not offered". setCurrentText on a non-editable QComboBox
+        is a no-op when the item is absent, which is what made the choice vanish
+        between one run of the app and the next.
+        """
+        if not alias:
+            self.env_combo.setCurrentIndex(0)          # All environments
+            return
+        if self.env_combo.findText(alias) < 0:
+            self.env_combo.addItem(alias)
+        self.env_combo.setCurrentText(alias)
+
     def _update_env_note(self):
         if not self.inventory:
             self.env_note.setText("")
@@ -686,7 +704,10 @@ class LaunchSessionsPage(QWidget):
                                       % (env.get("origin") or "no address",
                                          env.get("count", "?")))
                 return
-        self.env_note.setText("")
+        # Kept, because it is what the configuration says (see _select_env), but
+        # the config no longer has it - so say so rather than leave a blank line
+        # under an environment that would launch nothing.
+        self.env_note.setText("Not in users.json any more · 0 accounts")
 
     # -- unsaved changes ------------------------------------------------------
     # A saved configuration is a file, and the controls are a working copy of it.

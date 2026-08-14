@@ -147,3 +147,82 @@ def test_an_unsaved_edit_survives_the_window_closing(qapp):
             second._configs.remove(name)
         second.settings.launch_config_name = ""
         second.close()
+
+
+# ----------------------------------------------------- the environment survives
+
+def _inventory():
+    from cms_gui import core as core_mod
+
+    return core_mod.Inventory({
+        "envs": [{"alias": "claim-dev", "value": "https://claim-dev.example.com/",
+                  "origin": "https://claim-dev.example.com", "count": 1},
+                 {"alias": "localhost", "value": "localhost:8069",
+                  "origin": "http://localhost:8069", "count": 1}],
+        "users": [{"env": "https://claim-dev.example.com/", "login": "role_agent",
+                   "class": "Agent", "tests": [], "has_password": True},
+                  {"env": "localhost:8069", "login": "admin",
+                   "class": "Admin", "tests": [], "has_password": True}],
+        "scenarios": [], "extensions": [], "tags": [],
+    })
+
+
+def test_the_chosen_environment_comes_back_after_a_restart(qapp):
+    """The environment is the one control whose choices arrive late.
+
+    Every list on this page is filled from --describe, which lands ~100ms after
+    the window is built - so the page is restored against an environment combo
+    that still holds nothing but "All environments". Setting a non-editable
+    QComboBox to an item it does not have is a silent no-op, and the restored
+    choice is gone before the inventory ever turns up.
+    """
+    settings = Settings()
+    first = LaunchSessionsPage(settings)
+    try:
+        first.set_inventory(_inventory())
+        first.env_combo.setCurrentText("claim-dev")
+        _open_saved(first, "Admin")
+        assert first.state()["environment"] == "claim-dev"
+        assert not first.is_dirty()
+    finally:
+        first.close()
+
+    second = LaunchSessionsPage(Settings())
+    try:
+        # Restored before --describe answers, exactly as the window does it.
+        assert second.state()["environment"] == "claim-dev", \
+            "the restored environment was dropped on the way in"
+        second.set_inventory(_inventory())
+        assert second.state()["environment"] == "claim-dev", \
+            "the inventory arriving reset the environment"
+        assert not second.is_dirty(), \
+            "nothing was touched, so no Save button should be red"
+    finally:
+        for name in list(second._configs.names()):
+            second._configs.remove(name)
+        second.settings.launch_config_name = ""
+        second.close()
+
+
+def test_an_environment_the_config_no_longer_has_is_kept_and_flagged(qapp):
+    """Removing an env from users.json must not silently rewrite a saved run.
+
+    The accounts, extensions and scenario lists all keep a value the inventory
+    has stopped offering; the environment now does too. Keeping it means the note
+    beside it has to explain itself, or it reads as an ordinary choice that would
+    launch nothing.
+    """
+    page = LaunchSessionsPage(Settings())
+    try:
+        page.set_inventory(_inventory())
+        page.env_combo.setCurrentText("claim-dev")
+        assert page.state()["environment"] == "claim-dev"
+
+        from cms_gui import core as core_mod
+        page.set_inventory(core_mod.Inventory({"envs": [], "users": []}))
+
+        assert page.state()["environment"] == "claim-dev"
+        assert "users.json" in page.env_note.text()
+    finally:
+        page.settings.launch_config_name = ""
+        page.close()
