@@ -120,7 +120,8 @@ def compile_plan(scenario_id, flows_dir=None, selectors=None, ctx=None):
     to ``steps`` in the same DFS order the tree is built, so each leaf's
     ``step_index`` matches the runner's ``enumerate(steps)`` position 1:1.
     """
-    flows_dir = flows_dir or loader.DEFAULT_FLOWS_DIR
+    # No default of our own: None means "wherever the loader looks", which since
+    # there can be more than one tree is a search path, not a directory.
     selectors = selectors or {}
     stack = []  # flow ids currently being expanded, for cycle detection
     steps = []

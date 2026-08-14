@@ -55,3 +55,67 @@ def test_scenarios_with_tag():
     simple = loader.scenarios_with_tag("simple", FLOWS)
     assert "demo_simple" in simple
     assert "demo_smoke" not in simple
+
+
+# ------------------------------------------------------------- layered trees
+# An installed build keeps its flows inside the application bundle, where nothing
+# can be written, so anything the user creates lives in a tree of their own that
+# is searched first. These are the properties that makes usable.
+
+@pytest.fixture
+def layered(tmp_path, monkeypatch):
+    """A user tree in front of the fixture tree, as an installed build has."""
+    user = tmp_path / "user-flows"
+    (user / "scenarios").mkdir(parents=True)
+    monkeypatch.setattr(loader.runtime_paths, "flows_search_path",
+                        lambda: [str(user), FLOWS])
+    return user
+
+
+def _scenario(path, flow_id, name, tags=()):
+    path.write_text("id: %s\nname: %s\ntags: [%s]\nsteps:\n  - assert_visible: dashboard\n"
+                    % (flow_id, name, ", ".join(tags)), encoding="utf-8")
+
+
+def test_a_user_scenario_is_found(layered):
+    _scenario(layered / "scenarios" / "recorded.yaml", "recorded", "Recorded")
+    assert "recorded" in loader.discover_scenarios()
+    assert loader.load_flow("recorded").name == "Recorded"
+
+
+def test_a_user_scenario_shadows_a_bundled_one_of_the_same_id(layered):
+    # One id names one file. Otherwise --run-tests=all would find the pair and
+    # they would disagree about what it should run.
+    _scenario(layered / "scenarios" / "demo_smoke.yaml", "demo_smoke", "Mine")
+    assert loader.load_flow("demo_smoke").name == "Mine"
+    assert loader.discover_scenarios().count("demo_smoke") == 1
+
+
+def test_a_user_scenario_still_reaches_the_bundled_blocks(layered):
+    # The whole point of searching rather than copying: a recorded scenario can
+    # `use: auth.login` without the user's tree holding a copy of it.
+    assert loader.load_flow("auth.login").steps
+    assert loader.flow_path("auth.login").startswith(FLOWS)
+
+
+def test_selectors_merge_with_the_users_taking_precedence(layered):
+    (layered / "selectors.yaml").write_text("dashboard: \".mine\"\nextra: \"#x\"\n",
+                                            encoding="utf-8")
+    selectors = loader.load_selectors()
+    assert selectors["dashboard"] == ".mine"      # overridden
+    assert selectors["extra"] == "#x"             # added
+    assert selectors["user_menu"] == ".app-user-menu"   # bundled ones still resolve
+
+
+def test_an_explicit_flows_dir_means_only_that_directory(layered):
+    # --flows-dir is taken literally; only the default is layered. Otherwise
+    # pointing at a tree would silently pull in flows from somewhere else.
+    _scenario(layered / "scenarios" / "recorded.yaml", "recorded", "Recorded")
+    assert "recorded" not in loader.discover_scenarios(FLOWS)
+    with pytest.raises(loader.FlowNotFound):
+        loader.load_flow("recorded", FLOWS)
+
+
+def test_a_missing_flow_points_at_where_it_would_be_written(layered):
+    # The nearest tree, not the read-only bundle - that is where it would go.
+    assert loader.canonical_path("brand_new").startswith(str(layered))

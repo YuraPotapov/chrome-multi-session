@@ -74,14 +74,40 @@ def config_path():
     return os.path.join(user_data_root(), "users.json")
 
 
-def flows_dir():
-    """The declarative flows tree.
-
-    Bundled and read-only: flows are app content, so an upgrade ships new ones
-    without having to merge them into a user's copy. Anyone maintaining their own
-    tree passes --flows-dir (the GUI exposes it too).
-    """
+def bundled_flows_dir():
+    """The flows tree that ships with the app: read-only, replaced on upgrade."""
     return os.path.join(app_root(), "flows")
+
+
+def user_flows_dir():
+    """The flows tree the user owns, where anything they write goes."""
+    return os.path.join(user_data_root(), "flows")
+
+
+def flows_search_path():
+    """Where to look for a flow, nearest first.
+
+    The user's own tree, then the one that ships with the app. Two things fall
+    out of that order, and both are the point: a scenario recorded or edited here
+    is found before anything bundled with the same id, and a scenario in the
+    user's tree can still ``use:`` the blocks and named selectors the app ships,
+    without copying them.
+
+    In a source checkout the two are the same directory and the list collapses to
+    one entry, so a checkout resolves flows exactly as it always has.
+    """
+    seen, path = set(), []
+    for candidate in (user_flows_dir(), bundled_flows_dir()):
+        key = os.path.normpath(os.path.abspath(candidate))
+        if key not in seen:
+            seen.add(key)
+            path.append(candidate)
+    return path
+
+
+def flows_dir():
+    """The flows tree to write to, and the first one searched."""
+    return user_flows_dir()
 
 
 def extensions_dir():
@@ -117,7 +143,10 @@ def ensure_user_data_root(example_config=None):
     is written.
     """
     root = user_data_root()
-    for path in (root, sessions_dir(), reports_dir()):
+    for path in (root, sessions_dir(), reports_dir(),
+                 # Scenarios are written here - by the editor, and later by the
+                 # recorder - so the directory has to exist before either runs.
+                 os.path.join(user_flows_dir(), "scenarios")):
         try:
             os.makedirs(path, exist_ok=True)
         except OSError:

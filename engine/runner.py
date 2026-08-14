@@ -148,7 +148,9 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
     extras queue and start as soon as a slot frees.
     """
     env = env or {}
-    flows_dir = flows_dir or loader.DEFAULT_FLOWS_DIR
+    # flows_dir stays None when it was not given: the loader turns that into its
+    # search path (the user's own tree, then the bundled one), and pinning it to
+    # a single directory here would hide everything the user has written.
     reports_dir = reports_dir or DEFAULT_REPORTS_DIR
     report = report or artifacts.ReportConfig()
     selectors = loader.load_selectors(flows_dir)

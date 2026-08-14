@@ -50,9 +50,33 @@ def test_a_checkout_is_not_given_a_users_json(tmp_path, monkeypatch):
 def test_frozen_splits_resources_from_user_data(frozen):
     bundle, home = frozen
     assert rp.app_root() == str(bundle)
-    assert rp.flows_dir() == os.path.join(str(bundle), "flows")
+    assert rp.bundled_flows_dir() == os.path.join(str(bundle), "flows")
     assert rp.user_data_root() == os.path.join(str(home), rp.USER_DIR_NAME)
     assert rp.reports_dir().startswith(str(home))
+
+
+def test_frozen_searches_the_users_flows_before_the_bundled_ones(frozen):
+    # The order is the feature: a recorded scenario shadows a bundled one of the
+    # same id, and a scenario in the user's tree can still use: the shipped blocks.
+    bundle, home = frozen
+    assert rp.flows_search_path() == [
+        os.path.join(str(home), rp.USER_DIR_NAME, "flows"),
+        os.path.join(str(bundle), "flows"),
+    ]
+    # What gets written is the user's tree, never the bundle.
+    assert rp.flows_dir() == rp.user_flows_dir()
+
+
+def test_a_checkout_has_one_flows_tree():
+    # Both roles are the same directory there, so the search path collapses and a
+    # checkout resolves flows exactly as it did before there was a search path.
+    assert rp.flows_search_path() == [rp.bundled_flows_dir()]
+
+
+def test_first_run_creates_somewhere_to_put_scenarios(frozen):
+    bundle, home = frozen
+    root = rp.ensure_user_data_root()
+    assert os.path.isdir(os.path.join(root, "flows", "scenarios"))
 
 
 def test_cms_home_overrides_everything(frozen, tmp_path):
