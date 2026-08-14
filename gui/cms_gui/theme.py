@@ -112,6 +112,7 @@ _GLYPH_CANDIDATES = {
     "credentials": ("◍", "●", "o"),
     "command": ("⌗", "#", "#"),
     "launch": ("◈", "◆", "+"),
+    "scenarios": ("▷", "▹", ">"),
     "history": ("◷", "◔", "@"),
     "developer": ("◧", "◐", "%"),
     "log": ("≡", "☰", "="),

@@ -32,11 +32,13 @@ from .pages.history import HistoryPage
 from .pages.launch import LaunchSessionsPage
 from .pages.log import LogPage
 from .pages.run import RunPage
+from .pages.scenarios import ScenariosPage
 from .pages.settings_dialog import SettingsDialog
 
 # (page key, label, glyph name resolved by theme.glyph at build time)
 CONFIGURE = [("environments", "Environments", "environments"),
              ("credentials", "Credentials", "credentials"),
+             ("scenarios", "Scenarios", "scenarios"),
              ("commands", "Command", "command"),
              ("launch", "Launch Sessions", "launch")]
 OBSERVE = [("run", "Run", "run"), ("log", "Log", "log"),
@@ -242,6 +244,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.environments = EnvironmentsPage(self.settings)
         self.credentials = CredentialsPage()
+        self.scenarios = ScenariosPage(self.settings)
         self.command = CommandPage(self.settings)
         self.launch = LaunchSessionsPage(self.settings)
         self.run = RunPage(self.run_state)
@@ -253,6 +256,7 @@ class MainWindow(QMainWindow):
         self.log.set_history(self.history)
         self.artifacts.set_history(self.history)
         self._pages = {"environments": self.environments, "credentials": self.credentials,
+                       "scenarios": self.scenarios,
                        "commands": self.command, "launch": self.launch,
                        "run": self.run, "log": self.log,
                        "artifacts": self.artifacts, "history": self.history_page}
@@ -265,6 +269,9 @@ class MainWindow(QMainWindow):
         self.command.run_requested.connect(lambda: self.start_run("commands"))
         self.launch.run_requested.connect(lambda: self.start_run("launch"))
         self.credentials.saved.connect(self.refresh_inventory)
+        # Writing a scenario changes what --run-tests can run, so the inventory
+        # every other page reads has to be re-read.
+        self.scenarios.saved.connect(self.refresh_inventory)
         self.environments.directories_changed.connect(self._directories_changed)
         self.run_state.run_dir_known.connect(self.artifacts.set_run_dir)
         self.run_state.artifacts_written.connect(self.artifacts.note_artifacts)
@@ -366,6 +373,8 @@ class MainWindow(QMainWindow):
     def refresh_inventory(self):
         self.command.set_core(self.core)
         self.launch.set_core(self.core)
+        # Scenarios reads and writes files through the core too, not just runs it.
+        self.scenarios.set_core(self.core)
         if not self.core.is_configured():
             self.describe_label.setText("core not configured")
             self._update_status()
@@ -384,6 +393,7 @@ class MainWindow(QMainWindow):
         self.environments.set_inventory(self.inventory)
         self.command.set_inventory(self.inventory)
         self.launch.set_inventory(self.inventory)
+        self.scenarios.set_inventory(self.inventory)
         self.credentials.load(self.inventory.config_path or self.core.config_path)
         self.describe_label.setText(self.inventory.summary())
         self.rail_note.setText("core %s\nPySide6 %s" % (self.inventory.version,

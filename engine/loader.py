@@ -155,6 +155,30 @@ def scenario_files(flows_dir=None):
     return found
 
 
+def block_files(flows_dir=None):
+    """``{dotted id: path}`` for every reusable block, nearest tree winning.
+
+    Everything that is not a scenario and not selectors.yaml: the files a
+    scenario reaches through ``use:``. They are not runnable on their own, so
+    discover_scenarios deliberately ignores them - but an editor has to be able
+    to show you the one a step names, or ``use: access.open_app`` is a dead end.
+    """
+    found = {}
+    for root in search_path(flows_dir):
+        if not os.path.isdir(root):
+            continue
+        for folder, _dirs, files in os.walk(root):
+            relative = os.path.relpath(folder, root)
+            if relative == "." or relative.split(os.sep)[0] == "scenarios":
+                continue
+            for name in sorted(files):
+                if not name.endswith(".yaml"):
+                    continue
+                parts = relative.split(os.sep) + [name[:-5]]
+                found.setdefault(".".join(parts), os.path.join(folder, name))
+    return found
+
+
 def discover_scenarios(flows_dir=None, include_templates=False):
     """Return the ids of runnable scenarios under ``flows/scenarios`` (sorted).
 

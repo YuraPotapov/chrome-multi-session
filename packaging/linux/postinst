@@ -21,7 +21,8 @@ case "$1" in
       group=$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")
       if [ -n "$home" ] && [ -d "$home" ]; then
         project="$home/$USER_DIR_NAME"
-        mkdir -p "$project/user_sessions" "$project/reports"
+        mkdir -p "$project/user_sessions" "$project/reports" \
+                 "$project/flows/scenarios"
         if [ ! -e "$project/users.json" ]; then
           example="$APP_DIR/core/_internal/users.example.json"
           if [ -f "$example" ]; then

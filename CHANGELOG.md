@@ -16,6 +16,36 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+### Added
+- **A Scenarios page** in the GUI: every scenario and every block, a step editor
+  and a YAML view of the same file, plus New, Duplicate, Import, Export, Delete
+  and Revert. A step's target is an alias - another flow's id, or a name from
+  selectors.yaml - so the page shows what each one resolves to and can follow it:
+  `use: access.open_app` opens that block, a named target leads to the selector
+  it stands for. `selectors.yaml` is editable too, with the shipped names listed
+  read-only and "Add to my selectors" taking a copy to override.
+- **A writable flows tree.** Flows now resolve against a search path: your own
+  `~/ChromeMultiSession/flows` first, then the one that ships with the app. A
+  scenario of yours shadows a bundled one with the same id and can still `use:`
+  the shipped blocks without copying them; `selectors.yaml` is merged rather than
+  replaced, so re-pointing one name after a UI change does not mean taking the
+  whole file. `--flows-dir` still means exactly the directory it names - only the
+  default is layered - and in a source checkout both trees are the same directory,
+  so nothing about development changes.
+- Core commands for scenario files, since the GUI depends on PySide6 and nothing
+  else and cannot read or write YAML: `--flow-show`, `--flow-save --from=FILE`,
+  `--flow-delete`, `--flow-import`, `--selectors-show`, `--selectors-save`. All
+  answer with JSON and exit, like `--describe`, and nothing is written unless it
+  compiles first.
+- `--describe` now carries the blocks, the merged selector map, and per scenario
+  which tree it came from and whether it can be edited - plus the step grammar
+  itself, so an editor's action menu cannot drift from what the compiler accepts.
+
+### Fixed
+- `describe()` defaulted `flows_dir` to the bundled directory before the loader
+  saw it, the same way the compiler and the runner did. That hid every scenario in
+  the user's own tree and reported all 53 bundled ones as editable.
+
 ## [0.5.0] - 2026-08-14
 
 The first release that installs. Everything below had been sitting in

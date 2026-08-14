@@ -8,6 +8,10 @@ __pycache__/
 # Per-user Chrome profiles + generated auto-login extensions (contain cookies/passwords)
 user_sessions/
 
+# The one-slot backup every atomic write leaves behind (users.json, selectors.yaml,
+# a scenario). It is a safety net for the machine it was written on, not content.
+*.bak
+
 # User config holds logins/passwords - copy users.example.json, or scaffold your
 # own with --init-users-json
 users.json

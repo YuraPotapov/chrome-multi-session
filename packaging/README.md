@@ -47,7 +47,7 @@ in a terminal for the CLI.
 | `/opt/chrome-multi-session/gui/` | the PySide6 front-end, frozen |
 | `/usr/bin/chrome-multi-session{,-gui}` | wrappers onto the two bundles |
 | `/usr/share/applications/…desktop` | the launcher entry |
-| `~/ChromeMultiSession/` | **the user's**: `users.json`, `user_sessions/`, `reports/` |
+| `~/ChromeMultiSession/` | **the user's**: `users.json`, `user_sessions/`, `reports/`, `flows/` |
 | `~/.local/share/chrome-multi-session/gui/` | the GUI's run history and saved configurations |
 
 The split is the point. Everything under `/opt` is replaced wholesale on upgrade;
@@ -73,6 +73,14 @@ executable next to the GUI's, and the `.deb` wrapper also names it explicitly in
 
 **onedir, not onefile.** The GUI spawns the core for every `--describe` and every
 run. A onefile build would unpack a 200 MB archive into `/tmp` each time.
+
+**Two flows trees.** The bundled `flows/` is read-only - it lives in the
+PyInstaller bundle and is replaced wholesale on upgrade - so anything written by
+the Scenarios page or the recorder goes to `~/ChromeMultiSession/flows`, which is
+searched *first*. A scenario there shadows a bundled one of the same id and can
+still `use:` the shipped blocks without copying them; `selectors.yaml` is merged
+rather than replaced. `--flows-dir` still means exactly the directory it names -
+only the default is layered.
 
 **No bundled Chromium.** The adapter only ever `connect_over_cdp`s to the Chrome
 already on the machine, so `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` is set for the

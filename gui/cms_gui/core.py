@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 #: The core executable an installed build ships. Its name is fixed by the
 #: PyInstaller spec (packaging/pyinstaller/core.spec).
@@ -206,6 +207,77 @@ class Core:
             raise CoreError(payload["error"])
         return payload
 
+    # -- scenario files -------------------------------------------------------
+    # The GUI has no YAML of its own - PySide6 is its only dependency - so the
+    # scenario format stays entirely in the core and these four go through it.
+    # Each answers with JSON whether or not it worked, so a failure is a payload
+    # to render rather than an exception to catch in a widget.
+
+    def flow_show(self, flow_id):
+        """One scenario: its text, its steps, and whether it can be edited."""
+        return self._flow_json("--flow-show=" + flow_id)
+
+    def flow_save(self, flow_id, document):
+        """Write a scenario from ``document`` ({"yaml": ...} or meta+steps).
+
+        The document goes through a temp file rather than stdin so the same call
+        can be run by hand from a shell when something looks wrong.
+        """
+        handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json",
+                                             prefix="cms-flow-", delete=False)
+        try:
+            with handle:
+                json.dump(document, handle, ensure_ascii=False, default=str)
+            return self._flow_json("--flow-save=" + flow_id, "--from=" + handle.name)
+        finally:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
+
+    def flow_delete(self, flow_id):
+        return self._flow_json("--flow-delete=" + flow_id)
+
+    def flow_import(self, path):
+        return self._flow_json("--flow-import=" + path)
+
+    def selectors_show(self):
+        """The named-target map, and the user's own file as editable text."""
+        return self._flow_json("--selectors-show")
+
+    def selectors_save(self, yaml_text):
+        handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json",
+                                             prefix="cms-selectors-", delete=False)
+        try:
+            with handle:
+                json.dump({"yaml": yaml_text}, handle, ensure_ascii=False)
+            return self._flow_json("--selectors-save", "--from=" + handle.name)
+        finally:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
+
+    def _flow_json(self, *args):
+        """Run a --flow-* command and parse its answer.
+
+        A non-zero exit is not an error here: "this did not compile" is the most
+        useful thing these commands say, and it comes back with the exit code set.
+        Only unparseable output is a real failure.
+        """
+        code, out, err = self.run(*args, timeout=60)
+        text = (out or "").strip()
+        if not text:
+            raise CoreError("%s printed nothing (exit %d).\n%s"
+                            % (args[0], code, (err or "").strip()[:400]))
+        try:
+            payload = json.loads(text)
+        except ValueError as exc:
+            raise CoreError("%s did not return JSON (%s).\n%s"
+                            % (args[0], exc, text[:400]))
+        payload.setdefault("problems", [])
+        return payload
+
     def version(self):
         _code, out, _err = self.run("--version", timeout=30)
         return (out or "").strip()
@@ -260,6 +332,33 @@ class Inventory:
     @property
     def warnings(self):
         return list(self.payload.get("warnings", []))
+
+    @property
+    def blocks(self):
+        """The reusable flows a scenario reaches through ``use:``."""
+        return list(self.payload.get("blocks", []))
+
+    @property
+    def selectors(self):
+        """``{name: selector}`` - what a named target actually looks for."""
+        value = self.payload.get("selectors")
+        return dict(value) if isinstance(value, dict) else {}
+
+    def flow_actions(self):
+        """The step grammar the core accepts, grouped by argument shape.
+
+        Empty against a core that predates it; the editor then falls back to its
+        own list rather than offering nothing.
+        """
+        value = self.payload.get("flow_actions")
+        return dict(value) if isinstance(value, dict) else {}
+
+    def scenario(self, flow_id):
+        """One scenario's row from --describe, or {}."""
+        for row in self.scenarios:
+            if row.get("id") == flow_id:
+                return row
+        return {}
 
     @property
     def chrome(self):

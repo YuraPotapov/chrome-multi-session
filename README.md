@@ -165,7 +165,11 @@ python3 -m pip install -r requirements-dev.txt      # playwright, pyyaml, pytest
 python3 session_launcher.py --env=localhost --run-tests=my_scenario --execution-overlay=all
 ```
 
-**Writing your own flows: [docs/flows.md](docs/flows.md).**
+**Writing your own flows: [docs/flows.md](docs/flows.md).** The GUI's Scenarios
+page does the same thing without a text editor - it lists every scenario and
+block, shows what each named target resolves to, and writes into
+`~/ChromeMultiSession/flows`, which is searched before the tree that ships with
+the app.
 
 ## Running the tests
 

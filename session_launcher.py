@@ -433,7 +433,7 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
         envs.append({"alias": env.alias, "value": env.value,
                      "origin": env.origin, "count": env.count})
 
-    scenarios = []
+    scenarios, blocks, selectors = [], [], {}
     # ``flows_dir`` stays None unless it was given, so the loader resolves it the
     # way a run will - the user's own tree, then the bundled one. Pinning it to a
     # single directory here would hide every scenario the user has written and,
@@ -461,6 +461,24 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
                               "writable": writable,
                               # what --run-tests=all would actually run
                               "in_all": not (set(tags) & skipped)})
+        # The blocks a scenario reaches through `use:`. Not runnable on their own,
+        # so they are not scenarios - but an editor showing `use: access.open_app`
+        # with no way to open it is showing an alias with nothing behind it.
+        for block_id, path in sorted(loader.block_files(flows_dir).items()):
+            try:
+                flow = loader.load_flow(block_id, flows_dir)
+            except Exception as exc:
+                warnings.append("block %s: %s" % (block_id, exc))
+                continue
+            writable = flowfile.is_writable(path, flows_dir)
+            blocks.append({"id": block_id, "name": flow.name,
+                           "description": flow.description,
+                           "tags": list(flow.tags), "path": path,
+                           "source": "user" if writable else "bundled",
+                           "writable": writable})
+        # name -> selector, merged across trees, so the editor can say what
+        # `click: menu_settings` will actually look for.
+        selectors = loader.load_selectors(flows_dir)
     except ImportError as exc:
         warnings.append("scenarios unavailable (%s); install the 'flows' extra." % exc)
 
@@ -495,6 +513,8 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
         "envs": envs,
         "users": users,
         "scenarios": scenarios,
+        "blocks": blocks,
+        "selectors": selectors,
         "extensions": extensions,
         "warnings": warnings,
     }
@@ -548,6 +568,10 @@ def run_flow_command(command, source, flows_dir=None):
             payload = flowfile.import_file(argument, flows_dir)
         elif kind == "save":
             payload = _save_flow(argument, source, flows_dir)
+        elif kind == "selectors-show":
+            payload = flowfile.describe_selectors(flows_dir)
+        elif kind == "selectors-save":
+            payload = _save_selectors(source, flows_dir)
         else:                                   # unreachable; kept honest anyway
             raise ValueError("unknown flow command %r" % kind)
     except Exception as exc:  # noqa: BLE001 - the report IS the error report
@@ -588,6 +612,24 @@ def _save_flow(flow_id, source, flows_dir=None):
                          yaml_text=document.get("yaml"),
                          meta=document.get("meta"),
                          steps=document.get("steps"))
+
+
+def _save_selectors(source, flows_dir=None):
+    """--selectors-save: write the named-target map from a JSON {"yaml": ...}."""
+    from engine import flowfile
+    if not source:
+        return {"ok": False,
+                "problems": ["--selectors-save needs --from=FILE (a JSON document)"]}
+    try:
+        with open(source, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "problems": ["cannot read %s: %s" % (source, exc)]}
+    if not isinstance(document, dict) or "yaml" not in document:
+        return {"ok": False,
+                "problems": ["%s must contain a JSON object with a \"yaml\" key"
+                             % source]}
+    return flowfile.save_selectors(document["yaml"], flows_dir)
 
 
 def _shortening_example(envs):
@@ -1901,6 +1943,10 @@ def main():
         elif arg.startswith("--flow-import="):
             flow_command = ("import", os.path.abspath(os.path.expanduser(
                 arg.split("=", 1)[1].strip())))
+        elif arg == "--selectors-show":
+            flow_command = ("selectors-show", "")
+        elif arg == "--selectors-save":
+            flow_command = ("selectors-save", "")
         elif arg.startswith("--from="):
             # The document --flow-save writes, as JSON in a file. A file rather
             # than stdin so the command can be run and debugged from a shell.

@@ -343,6 +343,75 @@ def delete(flow_id, flows_dir=None):
     return {"ok": True, "id": flow_id, "path": path, "problems": []}
 
 
+# -- selectors ----------------------------------------------------------------
+# The named targets flows point at. They are the vocabulary a scenario is written
+# in - `click: menu_settings` rather than a CSS path - so an editor that cannot
+# show what a name resolves to leaves you reading aliases with nothing behind
+# them, and one that cannot add a name makes every new scenario reach for raw CSS.
+
+def describe_selectors(flows_dir=None):
+    """The merged selector map, plus the user's own file as editable text."""
+    merged = loader.load_selectors(flows_dir)
+    bundled = {}
+    roots = loader.search_path(flows_dir)
+    for root in roots[1:]:
+        path = os.path.join(root, "selectors.yaml")
+        if os.path.exists(path):
+            data = loader._load_yaml(path)
+            if isinstance(data, dict):
+                bundled.update(data)
+
+    own = os.path.join(roots[0], "selectors.yaml")
+    text = ""
+    if os.path.exists(own):
+        try:
+            with open(own, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError as exc:
+            return {"path": own, "writable": False, "yaml": "",
+                    "entries": {}, "problems": [str(exc)]}
+    entries = {}
+    for name, value in merged.items():
+        entries[name] = {
+            "value": value,
+            # "overridden" is worth its own word: the name exists in both trees
+            # and what runs is the user's, which is exactly the thing that is
+            # confusing to discover later from a failing selector.
+            "source": ("overridden" if name in bundled and bundled[name] != value
+                       else "bundled" if name in bundled else "user"),
+        }
+    return {"path": own, "writable": is_writable(own, flows_dir), "yaml": text,
+            "entries": entries, "problems": []}
+
+
+def save_selectors(yaml_text, flows_dir=None):
+    """Write the user's selectors.yaml, refusing anything that is not a map."""
+    import yaml
+
+    path = os.path.join(loader.search_path(flows_dir)[0], "selectors.yaml")
+    if not is_writable(path, flows_dir):
+        return {"ok": False, "path": path,
+                "problems": ["%s is not in the writable flows tree" % path]}
+    try:
+        data = yaml.safe_load(yaml_text)
+    except Exception as exc:
+        return {"ok": False, "path": path, "problems": [str(exc)]}
+    if data is not None and not isinstance(data, dict):
+        return {"ok": False, "path": path,
+                "problems": ["selectors.yaml must be a mapping of name: selector"]}
+    for name, value in (data or {}).items():
+        if not isinstance(value, str):
+            return {"ok": False, "path": path,
+                    "problems": ["%s: a selector must be a string, got %r"
+                                 % (name, value)]}
+    try:
+        _atomic_write(path, yaml_text)
+    except OSError as exc:
+        return {"ok": False, "path": path,
+                "problems": ["cannot write %s: %s" % (path, exc)]}
+    return {"ok": True, "path": path, "problems": []}
+
+
 def import_file(source_path, flows_dir=None, flow_id=None):
     """Copy a scenario file into the writable tree, validating it first.
 
