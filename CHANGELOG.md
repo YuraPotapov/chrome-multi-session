@@ -16,6 +16,31 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-15
+
+### Fixed
+- The recorder could produce `click: "a"` - every link on the page, recorded as a
+  step. Synthesis gave up after four ancestors and returned whatever it had,
+  which for a plain `<a>` in an unremarkable list is the tag on its own. It now
+  walks further, skips ancestors that describe nothing, and falls back to
+  `:nth-of-type()` rather than to something meaningless. When the result still
+  matches more than one element the menu says so in warning colour, since a step
+  like that acts on whichever element Playwright reaches first.
+
+### Added
+- **Continue a recording.** RUN ▾ → *With Recorder* works out for itself what to
+  write to. With a scenario selected it asks - *Continue "x"* / *Start new* /
+  *Cancel* - because appending to a scenario and replacing one look identical
+  until it is too late. With nothing selected it asks nothing and records a new
+  one. Continuing loads the steps the file already has, shows them in the panel,
+  appends what you capture, and keeps the name, description and tags it carried,
+  because those are edits somebody made on purpose. `--recorder=ID` does the same
+  from a shell.
+  What counts as selected: whatever is open in the Scenarios editor, or a single
+  scenario chosen on Launch Sessions. Never one that ships with the application -
+  it cannot be written back, so recording into it would collect steps and then
+  throw them away.
+
 ## [0.6.1] - 2026-08-15
 
 ### Fixed

@@ -30,6 +30,10 @@ from engine import events, flowfile, loader, runner
 
 log = logging.getLogger("session_launcher.recorder")
 
+
+class FlowNotWritable(Exception):
+    """Asked to record into a scenario that ships with the application."""
+
 _RECORDER_JS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "recorder.js")
 
@@ -53,15 +57,47 @@ RECORDER_JS = _load_recorder_js()
 
 
 class Recording:
-    """One window being recorded: the steps so far, and what to do with them."""
+    """One window being recorded: the steps so far, and what to do with them.
+
+    Naming an existing scenario **continues** it. Its steps are loaded and what
+    is captured is appended, and its name, description and tags are kept - a
+    recording is usually one more pass over something half-written, not a fresh
+    start, and replacing the file would throw away the work being added to.
+    """
 
     def __init__(self, session_name, scenario_id=None, flows_dir=None):
         self.session = session_name
-        self.scenario_id = scenario_id or _default_scenario_id()
         self.flows_dir = flows_dir
         self.steps = []
         self.active = False
         self.finished = False
+        self.continuing = False
+        self.meta = None
+        if scenario_id:
+            self.scenario_id = flowfile.safe_id(scenario_id)
+            self._load_existing()
+        else:
+            self.scenario_id = _default_scenario_id()
+
+    def _load_existing(self):
+        """Pick up where an existing scenario left off, if there is one."""
+        try:
+            existing = flowfile.describe_flow(self.scenario_id, self.flows_dir)
+        except Exception:
+            return                      # no such scenario: this one is new
+        if not existing.get("writable"):
+            # A bundled scenario cannot be written back, so recording into it
+            # would collect steps that are thrown away at the end.
+            raise FlowNotWritable(
+                "%s ships with the application and cannot be recorded into; "
+                "duplicate it on the Scenarios page first" % self.scenario_id)
+        self.continuing = True
+        self.meta = dict(existing.get("meta") or {})
+        for step in existing.get("steps") or []:
+            if step.get("action"):
+                self.steps.append({key: step.get(key) for key in
+                                   ("action", "target", "value", "timeout", "state")
+                                   if step.get(key) is not None})
 
     def state(self):
         """What the in-page panel paints itself from."""
@@ -76,15 +112,19 @@ class Recording:
     def save(self):
         """Write what was captured as a scenario. Returns the core's result dict.
 
-        Tagged ``template`` because a recording is a draft: it should not join
-        ``--run-tests=all`` until someone has looked at it and taken the tag off.
+        A new one is tagged ``template``, because a recording is a draft and
+        should not join ``--run-tests=all`` until someone has looked at it. One
+        being continued keeps whatever it already said about itself - its name,
+        its description and its tags are edits somebody made on purpose.
         """
+        meta = dict(self.meta) if self.meta else {
+            "name": "Recorded %s" % self.scenario_id,
+            "description": "Captured with the Scenario Recorder.",
+            "tags": list(flowfile.DEFAULT_TAGS),
+        }
+        meta["id"] = self.scenario_id
         return flowfile.save(
-            self.scenario_id, self.flows_dir,
-            meta={"id": self.scenario_id,
-                  "name": "Recorded %s" % self.scenario_id,
-                  "description": "Captured with the Scenario Recorder.",
-                  "tags": list(flowfile.DEFAULT_TAGS)},
+            self.scenario_id, self.flows_dir, meta=meta,
             steps=[{key: value for key, value in step.items()
                     if key in ("action", "target", "value", "timeout", "state")}
                    for step in self.steps])
@@ -147,7 +187,13 @@ def _record_one(session_name, profile, origin, flows_dir, scenario_id, stop_even
 
     selectors = loader.load_selectors(flows_dir)
     grammar = _grammar()
-    recording = Recording(session_name, scenario_id, flows_dir)
+    try:
+        recording = Recording(session_name, scenario_id, flows_dir)
+    except FlowNotWritable as exc:
+        log.error("[%s] %s", session_name, exc)
+        events.emit("recorder.attach_failed", session=session_name, error=str(exc))
+        adapter.disconnect()
+        return
     adapter.recorder_setup(RECORDER_JS)
     _configure(adapter, selectors, grammar)
 
@@ -197,9 +243,14 @@ def _begin(adapter, recording, selectors, grammar):
     _configure(adapter, selectors, grammar)
     adapter.recorder_call("recorder.start()")
     adapter.recorder_call("recorder.render(arg)", recording.state())
-    log.info("[%s] recording into %s", recording.session, recording.scenario_id)
+    if recording.continuing:
+        log.info("[%s] continuing %s (%d steps so far)", recording.session,
+                 recording.scenario_id, len(recording.steps))
+    else:
+        log.info("[%s] recording into %s", recording.session, recording.scenario_id)
     events.emit("recorder.started", session=recording.session,
-                scenario=recording.scenario_id)
+                scenario=recording.scenario_id,
+                continuing=recording.continuing, steps=len(recording.steps))
 
 
 def _configure(adapter, selectors, grammar):

@@ -367,3 +367,121 @@ def test_the_history_page_describes_a_command_entry_with_the_flags_it_used(windo
     # A flag left at its default, or empty, was not part of the command.
     assert "--log-level" not in rows
     assert "--url" not in rows
+
+
+# ------------------------------------------------- continuing a recording
+# Recording usually means adding to something half-written, so RUN's menu has to
+# offer that - and has to name the file it would write to, since appending to
+# somebody's scenario is not a thing to do by accident.
+
+def _inventory_with(window, *rows):
+    from cms_gui import core as core_mod
+
+    inventory = core_mod.Inventory({"scenarios": list(rows), "blocks": [],
+                                    "selectors": {}, "envs": [], "users": []})
+    window.inventory = inventory
+    window.scenarios.set_inventory(inventory)
+    return inventory
+
+
+def _scenario_row(flow_id, writable=True):
+    return {"id": flow_id, "name": flow_id, "tags": [], "writable": writable,
+            "source": "user" if writable else "bundled", "in_all": True}
+
+
+def test_with_nothing_selected_a_recording_is_new_and_asks_nothing(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "exec",
+                        lambda *a, **k: pytest.fail("asked when there was nothing to ask"))
+    _inventory_with(window, _scenario_row("mine"))
+    assert window.recordable_scenario() == ""
+    assert window.ask_recording_target() == ("new", "")
+
+
+def test_the_scenario_open_in_the_editor_is_what_continues(window):
+    _inventory_with(window, _scenario_row("mine"))
+    window.scenarios.current = {"id": "mine", "writable": True}
+    assert window.recordable_scenario() == "mine"
+
+
+def test_a_bundled_scenario_is_never_offered(window):
+    # It cannot be written back, so recording into it would collect steps and
+    # then throw them away.
+    _inventory_with(window, _scenario_row("shipped", writable=False))
+    window.scenarios.current = {"id": "shipped", "writable": False}
+    assert window.recordable_scenario() == ""
+
+
+def test_exactly_one_scenario_chosen_on_launch_sessions_counts(window):
+    _inventory_with(window, _scenario_row("picked"), _scenario_row("other"))
+    window.scenarios.current = None
+    window.launch.set_state({"scenarios": {"mode": "pick", "selected": ["picked"]}})
+    assert window.recordable_scenario() == "picked"
+
+
+def test_two_chosen_scenarios_are_ambiguous_so_neither_is_used(window):
+    _inventory_with(window, _scenario_row("a"), _scenario_row("b"))
+    window.scenarios.current = None
+    window.launch.set_state({"scenarios": {"mode": "pick", "selected": ["a", "b"]}})
+    assert window.recordable_scenario() == ""
+
+
+def test_a_selected_scenario_is_confirmed_before_being_added_to(window, monkeypatch):
+    """Appending to a scenario and replacing one look identical until too late."""
+    from PySide6.QtWidgets import QMessageBox
+
+    _inventory_with(window, _scenario_row("mine"))
+    window.scenarios.current = {"id": "mine", "writable": True}
+
+    seen = {}
+
+    def answer(box):
+        seen["text"] = box.text()
+        # The default is the safe one: adding to what is there. Clicking the
+        # button itself is what sets clickedButton(), which is what is read.
+        chosen = box.defaultButton()
+        seen["default"] = chosen.text()
+        chosen.click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", answer)
+    assert window.ask_recording_target() == ("continue", "mine")
+    assert "mine" in seen["text"]
+    assert "mine" in seen["default"]
+
+
+def test_start_new_is_offered_even_when_something_is_selected(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    _inventory_with(window, _scenario_row("mine"))
+    window.scenarios.current = {"id": "mine", "writable": True}
+
+    def choose_new(box):
+        for button in box.buttons():
+            if button.text() == "Start new":
+                button.click()
+                return 0
+        pytest.fail("no way to start a new scenario")
+
+    monkeypatch.setattr(QMessageBox, "exec", choose_new)
+    assert window.ask_recording_target() == ("new", "")
+
+
+def test_cancelling_records_nothing(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    _inventory_with(window, _scenario_row("mine"))
+    window.scenarios.current = {"id": "mine", "writable": True}
+
+    def cancel(box):
+        box.button(QMessageBox.Cancel).click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", cancel)
+    assert window.ask_recording_target()[0] == "cancel"
+
+    started = []
+    monkeypatch.setattr(window, "start_run", lambda **kw: started.append(kw))
+    window.start_recording()
+    assert started == []

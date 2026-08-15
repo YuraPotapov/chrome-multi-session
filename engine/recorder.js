@@ -82,6 +82,7 @@
     ".menu-item .why{color:#9aa0a6;font-size:11px;margin-left:auto}" +
     ".menu-foot{padding:6px 10px;color:#6b7076;font-size:11px;" +
       "border-top:1px solid rgba(255,255,255,0.10)}" +
+    ".menu-warn{color:#ffab40;margin-top:4px}" +
     ".menu-toggle{color:#9ad1ff;border-top:1px solid rgba(255,255,255,0.10)}" +
     ".menu-value{padding:8px 10px}" +
     ".menu-value input{width:100%;box-sizing:border-box;padding:6px 8px;" +
@@ -181,34 +182,70 @@
     return best;
   }
 
-  function structuralSelector(el) {
+  function ownSelector(el) {
     var own = attributeSelector(el);
-    if (own && matchesUniquely(own, el)) return own;
-
+    if (own) return own;
     var tag = (el.tagName || "").toLowerCase();
     var classes = stableClasses(el);
-    var base = own || (tag + (classes.length ? "." + classes.slice(0, 2).join(".") : ""));
+    return tag + (classes.length ? "." + classes.slice(0, 2).join(".") : "");
+  }
+
+  function isBareTag(selector) {
+    // "a", "div", "span" - true of an ancestor that describes nothing, and of a
+    // target that would match every link on the page.
+    return /^[a-z][a-z0-9]*$/.test(selector);
+  }
+
+  function nthOfType(el) {
+    var parent = el.parentElement;
+    if (!parent) return "";
+    var same = [];
+    for (var i = 0; i < parent.children.length; i++) {
+      if (parent.children[i].tagName === el.tagName) same.push(parent.children[i]);
+    }
+    if (same.length < 2) return "";
+    return ":nth-of-type(" + (same.indexOf(el) + 1) + ")";
+  }
+
+  function structuralSelector(el) {
+    // Walk outwards until the selector picks out this element and nothing else.
+    //
+    // The stopping condition matters more than the order. An earlier version
+    // gave up after four ancestors and returned whatever it had, which for a
+    // plain <a> inside an unremarkable list is the selector "a" - every link on
+    // the page, recorded as a step. Anything is better than that, including
+    // counting position among siblings.
+    var base = ownSelector(el);
     if (matchesUniquely(base, el)) return base;
 
-    // Scope it to the nearest ancestor that can be named, which is what makes a
-    // repeated row or cell addressable without counting from the document root.
-    var parent = el.parentElement;
-    for (var depth = 0; parent && depth < 4; depth++) {
-      var scope = attributeSelector(parent);
-      if (!scope) {
-        var pclasses = stableClasses(parent);
-        if (pclasses.length) {
-          scope = (parent.tagName || "").toLowerCase() + "." + pclasses[0];
-        }
+    var scoped = scopeUntilUnique(el, base);
+    if (scoped) return scoped;
+
+    // Still ambiguous, so pin it among its siblings and try the ancestors again.
+    var positioned = base + nthOfType(el);
+    if (positioned !== base && matchesUniquely(positioned, el)) return positioned;
+    scoped = scopeUntilUnique(el, positioned);
+    if (scoped) return scoped;
+
+    // Nothing is unique. Return the most specific thing we built rather than the
+    // vaguest, and the menu says it matches more than one.
+    return isBareTag(positioned) ? positioned + nthOfType(el) : positioned;
+  }
+
+  function scopeUntilUnique(el, base) {
+    // Prepend each ancestor that describes something, nearest first, until the
+    // pair is unique. Bare-tag ancestors are skipped: "div a" is no better than
+    // "a", and it makes the selector longer for nothing.
+    var node = el.parentElement;
+    for (var depth = 0; node && depth < 8; depth++) {
+      var scope = ownSelector(node);
+      if (scope && !isBareTag(scope)) {
+        var candidate = scope + " " + base;
+        if (matchesUniquely(candidate, el)) return candidate;
       }
-      if (scope) {
-        var combined = scope + " " + base;
-        if (matchesUniquely(combined, el)) return combined;
-      }
-      parent = parent.parentElement;
+      node = node.parentElement;
     }
-    // Nothing unique: return the best description anyway and say so in the menu.
-    return base;
+    return "";
   }
 
   function describeTarget(el, selectors) {
@@ -285,6 +322,12 @@
     _selectors: {}, _grammar: {},
     _drag: null,
     _hover: null,
+
+    // Exposed for the tests: selector synthesis is the one piece here with
+    // enough logic to be worth checking without a browser.
+    _describe: function (el) {
+      return describeTarget(el, this._selectors);
+    },
 
     // ------------------------------------------------------------- lifecycle
     configure: function (selectors, grammar) {
@@ -696,9 +739,16 @@
       var sel = elem("span", "menu-sel");
       sel.textContent = this._byText
         ? this._textSelector(target)
-        : ((target.name ? target.name + "  (selectors.yaml)" : target.selector)
-           + (target.unique ? "" : "  · matches more than one"));
+        : (target.name ? target.name + "  (selectors.yaml)" : target.selector);
       head.appendChild(sel);
+      if (!this._byText && !target.unique) {
+        // Loud, because a step that matches several elements acts on whichever
+        // Playwright reaches first - which is not a thing to discover later.
+        var warn = elem("div", "menu-warn");
+        warn.textContent = "matches more than one element"
+          + ((target.text || "").trim() ? " - T narrows it by text" : "");
+        head.appendChild(warn);
+      }
       menu.appendChild(head);
 
       var self = this;

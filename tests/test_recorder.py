@@ -357,3 +357,118 @@ def test_a_value_is_never_asked_for_with_window_prompt():
         assert banned not in code, "recorder.js still calls %s" % banned
     # What replaced it: an input rendered into the shadow DOM.
     assert "_askValue" in source and "menu-value" in source
+
+
+# --------------------------------------------------- continuing what exists
+# A recording is usually one more pass over something half-written. Naming an
+# existing scenario has to add to it, not replace it - the steps already there
+# are work, and so are its name and its tags.
+
+def test_naming_an_existing_scenario_loads_its_steps(tree):
+    flowfile.save("wip", meta={"name": "Half done", "tags": ["smoke", "wip"]},
+                  steps=[{"action": "use", "target": "auth.login"},
+                         {"action": "click", "target": "menu_settings"}])
+    rec = recorder.Recording("s", "wip", None)
+    assert rec.continuing
+    assert [s["action"] for s in rec.steps] == ["use", "click"]
+
+
+def test_continuing_appends_and_keeps_what_the_file_said(tree):
+    flowfile.save("wip", meta={"name": "Half done", "description": "mine",
+                               "tags": ["smoke", "wip"]},
+                  steps=[{"action": "click", "target": "menu_settings"}])
+    rec = recorder.Recording("s", "wip", None)
+    rec.add({"action": "assert_visible", "target": "dashboard", "value": None})
+    assert rec.save()["ok"]
+
+    flow = loader.load_flow("wip")
+    assert [compiler.parse_step(s).action for s in flow.steps] == [
+        "click", "assert_visible"]
+    # Its own name and tags are edits somebody made; a recorder does not undo them.
+    assert flow.name == "Half done"
+    assert flow.tags == ["smoke", "wip"]
+    assert flow.description == "mine"
+
+
+def test_a_new_recording_is_not_marked_as_continuing(tree):
+    rec = recorder.Recording("s", "brand_new", None)
+    assert not rec.continuing and rec.steps == []
+    assert rec.scenario_id == "brand_new"
+
+
+def test_recording_into_a_bundled_scenario_is_refused(tree):
+    """Otherwise the steps are collected and then thrown away at the end."""
+    with pytest.raises(recorder.FlowNotWritable) as exc:
+        recorder.Recording("s", "demo_smoke", None)
+    assert "duplicate it" in str(exc.value)
+
+
+def test_continuing_survives_a_navigation_with_every_step(tree):
+    # The panel is re-seeded from Python, so what it shows after a reload has to
+    # include the steps that were already in the file.
+    flowfile.save("wip", steps=[{"action": "click", "target": "first"}])
+    rec = recorder.Recording("s", "wip", None)
+    rec.active = True
+    adapter = FakeAdapter([_answer(running=False)])
+    recorder._tick(adapter, rec, {}, {})
+    assert [s["target"] for s in adapter.rendered[-1]["steps"]] == ["first"]
+
+
+def test_a_selector_is_never_just_a_tag_name():
+    """`click: "a"` was a real recording, and it means every link on the page.
+
+    Synthesis used to give up after four ancestors and return whatever it had.
+    For a plain <a> in an unremarkable list - Odoo's search dropdown, where this
+    came from - that is the tag on its own. Counting position among siblings is
+    ugly and it is still infinitely better than that.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    path = os.path.join(os.path.dirname(os.path.abspath(recorder.__file__)),
+                        "recorder.js")
+    # A dropdown of bare anchors, which is the shape that produced "a".
+    harness = """
+      const HOST = '__cms_recorder_host__';
+      // Minimal DOM: enough for querySelectorAll/matches over one small tree.
+      const anchors = [];
+      const list = {tagName: 'UL', className: 'o_searchview_autocomplete',
+                    getAttribute: () => null, id: '', children: anchors,
+                    parentElement: null};
+      for (let i = 0; i < 3; i++) {
+        anchors.push({tagName: 'A', className: '', id: '', children: [],
+                      getAttribute: () => null, parentElement: list});
+      }
+      function matchesSel(el, sel) {
+        if (sel === 'a') return el.tagName === 'A';
+        if (sel === 'ul.o_searchview_autocomplete') return el === list;
+        const m = sel.match(/^a:nth-of-type\\((\\d+)\\)$/);
+        if (m) return el.tagName === 'A' && anchors.indexOf(el) === +m[1] - 1;
+        const s = sel.match(/^ul\\.o_searchview_autocomplete a:nth-of-type\\((\\d+)\\)$/);
+        if (s) return el.tagName === 'A' && anchors.indexOf(el) === +s[1] - 1;
+        if (sel === 'ul.o_searchview_autocomplete a') return el.tagName === 'A';
+        return false;
+      }
+      const all = [list].concat(anchors);
+      global.document = {
+        getElementById: () => null,
+        querySelectorAll: (sel) => all.filter(e => matchesSel(e, sel)),
+        createElement: () => ({style: {}, setAttribute() {}, appendChild() {}}),
+        documentElement: {appendChild() {}, hasAttribute: () => false,
+                          removeAttribute() {}},
+        addEventListener() {}, removeEventListener() {}
+      };
+      anchors.forEach(a => { a.matches = (s) => matchesSel(a, s); });
+      list.matches = (s) => matchesSel(list, s);
+      global.window = {};
+      require(%s);
+      const r = window.__Recorder;
+      r.configure({}, {});
+      console.log(JSON.stringify(r._describe(anchors[1])));
+    """ % json.dumps(path)
+    done = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    described = json.loads(done.stdout.strip())
+    assert described["selector"] != "a"
+    assert "nth-of-type(2)" in described["selector"]
+    assert described["unique"] is True

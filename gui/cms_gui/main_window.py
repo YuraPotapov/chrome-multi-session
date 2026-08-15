@@ -180,14 +180,18 @@ class MainWindow(QMainWindow):
         self.run_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.run_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.run_button.clicked.connect(self.start_run)
-        run_menu_button = QMenu(self.run_button)
+        self.run_menu = QMenu(self.run_button)
+        # One entry, because there is only one thing to want: record. Whether
+        # that continues a scenario or starts a new one follows from what is
+        # selected, and is confirmed rather than guessed.
         self.record_action = QAction("With Recorder", self)
         self.record_action.setToolTip(
             "Open the windows with the Scenario Recorder available: right-click "
-            "one and choose \"Start Scenarios\".")
+            "one and choose \"Start Scenarios\". Continues the selected scenario "
+            "if there is one.")
         self.record_action.triggered.connect(self.start_recording)
-        run_menu_button.addAction(self.record_action)
-        self.run_button.setMenu(run_menu_button)
+        self.run_menu.addAction(self.record_action)
+        self.run_button.setMenu(self.run_menu)
         self.stop_button = QPushButton(theme.labelled("stop", "Stop"))
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_run)
@@ -469,6 +473,56 @@ class MainWindow(QMainWindow):
             self.refresh_inventory()
 
     # -- running --------------------------------------------------------------
+    def recordable_scenario(self):
+        """The scenario a recording would continue, or "".
+
+        Whatever is open in the Scenarios editor comes first - that is the one
+        being worked on. Otherwise a single scenario chosen on Launch Sessions,
+        since picking exactly one and then recording plainly means that one. Only
+        ever something writable: a bundled scenario cannot be recorded into.
+        """
+        current = self.scenarios.current
+        if current and current.get("writable"):
+            return current["id"]
+        chosen = [s for s in self.launch.state().get("scenarios", {}).get("selected", [])
+                  if not str(s).startswith("tag:")]
+        if len(chosen) == 1:
+            row = self.inventory.scenario(chosen[0])
+            if row.get("writable"):
+                return chosen[0]
+        return ""
+
+    def ask_recording_target(self):
+        """Decide what a recording writes to: ("continue", id) / ("new", "") / cancel.
+
+        With nothing selected there is nothing to ask about. With something
+        selected, asking is the point: appending to a scenario and replacing one
+        look identical until it is too late, and the answer is a click either way.
+
+        Split from the launch so the decision can be tested without a dialog.
+        """
+        scenario = self.recordable_scenario()
+        if not scenario:
+            return "new", ""
+        box = QMessageBox(self)
+        box.setWindowTitle("Record")
+        box.setIcon(QMessageBox.Question)
+        box.setText("\"%s\" is selected." % scenario)
+        box.setInformativeText(
+            "Continue recording into it - its steps are loaded and what you "
+            "capture is added to them - or start a new scenario?")
+        keep = box.addButton("Continue \"%s\"" % scenario, QMessageBox.AcceptRole)
+        fresh = box.addButton("Start new", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(keep)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is keep:
+            return "continue", scenario
+        if clicked is fresh:
+            return "new", ""
+        return "cancel", ""
+
     def start_recording(self):
         """Launch with the recorder available, from whichever page RUN would use.
 
@@ -477,7 +531,10 @@ class MainWindow(QMainWindow):
         the extension that offers "Start Scenarios", and that nothing is run
         afterwards - the launcher waits for you to ask for a recording.
         """
-        self.start_run(recorder=True)
+        choice, scenario = self.ask_recording_target()
+        if choice == "cancel":
+            return
+        self.start_run(recorder=scenario or True)
 
     def start_run(self, source=None, recorder=False):
         if self.process.is_running():
@@ -496,9 +553,11 @@ class MainWindow(QMainWindow):
                 return
         args = page.argv()
         if recorder:
-            # Ahead of --events, which build_argv always puts last.
+            # Ahead of --events, which build_argv always puts last. --run-tests
+            # goes: recording is not running, and the two modes are exclusive.
             args = [a for a in args if not a.startswith("--run-tests")]
-            args.insert(0, "--recorder")
+            args.insert(0, "--recorder" if recorder is True
+                        else "--recorder=%s" % recorder)
         try:
             argv = self.core.argv(*args)
         except core_mod.CoreError as exc:
@@ -510,8 +569,9 @@ class MainWindow(QMainWindow):
         self._entry_id = self.history.begin(
             *self._history_payload(source, page, args, argv))
         if recorder:
-            self.run.run_started("recorder · right-click a window and choose "
-                                 "\"Start Scenarios\"")
+            self.run.run_started(
+                ("continuing %s · " % recorder if recorder is not True else "")
+                + "recorder · right-click a window and choose \"Start Scenarios\"")
         elif source == "launch":
             self.run.run_started("%s · events on stdout" % page.run_meta())
         else:
