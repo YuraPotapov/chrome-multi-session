@@ -1,0 +1,12 @@
+id: recorded_20260815_115602
+name: "Recorded recorded_20260815_115602"
+description: "Captured with the Scenario Recorder."
+tags: [template]
+steps:
+  - assert_visible: "div.o_navbar_apps_menu button.o-dropdown.dropdown-toggle"
+  - click: "div.o_navbar_apps_menu button.o-dropdown.dropdown-toggle"
+  - assert_visible: "[data-menu-xmlid=\"mail.menu_root_discuss\"]"
+  - click: "[data-menu-xmlid=\"mail.menu_root_discuss\"]"
+  - assert_visible: "[data-menu-xmlid=\"mail.main_menu_discuss\"]"
+  - assert_visible: "[data-menu-xmlid=\"mail.menu_channel\"]"
+  - assert_visible: "[data-menu-xmlid=\"mail.menu_configuration\"] span"

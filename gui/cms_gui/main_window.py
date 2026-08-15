@@ -65,13 +65,8 @@ HEADING_TRIM = 10
 
 
 def _run_label(text):
-    """RUN, with the caret that says there is a menu behind the arrow half.
-
-    The caret rides in the label because Qt draws ``::menu-arrow`` as an image,
-    and there is no image to give it that would sit right on the accent fill - so
-    the affordance is a glyph, like every other mark in this window.
-    """
-    return "%s  %s" % (theme.labelled("run", text), theme.glyph("caret"))
+    """RUN. The menu's arrow is drawn by Qt in the button's own arrow half."""
+    return theme.labelled("run", text)
 
 
 class MainWindow(QMainWindow):

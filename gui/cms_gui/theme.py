@@ -129,8 +129,6 @@ _GLYPH_CANDIDATES = {
     "disclosure_open": ("▾", "▼", "v"),
     "disclosure_closed": ("▸", "►", ">"),
     "minus": ("−", "–", "-"),
-    # The caret on RUN, which says there is a menu behind the arrow half.
-    "caret": ("▾", "▼", "v"),
     "plus": ("+",),
 }
 _glyph_cache = {}
@@ -257,11 +255,14 @@ QToolButton[variant="primary"]:pressed {{ background: {a700}; border-color: {a70
 QToolButton[variant="primary"]:disabled {{
     background: {n300}; border-color: {n300}; color: {n500};
 }}
+/* The arrow half. Qt draws the arrow itself here, following the button's own
+   text colour, so it sits on the accent fill correctly - putting a caret in the
+   label instead leaves it left of the divider with an empty strip beside it. */
 QToolButton::menu-button {{
     border: none; border-left: 1px solid rgba(255,255,255,0.35);
-    width: 16px;
+    width: 18px;
 }}
-QToolButton::menu-arrow {{ image: none; }}
+QToolButton::menu-arrow {{ width: 8px; height: 8px; }}
 
 /* Set on Save while the controls no longer match the saved configuration they
    came from. Last of the button rules on purpose: an attribute selector and a
