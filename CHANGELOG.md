@@ -16,6 +16,25 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-15
+
+### Fixed
+- **`fill` never saved a step.** It asked for the value with `window.prompt`, and
+  the recorder is driven over CDP - where Playwright dismisses a page's dialogs
+  by default. `prompt()` returned null, the step was dropped, and nothing said
+  why. Values are asked for in the recorder's own panel now, so no dialog is
+  involved; the same goes for `select` and `assert_text_contains`. The
+  end-to-end test had missed it by stubbing `window.prompt`, which tested around
+  the bug rather than through it - there is now a test that reads the source and
+  refuses any dialog call.
+
+### Added
+- **Match by exact text** (`T` in the action menu), for picking one row out of a
+  list by the data in it - a customer, a reference, a number. Still never the
+  default and never for a UI label: those are translated and the step would
+  break on the next environment. Data is not, which is why this is offered at
+  all, and Playwright's `:text-is()` makes it exact.
+
 ## [0.6.0] - 2026-08-15
 
 Scenarios stop being something you write in a text editor. There is a page for

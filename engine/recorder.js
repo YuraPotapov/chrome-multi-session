@@ -82,6 +82,13 @@
     ".menu-item .why{color:#9aa0a6;font-size:11px;margin-left:auto}" +
     ".menu-foot{padding:6px 10px;color:#6b7076;font-size:11px;" +
       "border-top:1px solid rgba(255,255,255,0.10)}" +
+    ".menu-toggle{color:#9ad1ff;border-top:1px solid rgba(255,255,255,0.10)}" +
+    ".menu-value{padding:8px 10px}" +
+    ".menu-value input{width:100%;box-sizing:border-box;padding:6px 8px;" +
+      "border-radius:6px;border:1px solid rgba(255,255,255,0.22);" +
+      "background:rgba(255,255,255,0.06);color:#e8eaed;" +
+      "font:12px/1.45 'Segoe UI',system-ui,-apple-system,sans-serif;outline:none}" +
+    ".menu-value input:focus{border-color:#4da3ff}" +
     ".menu-cancel{color:#ffab40}";
 
   function elem(tag, cls) {
@@ -524,10 +531,19 @@
         e.stopPropagation();
         return;
       }
+      // While a value is being typed the input owns the keyboard: digits are
+      // text there, not menu shortcuts. Its own handler deals with Enter/Esc.
+      if (this._valueInput) return;
       // With the action menu open, choosing by keyboard is the only way that
       // leaves the app's own popup standing - a click on this panel is an
       // outside-click as far as the app is concerned.
       if (!this._menu) return;
+      if (e.key === "t" || e.key === "T") {
+        this.toggleByText();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       var items = this._menuItems || [];
       if (/^[1-9]$/.test(e.key)) {
         var index = parseInt(e.key, 10) - 1;
@@ -645,18 +661,43 @@
     },
 
     // ------------------------------------------------------------- the menu
+    // A selector that finds this element by the text it holds.
+    //
+    // Normally the worst thing a recording can do: the same app renders
+    // Ukrainian on one environment and English on another, so a step keyed on a
+    // label breaks the moment it moves. Data is the exception - a customer name,
+    // a reference, an amount - because that is the same wherever the app runs,
+    // and picking one row out of a list is otherwise impossible. Offered, never
+    // chosen automatically, and Playwright's :text-is() is an exact match.
+    _textSelector: function (target) {
+      var text = (target.text || "").trim();
+      if (!text) return target.selector;
+      return target.selector + ':text-is("' + text.replace(/"/g, '\\"') + '")';
+    },
+
     _openMenu: function (x, y, target) {
       this._closeMenu();
       this._clearHighlight();
+      this._menuAt = { x: Math.min(x, window.innerWidth - 260),
+                       y: Math.min(y, window.innerHeight - 300) };
+      this._byText = false;
+      this._renderMenu(target);
+    },
+
+    _renderMenu: function (target) {
+      var wasOpen = !!this._menu;
+      if (wasOpen && this._menu.parentNode) this._menu.parentNode.removeChild(this._menu);
       var menu = elem("div", "menu");
-      menu.style.left = Math.min(x, window.innerWidth - 250) + "px";
-      menu.style.top = Math.min(y, window.innerHeight - 260) + "px";
+      menu.style.left = this._menuAt.x + "px";
+      menu.style.top = this._menuAt.y + "px";
 
       var head = elem("div", "menu-head");
       head.textContent = target.tag + (target.text ? ' "' + target.text + '"' : "");
       var sel = elem("span", "menu-sel");
-      sel.textContent = (target.name ? target.name + "  (selectors.yaml)" : target.selector)
-        + (target.unique ? "" : "  · matches more than one");
+      sel.textContent = this._byText
+        ? this._textSelector(target)
+        : ((target.name ? target.name + "  (selectors.yaml)" : target.selector)
+           + (target.unique ? "" : "  · matches more than one"));
       head.appendChild(sel);
       menu.appendChild(head);
 
@@ -685,21 +726,46 @@
         self._menuEls.push(item);
       });
 
+      if ((target.text || "").trim()) {
+        var byText = elem("div", "menu-item menu-toggle");
+        var tkey = elem("span", "key"); tkey.textContent = "T";
+        var tlabel = elem("span");
+        tlabel.textContent = this._byText ? "match by position instead"
+                                          : "match by its exact text";
+        var twhy = elem("span", "why");
+        twhy.textContent = this._byText ? "back to the structural selector"
+                                        : "for a data value, not a label";
+        byText.appendChild(tkey);
+        byText.appendChild(tlabel);
+        byText.appendChild(twhy);
+        byText.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          self.toggleByText();
+        });
+        menu.appendChild(byText);
+      }
+
       var cancel = elem("div", "menu-item menu-cancel");
       cancel.textContent = "Cancel";
       cancel.addEventListener("click", function (ev) {
         ev.stopPropagation();
-        self._closeMenu();
+        self.disarm();
       });
       menu.appendChild(cancel);
 
       var foot = elem("div", "menu-foot");
-      foot.textContent = "1-9 or ↑↓ + Enter · Esc cancels";
+      foot.textContent = "1-9 or ↑↓ + Enter · T text · Esc cancels";
       menu.appendChild(foot);
 
       this._shadow.appendChild(menu);
       this._menu = menu;
       this._moveMenu(0);
+    },
+
+    toggleByText: function () {
+      if (!this._pickedTarget) return;
+      this._byText = !this._byText;
+      this._renderMenu(this._pickedTarget);
     },
 
     _moveMenu: function (delta) {
@@ -718,32 +784,92 @@
       this._menu = null;
       this._menuItems = null;
       this._menuEls = null;
-      this._pickedTarget = null;
+      this._valueInput = null;
       this._menuIndex = 0;
     },
 
+    //: Actions that need a value the element cannot answer for itself.
+    _NEEDS_VALUE: { fill: "Text to type", select: "Option value to select",
+                    assert_text_contains: "Text it should contain" },
+
     _choose: function (action, target) {
+      if (this._NEEDS_VALUE[action]) {
+        this._askValue(action, target);
+        return;
+      }
+      this._commit(action, target, undefined);
+    },
+
+    // Asking happens in this panel, never with window.prompt.
+    //
+    // The recorder is driven over CDP, and Playwright dismisses a page's dialogs
+    // by default - so prompt() returns null, the step is silently dropped, and
+    // `fill` looks like it simply does not work. Which is exactly what it did.
+    _askValue: function (action, target) {
+      var self = this;
+      var suggested = action === "assert_text_contains"
+        ? (target.text || "") : (target.value || "");
       this._closeMenu();
+      var box = elem("div", "menu");
+      box.style.left = this._menuAt.x + "px";
+      box.style.top = this._menuAt.y + "px";
+
+      var head = elem("div", "menu-head");
+      head.textContent = action + " · " + this._NEEDS_VALUE[action];
+      var sel = elem("span", "menu-sel");
+      sel.textContent = this._targetFor(target);
+      head.appendChild(sel);
+      box.appendChild(head);
+
+      var row = elem("div", "menu-value");
+      var input = elem("input");
+      input.type = "text";
+      input.value = suggested;
+      row.appendChild(input);
+      box.appendChild(row);
+
+      var foot = elem("div", "menu-foot");
+      foot.textContent = "Enter saves the step · Esc cancels";
+      box.appendChild(foot);
+
+      this._shadow.appendChild(box);
+      this._menu = box;
+      this._valueInput = input;
+      input.addEventListener("keydown", function (e) {
+        // Handled here rather than in the global listener: while a value is
+        // being typed, digits are text, not menu shortcuts.
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          self._commit(action, target, input.value);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          self.disarm();
+        }
+      });
+      // The page still has focus until something takes it; without this the
+      // first keystroke goes to the app.
+      input.focus();
+      input.select();
+    },
+
+    _targetFor: function (target) {
+      // A name the tree already has, so the recording reads like the flows
+      // beside it - unless this step is being matched on a data value, which no
+      // name can stand for.
+      if (this._byText) return this._textSelector(target);
+      return target.name || target.selector;
+    },
+
+    _commit: function (action, target, value) {
       var step = {
         action: action,
-        // The name if the tree already has one, so the recording reads like the
-        // flows beside it; the synthesized selector otherwise.
-        target: target.name || target.selector,
-        selector: target.selector,
-        named: !!target.name
+        target: this._targetFor(target),
+        // What Python performs against: the exact element that was picked.
+        selector: this._byText ? this._textSelector(target) : target.selector,
+        named: !!target.name && !this._byText
       };
-      if (action === "fill" || action === "select") {
-        // The value is the one thing the element cannot answer for itself.
-        var current = target.value || "";
-        var typed = window.prompt(
-          action === "select" ? "Option value to select:" : "Text to type:", current);
-        if (typed === null) { this.disarm(); return; }
-        step.value = typed;
-      } else if (action === "assert_text_contains") {
-        var expected = window.prompt("Text it should contain:", target.text || "");
-        if (expected === null) { this.disarm(); return; }
-        step.value = expected;
-      }
+      if (value !== undefined) step.value = value;
       // Disarm first: performing the step may navigate, and an armed recorder
       // would then eat the first click on the next page.
       this.disarm();

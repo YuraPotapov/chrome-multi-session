@@ -335,3 +335,25 @@ def test_a_click_on_the_recorders_own_panel_is_left_alone():
     assert results["inside"] is True
     assert results["nothing"] is True      # nothing to pick is not a pick
     assert results["page"] is False        # an ordinary element IS pickable
+
+
+def test_a_value_is_never_asked_for_with_window_prompt():
+    """`fill` asked for its value with window.prompt, and so never worked.
+
+    The recorder is driven over CDP, and Playwright dismisses a page's dialogs by
+    default: prompt() returned null, the step was dropped, and nothing anywhere
+    said why. The end-to-end test did not catch it because the driver stubbed
+    window.prompt - it tested around the bug. Asking has to happen inside the
+    recorder's own panel, where no dialog is involved.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(recorder.__file__)),
+                        "recorder.js")
+    with open(path, encoding="utf-8") as handle:
+        source = handle.read()
+    # Read the code, not the comments: the comment explaining why this rule
+    # exists names the very functions it forbids.
+    code = "\n".join(line.split("//")[0] for line in source.splitlines())
+    for banned in ("prompt(", "confirm(", "alert("):
+        assert banned not in code, "recorder.js still calls %s" % banned
+    # What replaced it: an input rendered into the shadow DOM.
+    assert "_askValue" in source and "menu-value" in source
