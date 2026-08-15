@@ -186,9 +186,8 @@ class MainWindow(QMainWindow):
         # selected, and is confirmed rather than guessed.
         self.record_action = QAction("With Recorder", self)
         self.record_action.setToolTip(
-            "Open the windows with the Scenario Recorder available: right-click "
-            "one and choose \"Start Scenarios\". Continues the selected scenario "
-            "if there is one.")
+            "Open the windows with the Scenario Recorder shown in each of them. "
+            "Continues the selected scenario if there is one.")
         self.record_action.triggered.connect(self.start_recording)
         self.run_menu.addAction(self.record_action)
         self.run_button.setMenu(self.run_menu)
@@ -528,8 +527,8 @@ class MainWindow(QMainWindow):
 
         Deliberately the same launch: same environment, same accounts, same
         profiles. The only difference is that the windows carry a debug port and
-        the extension that offers "Start Scenarios", and that nothing is run
-        afterwards - the launcher waits for you to ask for a recording.
+        show the recorder, and that nothing is run afterwards - the launcher
+        stays up for as long as you are recording.
         """
         choice, scenario = self.ask_recording_target()
         if choice == "cancel":
@@ -570,7 +569,7 @@ class MainWindow(QMainWindow):
         if recorder:
             self.run.run_started(
                 ("continuing %s · " % recorder if recorder is not True else "")
-                + "recorder · right-click a window and choose \"Start Scenarios\"")
+                + "recorder · press Capture Step (or F2) in a window")
         elif source == "launch":
             self.run.run_started("%s · events on stdout" % page.run_meta())
         else:

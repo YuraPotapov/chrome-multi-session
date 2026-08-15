@@ -1,20 +1,17 @@
-"""Drive the Scenario Recorder: attach, wait to be asked, capture, write.
+"""Drive the Scenario Recorder: attach, show the panel, capture, write.
 
 The recorder is the flow engine run backwards. Instead of reading a scenario and
 performing it, it watches someone perform one and writes it down - and it writes
 it in the same grammar, through the same validator, into the same tree, so what
 comes out is an ordinary scenario with nothing special about it.
 
-How a recording starts is the part worth explaining. The user is already working
-in one of the launched windows; they right-click and choose "Start Scenarios".
-That menu item belongs to a small bundled extension, which cannot reach the page's
-own globals - a content script lives in an isolated world - so it leaves a mark on
-<html> instead. This module is attached over CDP from the moment the window opens
-and polls for that mark. There is no server, no port and no localhost permission
-anywhere in it: the DOM is the only channel needed, because both sides are already
-in the same document.
+A window launched with --recorder is a window being recorded: the panel is there
+from the moment the page is attached, with no extension, no menu item and nothing
+to find. That is not the same as capturing automatically - nothing becomes a step
+until Capture Step is pressed - it only means the recorder does not have to be
+summoned.
 
-Polling is not a compromise here either. Playwright's sync API is greenlet-based,
+Polling is not a compromise here. Playwright's sync API is greenlet-based,
 so a callback can only run while this thread is inside a Playwright call - an idle
 recorder has to pump regardless. Given that, asking the page for its queue costs
 nothing extra and survives a navigation for free: a fresh document simply answers
@@ -136,7 +133,7 @@ def _default_scenario_id():
 
 def record_sessions(sessions, env=None, flows_dir=None, scenario_id=None,
                     stop_event=None):
-    """Attach a recorder to every launched window and wait to be asked.
+    """Show the recorder in every launched window and keep it fed.
 
     One thread per window, because Playwright's sync API is bound to the thread
     that created it - the same rule ``engine.runner`` follows for parallel runs.
@@ -159,7 +156,8 @@ def record_sessions(sessions, env=None, flows_dir=None, scenario_id=None,
     if not threads:
         log.error("No windows to record.")
         return 1
-    log.info("Recorder ready. Right-click in a window and choose \"Start Scenarios\".")
+    log.info("Recorder ready in %d window(s). Press Capture Step (or F2) to "
+             "record one.", len(threads))
     events.emit("recorder.ready", sessions=len(threads))
     try:
         while not stop_event.is_set() and any(t.is_alive() for t in threads):
@@ -215,23 +213,15 @@ def _record_one(session_name, profile, origin, flows_dir, scenario_id, stop_even
 def _tick(adapter, recording, selectors, grammar):
     """One poll: has anything happened, and does the page still have a recorder?"""
     answer = adapter.recorder_call(
-        "{running: recorder.running(), request: recorder.takeRequest(),"
-        " events: recorder.drain()}")
+        "{running: recorder.running(), events: recorder.drain()}")
     if not answer:
         return                      # navigating, or the page has no recorder yet
 
-    if not recording.active:
-        if answer.get("request"):
-            _begin(adapter, recording, selectors, grammar)
-        return
-
-    # The page kept the renderer across a navigation but not its state, so a
-    # recorder that is not running means "new document": set it up again, and the
-    # panel comes back with every step still in it.
+    # A recorder that is not running is either the first document or a new one:
+    # the renderer survives a navigation, its state does not. Either way it is
+    # set up and handed the steps so far, so the panel comes back complete.
     if not answer.get("running"):
-        _configure(adapter, selectors, grammar)
-        adapter.recorder_call("recorder.start()")
-        adapter.recorder_call("recorder.render(arg)", recording.state())
+        _begin(adapter, recording, selectors, grammar)
         return
 
     for event in answer.get("events") or []:
@@ -239,10 +229,17 @@ def _tick(adapter, recording, selectors, grammar):
 
 
 def _begin(adapter, recording, selectors, grammar):
-    recording.active = True
+    """Put the panel in the page, with whatever has been captured so far.
+
+    Runs on the first tick and again after every navigation; only the first one
+    announces itself.
+    """
     _configure(adapter, selectors, grammar)
     adapter.recorder_call("recorder.start()")
     adapter.recorder_call("recorder.render(arg)", recording.state())
+    if recording.active:
+        return                                  # a navigation, not a beginning
+    recording.active = True
     if recording.continuing:
         log.info("[%s] continuing %s (%d steps so far)", recording.session,
                  recording.scenario_id, len(recording.steps))
@@ -264,6 +261,48 @@ def _handle(adapter, recording, event):
         _capture(adapter, recording, event.get("step") or {})
     elif kind == "finish":
         _finish(adapter, recording)
+    elif kind in ("delete", "move", "edit"):
+        _amend(adapter, recording, kind, event)
+
+
+def _amend(adapter, recording, kind, event):
+    """Delete, reorder or retarget a step from the panel.
+
+    Fixing a capture belongs in the recording, not only afterwards: while the
+    page is still on screen it is obvious which step went wrong and what it
+    should have pointed at. Python owns the list, so the panel sends an intent
+    and gets the new state back - it never edits its own copy, which is what
+    keeps the two from disagreeing after a navigation.
+    """
+    index = event.get("index")
+    if not isinstance(index, int) or not 0 <= index < len(recording.steps):
+        return                                  # a stale click; the list moved
+    if kind == "delete":
+        removed = recording.steps.pop(index)
+        log.info("[%s] removed step %d (%s)", recording.session, index + 1,
+                 removed.get("action"))
+        events.emit("recorder.step_removed", session=recording.session,
+                    index=index + 1, action=removed.get("action"))
+    elif kind == "move":
+        target = index + (1 if event.get("delta", 0) > 0 else -1)
+        if not 0 <= target < len(recording.steps):
+            return
+        steps = recording.steps
+        steps[index], steps[target] = steps[target], steps[index]
+        events.emit("recorder.step_moved", session=recording.session,
+                    index=index + 1, to=target + 1)
+    else:                                        # edit
+        step = recording.steps[index]
+        target = (event.get("target") or "").strip()
+        value = event.get("value")
+        if target:
+            step["target"] = target
+        # An emptied value means "no value", which is not the same as untouched.
+        step["value"] = value if (value or "").strip() else None
+        events.emit("recorder.step_edited", session=recording.session,
+                    index=index + 1, action=step.get("action"),
+                    target=step.get("target"), value=step.get("value"))
+    adapter.recorder_call("recorder.render(arg)", recording.state())
 
 
 def _capture(adapter, recording, raw):

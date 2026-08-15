@@ -905,7 +905,7 @@ class ScenariosPage(QWidget):
         if kind == "recorder.ready":
             self._recorded = []
             self.status.setText(
-                "Recorder ready · right-click a window and choose \"Start Scenarios\"")
+                "Recorder ready · press Capture Step (or F2) in a window")
         elif kind == "recorder.started":
             self._recorded = []
             self.status.setText("Recording %s …" % event.get("scenario", ""))

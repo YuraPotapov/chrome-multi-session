@@ -87,18 +87,9 @@ def _recording(tree, scenario_id="recorded"):
 
 # ------------------------------------------------------------------- starting
 
-def test_nothing_happens_until_the_menu_item_is_used(tree):
-    """The whole promise: ordinary browsing never becomes a step."""
-    adapter = FakeAdapter([_answer(running=False, request=False)])
-    rec = _recording(tree)
-    recorder._tick(adapter, rec, {}, {})
-    assert not rec.active
-    assert rec.steps == []
-    assert not any(c.startswith("recorder.start") for c in adapter.calls)
-
-
-def test_the_request_from_the_extension_starts_a_recording(tree):
-    adapter = FakeAdapter([_answer(running=False, request=True)])
+def test_the_panel_appears_without_being_asked_for(tree):
+    """A window launched with --recorder is a window being recorded."""
+    adapter = FakeAdapter([_answer(running=False)])
     rec = _recording(tree)
     recorder._tick(adapter, rec, {"dashboard": ".navbar"}, {})
     assert rec.active
@@ -106,6 +97,15 @@ def test_the_request_from_the_extension_starts_a_recording(tree):
     # The page is told the vocabulary and the selectors, so its menu and its
     # naming cannot drift from what the compiler and the tree actually have.
     assert any(c.startswith("recorder.configure") for c in adapter.calls)
+
+
+def test_showing_the_panel_is_not_capturing(tree):
+    """The whole promise: ordinary browsing never becomes a step."""
+    adapter = FakeAdapter([_answer(running=False), _answer(events=[])])
+    rec = _recording(tree)
+    recorder._tick(adapter, rec, {}, {})
+    recorder._tick(adapter, rec, {}, {})
+    assert rec.steps == []
 
 
 def test_a_page_with_no_recorder_is_not_an_error(tree):
@@ -179,7 +179,7 @@ def test_the_panel_is_repainted_after_every_capture(tree):
 def test_a_navigation_brings_the_panel_back_with_its_steps(tree):
     """The renderer survives a new document; its state does not, so Python re-seeds it."""
     rec = _recording(tree)
-    rec.active = True
+    rec.active = True   # already announced; a navigation must not announce again
     rec.add({"action": "click", "target": "first", "value": None})
     adapter = FakeAdapter([_answer(running=False)])
     recorder._tick(adapter, rec, {}, {})
@@ -246,20 +246,19 @@ def test_the_in_page_recorder_is_valid_javascript():
         assert done.returncode == 0, "%s: %s" % (name, done.stderr)
 
 
-def test_the_extension_is_valid_javascript_and_json():
-    node = _node()
-    root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "extensions", "_recorder")
-    with open(os.path.join(root, "manifest.json"), encoding="utf-8") as handle:
-        manifest = json.load(handle)
-    assert manifest["manifest_version"] == 3
-    assert "contextMenus" in manifest["permissions"]
-    if not node:
-        pytest.skip("no node available to parse the extension")
-    for name in ("background.js", "content.js"):
-        done = subprocess.run([node, "--check", os.path.join(root, name)],
-                              capture_output=True, text=True)
-        assert done.returncode == 0, "%s: %s" % (name, done.stderr)
+def test_the_recorder_needs_no_extension_of_its_own():
+    """It is shown by the launcher, not summoned from a menu.
+
+    The extension existed only to carry a right-click into the page. Showing the
+    panel on attach removes the extension, the contextMenus permission, the
+    per-profile install and the DOM flag they talked over.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assert not os.path.exists(os.path.join(root, "extensions", "_recorder"))
+    with open(os.path.join(root, "engine", "recorder.js"), encoding="utf-8") as handle:
+        source = handle.read()
+    assert "takeRequest" not in source
+    assert "data-cms-record" not in source
 
 
 def _node():
@@ -547,3 +546,89 @@ def test_a_radio_offers_a_way_to_check_which_one_is_on():
     assert ("assert_exists", out["checkable"] + ":checked") in offered
     assert ("assert_exists", out["checkable"] + ":not(:checked)") in offered
     assert ("wait_for", out["checkable"] + ":checked") in offered
+
+
+# ----------------------------------------------------- fixing it as you go
+# A bad capture is obvious while the page is still on screen and much less so
+# afterwards, so the panel can delete, reorder and retarget. Python owns the
+# list; the panel sends an intent and repaints from what comes back.
+
+def _amend(rec, kind, **fields):
+    adapter = FakeAdapter([_answer(events=[dict(fields, kind=kind)])])
+    recorder._tick(adapter, rec, {}, {})
+    return adapter
+
+
+def _three(tree):
+    rec = _recording(tree)
+    rec.active = True
+    for target in ("first", "second", "third"):
+        rec.add({"action": "click", "target": target, "value": None})
+    return rec
+
+
+def test_a_step_can_be_deleted(tree):
+    rec = _three(tree)
+    _amend(rec, "delete", index=1)
+    assert [s["target"] for s in rec.steps] == ["first", "third"]
+
+
+def test_a_step_can_be_moved(tree):
+    rec = _three(tree)
+    _amend(rec, "move", index=0, delta=1)
+    assert [s["target"] for s in rec.steps] == ["second", "first", "third"]
+    _amend(rec, "move", index=2, delta=-1)
+    assert [s["target"] for s in rec.steps] == ["second", "third", "first"]
+
+
+def test_moving_off_either_end_does_nothing(tree):
+    rec = _three(tree)
+    _amend(rec, "move", index=0, delta=-1)
+    _amend(rec, "move", index=2, delta=1)
+    assert [s["target"] for s in rec.steps] == ["first", "second", "third"]
+
+
+def test_a_step_can_be_retargeted(tree):
+    rec = _three(tree)
+    _amend(rec, "edit", index=1, target="menu_settings", value="typed")
+    assert rec.steps[1]["target"] == "menu_settings"
+    assert rec.steps[1]["value"] == "typed"
+
+
+def test_clearing_a_value_means_no_value(tree):
+    # Not the same as leaving it alone: an emptied box removes it from the step.
+    rec = _three(tree)
+    rec.steps[1]["value"] = "was here"
+    _amend(rec, "edit", index=1, target="second", value="")
+    assert rec.steps[1]["value"] is None
+
+
+def test_an_empty_target_leaves_the_step_pointing_where_it_did(tree):
+    rec = _three(tree)
+    _amend(rec, "edit", index=1, target="", value=None)
+    assert rec.steps[1]["target"] == "second"
+
+
+def test_a_stale_index_is_ignored(tree):
+    """The panel can be a repaint behind; a click on a row that moved must not
+    delete whatever is there now."""
+    rec = _three(tree)
+    _amend(rec, "delete", index=9)
+    _amend(rec, "delete", index=-1)
+    assert len(rec.steps) == 3
+
+
+def test_the_panel_is_repainted_after_an_amendment(tree):
+    rec = _three(tree)
+    adapter = _amend(rec, "delete", index=0)
+    assert [s["target"] for s in adapter.rendered[-1]["steps"]] == ["second", "third"]
+
+
+def test_what_is_saved_is_what_the_panel_last_showed(tree):
+    rec = _three(tree)
+    _amend(rec, "delete", index=1)
+    _amend(rec, "edit", index=0, target="menu_settings", value=None)
+    assert rec.save()["ok"]
+    flow = loader.load_flow(rec.scenario_id)
+    assert [compiler.parse_step(s).target for s in flow.steps] == [
+        "menu_settings", "third"]

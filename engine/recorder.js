@@ -4,11 +4,12 @@
 // same way the execution HUD is, and isolated the same way: one host element on
 // <html>, everything inside a Shadow DOM, so the app's CSS and JS never see it.
 //
-// The recorder captures EXPLICITLY. Moving the mouse, typing, focusing and every
-// intermediate input event are ignored - none of them become a step. A step
-// exists only when it is asked for: press Capture Step, hover until the element
-// you want is outlined, click it, and choose from the actions that element can
-// take. That is one step, and nothing else is.
+// The panel appears as soon as the window is attached, and capture is still
+// EXPLICIT. Moving the mouse, typing, focusing and every intermediate input
+// event are ignored - none of them become a step. A step exists only when it is
+// asked for: press Capture Step (or F2), hover until the element you want is
+// outlined, click it, and choose from the actions that element can take. That is
+// one step, and nothing else is.
 //
 // Python is the one that acts and the one that remembers. This side collects
 // what the user picked into a queue and hands it over when drained; the steps
@@ -20,7 +21,7 @@
 (function () {
   "use strict";
   var HOST_ID = "__cms_recorder_host__";
-  var FLAG = "data-cms-record";     // set by the extension's content script
+  var COLLAPSED_KEY = "__cms_recorder_collapsed";
 
   var CSS = "" +
     ":host{all:initial}" +
@@ -61,11 +62,25 @@
     ".ghost-btn{padding:6px 10px;border-radius:6px;cursor:pointer;" +
       "background:rgba(255,255,255,0.08);color:#e8eaed}" +
     ".ghost-btn:hover{background:rgba(255,255,255,0.16)}" +
+    // Collapsed: the header alone, and faded, because a panel you are not using
+    // is still sitting on top of the app you are trying to look at. Hovering
+    // brings it back to full strength so it can be reopened without hunting.
+    ".card.collapsed .body,.card.collapsed .bar,.card.collapsed .hint{display:none}" +
+    ".card.collapsed{opacity:0.35;transition:opacity .12s ease}" +
+    ".card.collapsed:hover{opacity:1}" +
     ".hint{padding:6px 10px;color:#9aa0a6;border-bottom:1px solid rgba(255,255,255,0.08)}" +
-    ".step{display:flex;gap:8px;padding:4px 2px;border-bottom:1px solid rgba(255,255,255,0.05)}" +
-    ".step-n{color:#6b7076;min-width:18px;text-align:right}" +
-    ".step-a{color:#8ab4f8;font-weight:600}" +
-    ".step-t{color:#cfd3d7;word-break:break-all}" +
+    ".step{display:flex;gap:8px;padding:4px 2px;align-items:baseline;" +
+      "border-bottom:1px solid rgba(255,255,255,0.05)}" +
+    ".step-n{color:#6b7076;min-width:18px;text-align:right;flex:0 0 auto}" +
+    ".step-a{color:#8ab4f8;font-weight:600;flex:0 0 auto}" +
+    ".step-t{color:#cfd3d7;word-break:break-all;flex:1 1 auto;min-width:0}" +
+    // Shown on hover: four marks on every row would be louder than the steps.
+    ".step-tools{display:flex;gap:2px;flex:0 0 auto;opacity:0}" +
+    ".step:hover .step-tools{opacity:1}" +
+    ".step-btn{width:18px;height:18px;display:flex;align-items:center;" +
+      "justify-content:center;border-radius:4px;cursor:pointer;color:#9aa0a6;" +
+      "background:rgba(255,255,255,0.06);font-size:11px}" +
+    ".step-btn:hover{background:rgba(255,255,255,0.18);color:#fff}" +
     ".empty{color:#9aa0a6;padding:6px 2px}" +
     // The action menu that opens where the element was clicked.
     ".menu{position:fixed;z-index:2147483647;min-width:230px;max-height:60vh;overflow:auto;" +
@@ -84,6 +99,7 @@
       "border-top:1px solid rgba(255,255,255,0.10)}" +
     ".menu-warn{color:#ffab40;margin-top:4px}" +
     ".menu-toggle{color:#9ad1ff;border-top:1px solid rgba(255,255,255,0.10)}" +
+    ".menu-label{color:#9aa0a6;font-size:11px;margin-bottom:3px}" +
     ".menu-value{padding:8px 10px}" +
     ".menu-value input{width:100%;box-sizing:border-box;padding:6px 8px;" +
       "border-radius:6px;border:1px solid rgba(255,255,255,0.22);" +
@@ -407,7 +423,7 @@
   var Recorder = {
     _shadow: null, _card: null, _body: null, _titleEl: null, _hi: null,
     _armBtn: null, _hintEl: null, _menu: null,
-    _armed: false, _running: false,
+    _armed: false, _running: false, _collapsed: false,
     _queue: [],            // events waiting for Python to drain
     _state: { steps: [], scenario: "", status: "idle" },
     _selectors: {}, _grammar: {},
@@ -449,19 +465,6 @@
 
     running: function () { return !!this._running; },
     armed: function () { return !!this._armed; },
-
-    // The extension cannot reach into this world, so it leaves a mark on <html>
-    // instead. Taking it clears it, which makes a double click harmless.
-    takeRequest: function () {
-      try {
-        var root = document.documentElement;
-        if (root && root.hasAttribute(FLAG)) {
-          root.removeAttribute(FLAG);
-          return true;
-        }
-      } catch (e) {}
-      return false;
-    },
 
     // --------------------------------------------------------------- python
     drain: function () {
@@ -509,7 +512,8 @@
       var title = elem("div", "h-title");
       title.textContent = "Recording";
       header.appendChild(title);
-      header.appendChild(this._makeBtn("–", "Minimize", this._toggleMinimize));
+      this._collapseBtn = this._makeBtn("–", "Collapse", this._toggleMinimize);
+      header.appendChild(this._collapseBtn);
       card.appendChild(header);
 
       var bar = elem("div", "bar");
@@ -546,6 +550,10 @@
       this._armBtn = arm;
       this._hintEl = hint;
       this._wireDrag(header);
+      // A navigation rebuilds all of this, so the choice is read back rather
+      // than remembered in the object that was just replaced.
+      this._collapsed = this._readCollapsed();
+      this._applyCollapsed();
     },
 
     _makeBtn: function (glyph, tip, handler) {
@@ -560,10 +568,32 @@
       return b;
     },
 
-    _toggleMinimize: function (btn) {
-      var hidden = this._body.style.display === "none";
-      this._body.style.display = hidden ? "" : "none";
-      btn.textContent = hidden ? "–" : "+";
+    _toggleMinimize: function () {
+      this._collapsed = !this._collapsed;
+      // Remembered outside this object, because a navigation replaces it: the
+      // init script runs again on the new document and everything here starts
+      // over. sessionStorage is scoped to this tab and this origin, which is
+      // exactly the life of a recording (the auto-login extension leans on it
+      // for the same reason).
+      try {
+        sessionStorage.setItem(COLLAPSED_KEY, this._collapsed ? "1" : "");
+      } catch (e) { /* storage denied: it just will not be remembered */ }
+      this._applyCollapsed();
+    },
+
+    _readCollapsed: function () {
+      try {
+        return sessionStorage.getItem(COLLAPSED_KEY) === "1";
+      } catch (e) { return false; }
+    },
+
+    _applyCollapsed: function () {
+      if (!this._card) return;
+      this._card.className = this._collapsed ? "card collapsed" : "card";
+      if (this._collapseBtn) {
+        this._collapseBtn.textContent = this._collapsed ? "+" : "–";
+        this._collapseBtn.title = this._collapsed ? "Expand" : "Collapse";
+      }
     },
 
     _wireDrag: function (handle) {
@@ -608,15 +638,113 @@
         return;
       }
       for (var i = 0; i < steps.length; i++) {
-        var row = elem("div", "step");
-        var n = elem("div", "step-n"); n.textContent = String(i + 1);
-        var a = elem("div", "step-a"); a.textContent = steps[i].action || "";
-        var t = elem("div", "step-t");
-        t.textContent = steps[i].target || steps[i].value || "";
-        row.appendChild(n); row.appendChild(a); row.appendChild(t);
-        this._body.appendChild(row);
+        this._body.appendChild(this._stepRow(steps[i], i, steps.length));
       }
       this._body.scrollTop = this._body.scrollHeight;
+    },
+
+    // A step, and the four things worth doing to one without leaving the page.
+    //
+    // Fixing a bad capture belongs here rather than only on the Scenarios page:
+    // the moment you can still see what you meant to point at is the moment the
+    // mistake is obvious. Python owns the list, so these send an intent and
+    // repaint from what comes back - the row indices are always its indices.
+    _stepRow: function (step, index, total) {
+      var self = this;
+      var row = elem("div", "step");
+      var n = elem("div", "step-n");
+      n.textContent = String(index + 1);
+      var a = elem("div", "step-a");
+      a.textContent = step.action || "";
+      var t = elem("div", "step-t");
+      t.textContent = step.target || "";
+      if (step.value) t.textContent += ' = "' + step.value + '"';
+
+      var tools = elem("div", "step-tools");
+      if (index > 0) {
+        tools.appendChild(this._stepBtn("↑", "Move up", function () {
+          self._push({ kind: "move", index: index, delta: -1 });
+        }));
+      }
+      if (index < total - 1) {
+        tools.appendChild(this._stepBtn("↓", "Move down", function () {
+          self._push({ kind: "move", index: index, delta: 1 });
+        }));
+      }
+      tools.appendChild(this._stepBtn("✎", "Edit what it points at", function () {
+        self._editStep(step, index);
+      }));
+      tools.appendChild(this._stepBtn("✕", "Delete this step", function () {
+        self._push({ kind: "delete", index: index });
+      }));
+
+      row.appendChild(n);
+      row.appendChild(a);
+      row.appendChild(t);
+      row.appendChild(tools);
+      return row;
+    },
+
+    _stepBtn: function (glyph, tip, handler) {
+      var b = elem("div", "step-btn");
+      b.textContent = glyph;
+      b.title = tip;
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        handler();
+      });
+      return b;
+    },
+
+    _editStep: function (step, index) {
+      var self = this;
+      this._closeMenu();
+      var box = elem("div", "menu");
+      var head = elem("div", "menu-head");
+      head.textContent = "step " + (index + 1) + " · " + (step.action || "");
+      box.appendChild(head);
+
+      var target = this._field(box, "Target", step.target || "");
+      var value = this._field(box, "Value", step.value || "");
+
+      var foot = elem("div", "menu-foot");
+      foot.textContent = "Enter saves · Esc cancels";
+      box.appendChild(foot);
+      this._shadow.appendChild(box);
+      this._menu = box;
+      // Beside the panel rather than at the pointer: the row being edited is
+      // over there, and the pointer is wherever it happens to be.
+      this._menuAt = { x: Math.max(8, window.innerWidth - 780), y: 90 };
+      this._placeMenu(box);
+      this._valueInput = target;
+
+      function commit() {
+        self._closeMenu();
+        self._push({ kind: "edit", index: index,
+                     target: target.value, value: value.value });
+      }
+      [target, value].forEach(function (input) {
+        input.addEventListener("keydown", function (e) {
+          e.stopPropagation();
+          if (e.key === "Enter") { e.preventDefault(); commit(); }
+          else if (e.key === "Escape") { e.preventDefault(); self._closeMenu(); }
+        });
+      });
+      target.focus();
+      target.select();
+    },
+
+    _field: function (box, label, initial) {
+      var row = elem("div", "menu-value");
+      var caption = elem("div", "menu-label");
+      caption.textContent = label;
+      var input = elem("input");
+      input.type = "text";
+      input.value = initial;
+      row.appendChild(caption);
+      row.appendChild(input);
+      box.appendChild(row);
+      return input;
     },
 
     // ------------------------------------------------------------- capturing

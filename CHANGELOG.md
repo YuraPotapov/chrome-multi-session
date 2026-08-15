@@ -16,6 +16,28 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+### Added
+- The recorder panel **edits its own steps**: delete one, move it up or down,
+  or retarget it. A bad capture is obvious while the page is still on screen and
+  much less so afterwards. Python owns the list, so the panel sends an intent and
+  repaints from what comes back - it never edits its own copy, which is what
+  keeps the two from disagreeing after a navigation.
+- The panel **collapses to its header**, and fades to 35% while collapsed so it
+  stops covering the app; hovering brings it back. The choice is remembered in
+  `sessionStorage`, because a navigation replaces the whole renderer.
+
+### Changed
+- **The recorder shows itself.** A window launched with `--recorder` carries the
+  panel from the moment it is attached - no right-click, no menu item, nothing to
+  find. That is not capturing automatically: nothing becomes a step until Capture
+  Step is pressed. It removes the bundled extension entirely, along with its
+  `contextMenus` permission, its per-profile install and the DOM flag the two
+  halves talked over.
+
+### Removed
+- `extensions/_recorder/`, which existed only to carry a right-click into the
+  page.
+
 ## [0.7.0] - 2026-08-15
 
 ### Added
