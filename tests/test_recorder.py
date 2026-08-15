@@ -472,3 +472,78 @@ def test_a_selector_is_never_just_a_tag_name():
     assert described["selector"] != "a"
     assert "nth-of-type(2)" in described["selector"]
     assert described["unique"] is True
+
+
+def test_a_radio_offers_a_way_to_check_which_one_is_on():
+    """"Is this option selected?" is the question none of the assertions answer.
+
+    CSS says it exactly - :checked - so it needs no new step type, and the tree
+    already writes selectors that way by hand
+    (flows/selectors.yaml: roles_wizard_agent_checked). What the recorder has to
+    do is find the input behind the label somebody actually clicked, and name
+    which option it is: every radio in a group shares its `name`.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    path = os.path.join(os.path.dirname(os.path.abspath(recorder.__file__)),
+                        "recorder.js")
+    # Odoo's shape: a wrapping div per option, the input carrying data-value.
+    harness = """
+      const options = ['agent', 'manager', 'ov_manager'];
+      const inputs = [], wrappers = [];
+      options.forEach((value, i) => {
+        const input = {tagName: 'INPUT', className: 'form-check-input o_radio_input',
+                       id: '', children: [], querySelectorAll: () => [],
+                       attrs: {type: 'radio', name: 'role', 'data-value': value}};
+        input.getAttribute = (k) => input.attrs[k] || null;
+        const wrap = {tagName: 'DIV', className: 'form-check o_radio_item', id: '',
+                      children: [input], getAttribute: () => null,
+                      querySelectorAll: (s) => (/radio|checkbox/.test(s) ? [input] : [])};
+        input.parentElement = wrap;
+        inputs.push(input); wrappers.push(wrap);
+      });
+      const field = {tagName: 'DIV', className: 'o_field_widget', id: '',
+                     children: wrappers, parentElement: null,
+                     getAttribute: (k) => (k === 'name' ? 'role' : null),
+                     querySelectorAll: () => inputs};
+      wrappers.forEach(w => { w.parentElement = field; });
+      const all = [field].concat(wrappers, inputs);
+      function sel(el, s) {
+        if (s === '[name="role"]') return el === field || inputs.includes(el);
+        if (s === 'div.form-check.o_radio_item') return wrappers.includes(el);
+        const m = s.match(/^input\\[type="radio"\\]\\[name="role"\\]\\[data-value="([a-z_]+)"\\]$/);
+        if (m) return inputs.includes(el) && el.getAttribute('data-value') === m[1];
+        return false;
+      }
+      global.document = {
+        getElementById: () => null,
+        querySelectorAll: (s) => all.filter(e => sel(e, s)),
+        createElement: () => ({style: {}, setAttribute() {}, appendChild() {}}),
+        documentElement: {appendChild() {}, hasAttribute: () => false,
+                          removeAttribute() {}},
+        addEventListener() {}, removeEventListener() {}
+      };
+      all.forEach(e => { e.matches = (s) => sel(e, s); });
+      global.window = {};
+      require(%s);
+      const r = window.__Recorder;
+      r.configure({}, {selector_only: ['click', 'wait_for', 'assert_exists',
+                                       'assert_visible', 'assert_not_visible'],
+                       selector_and_value: ['fill'], value_only: ['press'],
+                       url_target: ['goto']});
+      // Picking the wrapper, which is what clicking the label lands on.
+      const described = r._describe(wrappers[2]);
+      console.log(JSON.stringify({checkable: described.checkable,
+                                  actions: r._actionsFor(described)}));
+    """ % json.dumps(path)
+    done = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout.strip())
+
+    # It found the input behind the label, and named which option it is.
+    assert out["checkable"] == 'input[type="radio"][name="role"][data-value="ov_manager"]'
+    offered = {(a["action"], a["selector"]) for a in out["actions"]}
+    assert ("assert_exists", out["checkable"] + ":checked") in offered
+    assert ("assert_exists", out["checkable"] + ":not(:checked)") in offered
+    assert ("wait_for", out["checkable"] + ":checked") in offered

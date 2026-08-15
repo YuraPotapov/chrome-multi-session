@@ -18,6 +18,18 @@ app-agnostic, since that will break things on purpose.
 
 ## [0.7.0] - 2026-08-15
 
+### Added
+- **Checking which radio or checkbox is on.** None of the assertions answered
+  "is this option selected?", which is most of what a permissions screen is. CSS
+  already says it - `:checked` - so this needs no new step type, and the tree
+  writes selectors that way by hand already
+  (`flows/selectors.yaml`: `roles_wizard_agent_checked`). Picking a radio now
+  offers *check it IS selected*, *check it is NOT selected* and *wait until it
+  becomes selected*, and finds the input behind whatever you clicked: the label
+  beside it, or the row around it - in Odoo the label is the input's sibling, not
+  its parent. `data-value` joins the attributes synthesis looks for, because
+  without it every radio in a group looks identical: they share their `name`.
+
 ### Fixed
 - The recorder could produce `click: "a"` - every link on the page, recorded as a
   step. Synthesis gave up after four ancestors and returned whatever it had,

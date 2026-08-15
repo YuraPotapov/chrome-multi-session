@@ -136,7 +136,9 @@
     // Attributes an application sets on purpose, most specific first. These are
     // the ones that survive a restyle, a re-render and a translation.
     var named = ["data-menu-xmlid", "data-testid", "data-test", "data-qa", "data-cy",
-                 "name", "data-field", "data-name", "aria-controls"];
+                 // data-value is how a radio in a group says which option it is;
+                 // without it every option in the group looks identical.
+                 "data-value", "name", "data-field", "data-name", "aria-controls"];
     for (var i = 0; i < named.length; i++) {
       var value = el.getAttribute && el.getAttribute(named[i]);
       if (value && !UNSTABLE.test(value)) {
@@ -260,11 +262,88 @@
       type: (el.getAttribute && el.getAttribute("type")) || "",
       role: (el.getAttribute && el.getAttribute("role")) || "",
       editable: isEditable(el),
+      // "" when nothing here can be checked, which is most things.
+      checkable: (function () {
+        var input = checkableWithin(el);
+        return input ? checkableSelector(input) : "";
+      })(),
       value: readValue(el),
       // Only ever shown in the menu so a person can tell which element they
       // picked; never put into a selector.
       text: (el.textContent || "").trim().slice(0, 60)
     };
+  }
+
+  var CHECKABLE = "input[type=radio],input[type=checkbox]";
+
+  function onlyCheckableIn(el) {
+    if (!el || !el.querySelectorAll) return null;
+    try {
+      var found = el.querySelectorAll(CHECKABLE);
+      // Exactly one, or there is no way to tell which was meant. This is also
+      // what stops the search: the whole radio group holds several.
+      return found.length === 1 ? found[0] : null;
+    } catch (e) { return null; }
+  }
+
+  function checkableWithin(el) {
+    // The input a "is this selected?" check would be about.
+    //
+    // Rarely the element under the pointer. A radio is a 13px circle and people
+    // click the label beside it or the row around it, and in most frameworks -
+    // Odoo included - the label is the input's *sibling*, not its parent. So
+    // this looks at the element, then inside it, then at what a label points to,
+    // and finally at the row it sits in.
+    var type = ((el.getAttribute && el.getAttribute("type")) || "").toLowerCase();
+    if ((el.tagName || "").toLowerCase() === "input"
+        && (type === "radio" || type === "checkbox")) {
+      return el;
+    }
+    var inside = onlyCheckableIn(el);
+    if (inside) return inside;
+
+    if ((el.tagName || "").toLowerCase() === "label") {
+      var target = el.getAttribute && el.getAttribute("for");
+      if (target) {
+        try {
+          var referenced = document.getElementById(target);
+          if (referenced && referenced.matches && referenced.matches(CHECKABLE)) {
+            return referenced;
+          }
+        } catch (e) { /* an id a selector cannot express */ }
+      }
+    }
+    // The row this option is drawn as. Bounded, and self-limiting anyway: one
+    // step too far is the whole group, which holds more than one.
+    var node = el.parentElement;
+    for (var depth = 0; node && depth < 3; depth++) {
+      var sibling = onlyCheckableIn(node);
+      if (sibling) return sibling;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function checkableSelector(el) {
+    // name alone is shared by every radio in a group, so it needs whichever
+    // attribute says which option this one is.
+    var base = (el.tagName || "").toLowerCase();
+    var type = (el.getAttribute("type") || "").toLowerCase();
+    base += '[type="' + type + '"]';
+    var which = "";
+    var candidates = ["data-value", "value", "id"];
+    for (var i = 0; i < candidates.length; i++) {
+      var value = el.getAttribute(candidates[i]);
+      if (value && !UNSTABLE.test(value)) {
+        which = "[" + candidates[i] + '="' + cssEscape(value) + '"]';
+        break;
+      }
+    }
+    var group = el.getAttribute("name");
+    var selector = base + (group ? '[name="' + cssEscape(group) + '"]' : "") + which;
+    if (matchesUniquely(selector, el)) return selector;
+    var scoped = scopeUntilUnique(el, selector);
+    return scoped || (selector + nthOfType(el));
   }
 
   function isEditable(el) {
@@ -294,15 +373,27 @@
         (grammar[group] || []).forEach(function (a) { known[a] = group; });
       });
     var out = [];
-    function offer(action, why) {
-      if (known[action]) out.push({ action: action, why: why || "" });
+    function offer(action, why, selector) {
+      if (known[action]) out.push({ action: action, why: why || "",
+                                    selector: selector || "" });
+    }
+    // A radio or a checkbox has a question of its own that none of the ordinary
+    // assertions answer: is it the one that is on? CSS says it exactly, so this
+    // needs no new step type - :checked on the selector, and assert_exists.
+    if (target.checkable) {
+      offer("assert_exists", "check it IS selected", target.checkable + ":checked");
+      offer("assert_exists", "check it is NOT selected",
+            target.checkable + ":not(:checked)");
+      offer("wait_for", "wait until it becomes selected",
+            target.checkable + ":checked");
+      offer("click", "select it", target.checkable);
     }
     if (target.tag === "select") {
       offer("select", "choose an option by value");
     } else if (target.editable) {
       offer("fill", "type into it");
       offer("click", "focus it");
-    } else {
+    } else if (!target.checkable) {
       offer("click", "click it");
     }
     offer("assert_visible", "check it is on screen");
@@ -327,6 +418,10 @@
     // enough logic to be worth checking without a browser.
     _describe: function (el) {
       return describeTarget(el, this._selectors);
+    },
+
+    _actionsFor: function (target) {
+      return actionsFor(target, this._grammar);
     },
 
     // ------------------------------------------------------------- lifecycle
@@ -593,7 +688,8 @@
         if (items[index]) {
           e.preventDefault();
           e.stopPropagation();
-          this._choose(items[index].action, this._pickedTarget);
+          this._choose(items[index].action, this._pickedTarget,
+                       items[index].selector);
         }
         return;
       }
@@ -604,7 +700,8 @@
       } else if (e.key === "Enter" && items[this._menuIndex]) {
         e.preventDefault();
         e.stopPropagation();
-        this._choose(items[this._menuIndex].action, this._pickedTarget);
+        this._choose(items[this._menuIndex].action, this._pickedTarget,
+                     items[this._menuIndex].selector);
       }
     },
 
@@ -770,7 +867,7 @@
         item.appendChild(why);
         item.addEventListener("click", function (ev) {
           ev.stopPropagation();
-          self._choose(choice.action, target);
+          self._choose(choice.action, target, choice.selector);
         });
         menu.appendChild(item);
         self._menuEls.push(item);
@@ -842,12 +939,12 @@
     _NEEDS_VALUE: { fill: "Text to type", select: "Option value to select",
                     assert_text_contains: "Text it should contain" },
 
-    _choose: function (action, target) {
+    _choose: function (action, target, override) {
       if (this._NEEDS_VALUE[action]) {
-        this._askValue(action, target);
+        this._askValue(action, target, override);
         return;
       }
-      this._commit(action, target, undefined);
+      this._commit(action, target, undefined, override);
     },
 
     // Asking happens in this panel, never with window.prompt.
@@ -855,7 +952,7 @@
     // The recorder is driven over CDP, and Playwright dismisses a page's dialogs
     // by default - so prompt() returns null, the step is silently dropped, and
     // `fill` looks like it simply does not work. Which is exactly what it did.
-    _askValue: function (action, target) {
+    _askValue: function (action, target, override) {
       var self = this;
       var suggested = action === "assert_text_contains"
         ? (target.text || "") : (target.value || "");
@@ -867,7 +964,7 @@
       var head = elem("div", "menu-head");
       head.textContent = action + " · " + this._NEEDS_VALUE[action];
       var sel = elem("span", "menu-sel");
-      sel.textContent = this._targetFor(target);
+      sel.textContent = override || this._targetFor(target);
       head.appendChild(sel);
       box.appendChild(head);
 
@@ -891,7 +988,7 @@
         e.stopPropagation();
         if (e.key === "Enter") {
           e.preventDefault();
-          self._commit(action, target, input.value);
+          self._commit(action, target, input.value, override);
         } else if (e.key === "Escape") {
           e.preventDefault();
           self.disarm();
@@ -911,13 +1008,17 @@
       return target.name || target.selector;
     },
 
-    _commit: function (action, target, value) {
+    _commit: function (action, target, value, override) {
+      // An override is a selector the chosen entry built for itself - a radio's
+      // :checked form, say - and it is both what gets recorded and what gets
+      // acted on, because it describes the thing the entry is about.
       var step = {
         action: action,
-        target: this._targetFor(target),
+        target: override || this._targetFor(target),
         // What Python performs against: the exact element that was picked.
-        selector: this._byText ? this._textSelector(target) : target.selector,
-        named: !!target.name && !this._byText
+        selector: override
+          || (this._byText ? this._textSelector(target) : target.selector),
+        named: !!target.name && !this._byText && !override
       };
       if (value !== undefined) step.value = value;
       // Disarm first: performing the step may navigate, and an armed recorder
