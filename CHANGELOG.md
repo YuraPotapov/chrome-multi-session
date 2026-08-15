@@ -16,6 +16,12 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-15
+
+Scenarios stop being something you write in a text editor. There is a page for
+them, a tree of your own to write them into, and a recorder that captures one
+from a window you are already working in.
+
 ### Added
 - **A Scenario Recorder.** RUN ▾ → *With Recorder* opens the windows as usual,
   with one addition: right-click any of them and there is **Start Scenarios**.

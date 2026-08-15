@@ -1828,6 +1828,11 @@ Editing scenarios (answer with JSON on stdout, then exit):
   --flow-delete=ID          Delete a scenario. Refuses the ones that ship with
                             the application - duplicate those instead.
   --flow-import=FILE        Copy a scenario file in, validating it first.
+  --selectors-show          The named-target map as JSON: every name, what it
+                            resolves to, and whether it is yours or the app's.
+  --selectors-save --from=F Replace your selectors.yaml from the JSON document
+                            in file F ({"yaml": "..."}). Names of your own
+                            override the ones that ship with the application.
 
 Recording:
   --recorder                Open the windows with the Scenario Recorder available:
