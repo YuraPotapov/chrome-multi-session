@@ -77,7 +77,11 @@
     ".menu-sel{color:#8ab4f8;display:block;margin-top:3px}" +
     ".menu-item{padding:7px 10px;cursor:pointer;display:flex;gap:8px;align-items:baseline}" +
     ".menu-item:hover{background:rgba(255,255,255,0.10)}" +
-    ".menu-item .why{color:#9aa0a6;font-size:11px}" +
+    ".menu-item.on{background:rgba(77,163,255,0.22)}" +
+    ".menu-item .key{color:#6b7076;min-width:12px}" +
+    ".menu-item .why{color:#9aa0a6;font-size:11px;margin-left:auto}" +
+    ".menu-foot{padding:6px 10px;color:#6b7076;font-size:11px;" +
+      "border-top:1px solid rgba(255,255,255,0.10)}" +
     ".menu-cancel{color:#ffab40}";
 
   function elem(tag, cls) {
@@ -283,6 +287,7 @@
 
     start: function () {
       this._running = true;
+      this._bindKeys();
       this.ensure();
       this._push({ kind: "started", url: location.href });
       this.paint();
@@ -290,6 +295,7 @@
 
     stop: function () {
       this._running = false;
+      this._unbindKeys();
       this.disarm();
       var host = document.getElementById(HOST_ID);
       if (host && host.parentNode) host.parentNode.removeChild(host);
@@ -439,12 +445,14 @@
       var state = this._state || {};
       this._titleEl.textContent = "Recording" +
         (state.scenario ? " · " + state.scenario : "");
-      this._armBtn.textContent = this._armed ? "Pick an element… (Esc)" : "Capture Step";
+      this._armBtn.textContent = this._armed ? "Pick an element… (Esc)"
+                                             : "Capture Step  (F2)";
       this._armBtn.className = this._armed ? "action armed" : "action";
       this._hintEl.textContent = this._armed
-        ? "Hover to outline, click to choose what this step does."
+        ? "Hover to outline, click to pick. Menus stay open while capturing."
         : (state.status === "busy" ? "Working…"
-           : "Nothing is recorded until you press Capture Step.");
+           : "Nothing is recorded until you press Capture Step. Press F2 instead "
+             + "to keep a dropdown open.");
 
       var steps = state.steps || [];
       this._body.innerHTML = "";
@@ -486,25 +494,95 @@
       this.paint();
     },
 
+    // Keys work while the recorder is running, not only while it is armed - the
+    // whole point being that arming must not require a click. Clicking anywhere,
+    // including on this panel, dismisses whatever transient thing the app has
+    // open: a dropdown, a popover, an autocomplete list. Those are exactly the
+    // things worth recording, so F2 arms instead.
+    _bindKeys: function () {
+      if (this._onKey) return;
+      var self = this;
+      this._onKey = function (e) { self._key(e); };
+      document.addEventListener("keydown", this._onKey, true);
+    },
+
+    _unbindKeys: function () {
+      if (this._onKey) document.removeEventListener("keydown", this._onKey, true);
+      this._onKey = null;
+    },
+
+    _key: function (e) {
+      if (e.key === "F2") {
+        this.toggleArm();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (e.key === "Escape" && (this._armed || this._menu)) {
+        this.disarm();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      // With the action menu open, choosing by keyboard is the only way that
+      // leaves the app's own popup standing - a click on this panel is an
+      // outside-click as far as the app is concerned.
+      if (!this._menu) return;
+      var items = this._menuItems || [];
+      if (/^[1-9]$/.test(e.key)) {
+        var index = parseInt(e.key, 10) - 1;
+        if (items[index]) {
+          e.preventDefault();
+          e.stopPropagation();
+          this._choose(items[index].action, this._pickedTarget);
+        }
+        return;
+      }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        this._moveMenu(e.key === "ArrowDown" ? 1 : -1);
+        e.preventDefault();
+        e.stopPropagation();
+      } else if (e.key === "Enter" && items[this._menuIndex]) {
+        e.preventDefault();
+        e.stopPropagation();
+        this._choose(items[this._menuIndex].action, this._pickedTarget);
+      }
+    },
+
     _bind: function () {
       var self = this;
       this._onMove = function (e) { self._track(e); };
-      // Capture phase, so the click is taken before the app sees it: while
-      // armed, a click chooses an element rather than pressing a button.
+      // Capture phase, so the pick is taken before the app sees it. All three
+      // matter: an app closes its dropdown on mousedown, so intercepting only
+      // the click would let the menu shut before the element could be picked
+      // out of it.
       this._onClick = function (e) { self._pick(e); };
-      this._onKey = function (e) {
-        if (e.key === "Escape") { self.disarm(); e.preventDefault(); e.stopPropagation(); }
-      };
+      this._onDown = function (e) { self._swallow(e); };
       document.addEventListener("mousemove", this._onMove, true);
       document.addEventListener("click", this._onClick, true);
-      document.addEventListener("keydown", this._onKey, true);
+      document.addEventListener("mousedown", this._onDown, true);
+      document.addEventListener("pointerdown", this._onDown, true);
+      document.addEventListener("mouseup", this._onDown, true);
     },
 
     _unbind: function () {
       if (this._onMove) document.removeEventListener("mousemove", this._onMove, true);
       if (this._onClick) document.removeEventListener("click", this._onClick, true);
-      if (this._onKey) document.removeEventListener("keydown", this._onKey, true);
-      this._onMove = this._onClick = this._onKey = null;
+      if (this._onDown) {
+        document.removeEventListener("mousedown", this._onDown, true);
+        document.removeEventListener("pointerdown", this._onDown, true);
+        document.removeEventListener("mouseup", this._onDown, true);
+      }
+      this._onMove = this._onClick = this._onDown = null;
+    },
+
+    _swallow: function (e) {
+      // Everything except the click itself, which _pick handles. Taking these
+      // away from the app is what keeps a dropdown open long enough to point at
+      // something inside it.
+      if (this._ours(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
     },
 
     _inPanel: function (el) {
@@ -584,12 +662,19 @@
 
       var self = this;
       var choices = actionsFor(target, this._grammar);
-      choices.forEach(function (choice) {
+      this._menuItems = choices;
+      this._menuIndex = 0;
+      this._pickedTarget = target;
+      this._menuEls = [];
+      choices.forEach(function (choice, index) {
         var item = elem("div", "menu-item");
+        var key = elem("span", "key");
+        key.textContent = index < 9 ? String(index + 1) : " ";
         var label = elem("span");
         label.textContent = choice.action;
         var why = elem("span", "why");
         why.textContent = choice.why;
+        item.appendChild(key);
         item.appendChild(label);
         item.appendChild(why);
         item.addEventListener("click", function (ev) {
@@ -597,6 +682,7 @@
           self._choose(choice.action, target);
         });
         menu.appendChild(item);
+        self._menuEls.push(item);
       });
 
       var cancel = elem("div", "menu-item menu-cancel");
@@ -607,13 +693,33 @@
       });
       menu.appendChild(cancel);
 
+      var foot = elem("div", "menu-foot");
+      foot.textContent = "1-9 or ↑↓ + Enter · Esc cancels";
+      menu.appendChild(foot);
+
       this._shadow.appendChild(menu);
       this._menu = menu;
+      this._moveMenu(0);
+    },
+
+    _moveMenu: function (delta) {
+      var items = this._menuEls || [];
+      if (!items.length) return;
+      this._menuIndex = (this._menuIndex + delta + items.length) % items.length;
+      for (var i = 0; i < items.length; i++) {
+        items[i].className = "menu-item" + (i === this._menuIndex ? " on" : "");
+      }
+      var chosen = items[this._menuIndex];
+      if (chosen && chosen.scrollIntoView) chosen.scrollIntoView({ block: "nearest" });
     },
 
     _closeMenu: function () {
       if (this._menu && this._menu.parentNode) this._menu.parentNode.removeChild(this._menu);
       this._menu = null;
+      this._menuItems = null;
+      this._menuEls = null;
+      this._pickedTarget = null;
+      this._menuIndex = 0;
     },
 
     _choose: function (action, target) {

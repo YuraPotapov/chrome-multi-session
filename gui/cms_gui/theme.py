@@ -129,6 +129,8 @@ _GLYPH_CANDIDATES = {
     "disclosure_open": ("▾", "▼", "v"),
     "disclosure_closed": ("▸", "►", ">"),
     "minus": ("−", "–", "-"),
+    # The caret on RUN, which says there is a menu behind the arrow half.
+    "caret": ("▾", "▼", "v"),
     "plus": ("+",),
 }
 _glyph_cache = {}
@@ -231,6 +233,36 @@ QPushButton[variant="nav"]:hover {{ background: {n200}; }}
 QPushButton[variant="nav"][active="true"] {{
     background: {a200}; color: {a900}; border-left: 3px solid {accent};
 }}
+/* RUN is a QToolButton so it can carry a menu, and Qt styles that as a separate
+   class - left to itself it paints in Fusion's default while the identical
+   button in the footer paints in the design. These mirror the QPushButton rules
+   above; the menu-button section is the arrow half, which has to lose its own
+   border or the split shows as a seam down the middle of a solid button. */
+QToolButton {{
+    font-family: {mono}; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.6px;
+    background: transparent; color: {text};
+    border: 1px solid {divider}; border-radius: 0;
+    padding: 5px 13px; min-height: 20px;
+}}
+QToolButton:hover {{ background: {n200}; }}
+QToolButton:pressed {{ background: {n300}; }}
+QToolButton:disabled {{ color: {n500}; border-color: {n300}; }}
+QToolButton[variant="primary"] {{
+    background: {accent}; color: {bg}; border-color: {accent};
+    padding-right: 22px;      /* room for the arrow, which is drawn over it */
+}}
+QToolButton[variant="primary"]:hover {{ background: {a600}; border-color: {a600}; }}
+QToolButton[variant="primary"]:pressed {{ background: {a700}; border-color: {a700}; }}
+QToolButton[variant="primary"]:disabled {{
+    background: {n300}; border-color: {n300}; color: {n500};
+}}
+QToolButton::menu-button {{
+    border: none; border-left: 1px solid rgba(255,255,255,0.35);
+    width: 16px;
+}}
+QToolButton::menu-arrow {{ image: none; }}
+
 /* Set on Save while the controls no longer match the saved configuration they
    came from. Last of the button rules on purpose: an attribute selector and a
    pseudo-class carry the same weight in Qt, so the later one is the one that

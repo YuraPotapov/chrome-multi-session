@@ -64,6 +64,16 @@ RAIL_SLACK = 18
 HEADING_TRIM = 10
 
 
+def _run_label(text):
+    """RUN, with the caret that says there is a menu behind the arrow half.
+
+    The caret rides in the label because Qt draws ``::menu-arrow`` as an image,
+    and there is no image to give it that would sit right on the accent fill - so
+    the affordance is a glyph, like every other mark in this window.
+    """
+    return "%s  %s" % (theme.labelled("run", text), theme.glyph("caret"))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -170,7 +180,7 @@ class MainWindow(QMainWindow):
         # stays one click, while recording is the same launch with the recorder
         # available - a mode of running, not a separate thing to go and find.
         self.run_button = QToolButton()
-        self.run_button.setText(theme.labelled("run", "RUN"))
+        self.run_button.setText(_run_label("RUN"))
         self.run_button.setProperty("variant", "primary")
         self.run_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.run_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
@@ -370,9 +380,9 @@ class MainWindow(QMainWindow):
     def _update_run_label(self):
         """Say which page RUN will act on, but only when both are reachable."""
         if self.settings.developer_mode and self._run_source == "commands":
-            self.run_button.setText(theme.labelled("run", "RUN COMMAND"))
+            self.run_button.setText(_run_label("RUN COMMAND"))
         else:
-            self.run_button.setText(theme.labelled("run", "RUN"))
+            self.run_button.setText(_run_label("RUN"))
 
     def _run_page(self, source=None):
         source = source or self._run_source

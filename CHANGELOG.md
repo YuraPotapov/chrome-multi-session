@@ -27,6 +27,14 @@ app-agnostic, since that will break things on purpose.
   exactly as the replayed flow will; assertions are recorded without acting.
   Finish writes an ordinary scenario, through the same validator everything else
   goes through, tagged `template` because a recording is a draft.
+- The recorder works inside a dropdown, an autocomplete list or any other
+  transient popup, which is where most of what is worth recording actually
+  happens. Three things make that possible: **F2** arms it, so opening capture
+  mode is not a click somewhere else; while armed, mousedown and pointerdown are
+  taken away from the app as well as the click, so its own "close on outside
+  press" never fires; and the action menu is chosen with **1-9 / ↑↓ + Enter**,
+  because a click on the recorder's panel is an outside-click as far as the app
+  is concerned. Clicking still works everywhere it is safe.
 - The recorder prefers a name already in `selectors.yaml` over anything it could
   synthesize, so a recording reads like the flows beside it and follows the tree
   when that name is re-pointed. Failing that it uses a structural attribute -

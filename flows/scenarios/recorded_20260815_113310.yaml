@@ -1,0 +1,7 @@
+id: recorded_20260815_113310
+name: "Recorded recorded_20260815_113310"
+description: "Captured with the Scenario Recorder."
+tags: [template]
+steps:
+  - assert_visible: "div.o_navbar_apps_menu button.o-dropdown.dropdown-toggle"
+  - click: "div.o_navbar_apps_menu button.o-dropdown.dropdown-toggle"
