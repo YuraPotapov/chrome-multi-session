@@ -101,6 +101,28 @@ ONE_SHOTS = [
 ]
 
 
+#: The one flow-execution flag a recording still wants. Everything else in that
+#: group describes a run - how many at once, what to overlay on it, what to
+#: report about it - and there is no run. ``--flows-dir`` is different: it says
+#: where the flows tree is, which is where the recording gets written.
+RECORDING_KEEPS = ("--flows-dir",)
+
+
+def for_recording(args):
+    """``args`` with everything that belongs to a run taken out.
+
+    Recording is not running, so ``--run-tests`` goes - and with it every flag
+    the launcher only accepts alongside it, or the launch is rejected before a
+    window opens ("--execution-overlay requires --run-tests"). Reading the group
+    off the catalogue rather than naming flags here means a new one is covered
+    the day it is added.
+    """
+    drop = {flag.name for flag in FLAGS
+            if flag.needs_run_tests and flag.name not in RECORDING_KEEPS}
+    drop.add("--run-tests")
+    return [a for a in args if a.split("=", 1)[0] not in drop]
+
+
 def flags_for(group):
     return [f for f in FLAGS if f.group == group]
 

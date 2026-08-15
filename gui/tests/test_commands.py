@@ -156,3 +156,43 @@ def test_general_flags_never_depend_on_run_tests(qapp):
     for name in ("--env", "--filter-users", "--user", "--password", "--url",
                  "--extensions", "--log-level", "--detach"):
         assert page._flag_rows[name].isEnabled(), name
+
+
+# ------------------------------------------------------ recording is not running
+
+def test_recording_drops_every_flag_that_needs_run_tests():
+    """The launcher rejects them outright, before a window opens.
+
+    A recording that inherited the Launch Sessions form died on
+    "--execution-overlay requires --run-tests" - the GUI had removed --run-tests
+    and left behind everything that only exists alongside it.
+    """
+    args = ["--env=localhost", "--filter-users=admin",
+            "--run-tests=all", "--jobs=2", "--close-after",
+            "--execution-overlay=tree,progress", "--reports-dir=/tmp/r",
+            "--report-level=result,screen", "--report-screen=each",
+            "--flows-dir=/tmp/flows", "--events=-"]
+    kept = commands.for_recording(args)
+    assert "--run-tests=all" not in kept
+    for dropped in ("--jobs", "--close-after", "--execution-overlay",
+                    "--reports-dir", "--report-level", "--report-screen"):
+        assert not any(a.startswith(dropped) for a in kept), dropped
+
+
+def test_recording_keeps_what_it_still_needs():
+    args = ["--env=localhost", "--filter-users=admin", "--run-tests=all",
+            "--sessions-dir=/tmp/s", "--flows-dir=/tmp/flows",
+            "--extensions=odoo_debug", "--log-level=DEBUG", "--events=-"]
+    kept = commands.for_recording(args)
+    # Where the recording is written, and everything about the launch itself.
+    assert "--flows-dir=/tmp/flows" in kept
+    assert "--env=localhost" in kept and "--filter-users=admin" in kept
+    assert "--sessions-dir=/tmp/s" in kept and "--extensions=odoo_debug" in kept
+    assert "--log-level=DEBUG" in kept and "--events=-" in kept
+
+
+def test_the_list_of_dropped_flags_comes_from_the_catalogue():
+    """So a flow-execution flag added later is covered without touching this."""
+    for flag in commands.FLAGS:
+        if flag.needs_run_tests and flag.name not in commands.RECORDING_KEEPS:
+            assert commands.for_recording(["%s=x" % flag.name]) == []

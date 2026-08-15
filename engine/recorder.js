@@ -818,8 +818,7 @@
     _openMenu: function (x, y, target) {
       this._closeMenu();
       this._clearHighlight();
-      this._menuAt = { x: Math.min(x, window.innerWidth - 260),
-                       y: Math.min(y, window.innerHeight - 300) };
+      this._menuAt = { x: x, y: y };
       this._byText = false;
       this._renderMenu(target);
     },
@@ -828,8 +827,6 @@
       var wasOpen = !!this._menu;
       if (wasOpen && this._menu.parentNode) this._menu.parentNode.removeChild(this._menu);
       var menu = elem("div", "menu");
-      menu.style.left = this._menuAt.x + "px";
-      menu.style.top = this._menuAt.y + "px";
 
       var head = elem("div", "menu-head");
       head.textContent = target.tag + (target.text ? ' "' + target.text + '"' : "");
@@ -838,6 +835,8 @@
         ? this._textSelector(target)
         : (target.name ? target.name + "  (selectors.yaml)" : target.selector);
       head.appendChild(sel);
+      this._menuSelEl = sel;
+      this._menuBaseSel = sel.textContent;
       if (!this._byText && !target.unique) {
         // Loud, because a step that matches several elements acts on whichever
         // Playwright reaches first - which is not a thing to discover later.
@@ -845,6 +844,7 @@
         warn.textContent = "matches more than one element"
           + ((target.text || "").trim() ? " - T narrows it by text" : "");
         head.appendChild(warn);
+        this._menuWarnEl = warn;
       }
       menu.appendChild(head);
 
@@ -906,6 +906,7 @@
 
       this._shadow.appendChild(menu);
       this._menu = menu;
+      this._placeMenu(menu);
       this._moveMenu(0);
     },
 
@@ -913,6 +914,35 @@
       if (!this._pickedTarget) return;
       this._byText = !this._byText;
       this._renderMenu(this._pickedTarget);
+    },
+
+    // Put the menu where it fits, which is not always where it was asked for.
+    //
+    // It opens at the pointer, and an element near the bottom of the window puts
+    // the pointer there too - so the menu ran off the fold and the last actions
+    // could not be read or reached. Measuring first is the only way: how tall it
+    // is depends on what the element offers, and a radio offers four more rows
+    // than a div does.
+    _placeMenu: function (box) {
+      var margin = 8;
+      var room = window.innerHeight - margin * 2;
+      box.style.maxHeight = room + "px";      // taller than the window: scroll
+      var rect = box.getBoundingClientRect();
+      var x = this._menuAt.x;
+      var y = this._menuAt.y;
+
+      if (y + rect.height > window.innerHeight - margin) {
+        // Above the pointer reads better than pinned to the edge, when it fits.
+        var above = y - rect.height;
+        y = above >= margin
+          ? above
+          : Math.max(margin, window.innerHeight - rect.height - margin);
+      }
+      if (x + rect.width > window.innerWidth - margin) {
+        x = Math.max(margin, window.innerWidth - rect.width - margin);
+      }
+      box.style.left = Math.max(margin, x) + "px";
+      box.style.top = Math.max(margin, y) + "px";
     },
 
     _moveMenu: function (delta) {
@@ -924,6 +954,20 @@
       }
       var chosen = items[this._menuIndex];
       if (chosen && chosen.scrollIntoView) chosen.scrollIntoView({ block: "nearest" });
+
+      // The head follows the highlighted entry, because an entry can carry a
+      // selector of its own - a radio's :checked form is about the input, not
+      // about the label that was clicked - and showing the picked element's
+      // instead means the line above the list is not what gets recorded.
+      var entry = (this._menuItems || [])[this._menuIndex];
+      if (this._menuSelEl) {
+        this._menuSelEl.textContent = (entry && entry.selector)
+          || this._menuBaseSel;
+      }
+      if (this._menuWarnEl) {
+        // An entry with its own selector has already narrowed it.
+        this._menuWarnEl.style.display = (entry && entry.selector) ? "none" : "";
+      }
     },
 
     _closeMenu: function () {
@@ -931,6 +975,8 @@
       this._menu = null;
       this._menuItems = null;
       this._menuEls = null;
+      this._menuSelEl = null;
+      this._menuWarnEl = null;
       this._valueInput = null;
       this._menuIndex = 0;
     },
@@ -958,8 +1004,6 @@
         ? (target.text || "") : (target.value || "");
       this._closeMenu();
       var box = elem("div", "menu");
-      box.style.left = this._menuAt.x + "px";
-      box.style.top = this._menuAt.y + "px";
 
       var head = elem("div", "menu-head");
       head.textContent = action + " · " + this._NEEDS_VALUE[action];
@@ -981,6 +1025,7 @@
 
       this._shadow.appendChild(box);
       this._menu = box;
+      this._placeMenu(box);
       this._valueInput = input;
       input.addEventListener("keydown", function (e) {
         // Handled here rather than in the global listener: while a value is

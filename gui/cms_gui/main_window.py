@@ -553,9 +553,8 @@ class MainWindow(QMainWindow):
                 return
         args = page.argv()
         if recorder:
-            # Ahead of --events, which build_argv always puts last. --run-tests
-            # goes: recording is not running, and the two modes are exclusive.
-            args = [a for a in args if not a.startswith("--run-tests")]
+            args = commands.for_recording(args)
+            # Ahead of --events, which build_argv always puts last.
             args.insert(0, "--recorder" if recorder is True
                         else "--recorder=%s" % recorder)
         try:
