@@ -16,8 +16,9 @@ import platform
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
-from PySide6.QtWidgets import (QDialog, QFrame, QLabel, QMainWindow, QMessageBox,
-                               QPushButton, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QDialog, QFrame, QLabel, QMainWindow, QMenu,
+                               QMessageBox, QPushButton, QStackedWidget,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from . import (commands, core as core_mod, history as history_mod, icon,
                launch as launch_mod, theme, widgets)
@@ -165,9 +166,23 @@ class MainWindow(QMainWindow):
         bar.setProperty("role", "bar")
         bar_layout = QVBoxLayout(bar)
         bar_layout.setContentsMargins(12, 8, 12, 8)
-        self.run_button = QPushButton(theme.labelled("run", "RUN"))
+        # A tool button rather than a plain one: RUN is the ordinary case and
+        # stays one click, while recording is the same launch with the recorder
+        # available - a mode of running, not a separate thing to go and find.
+        self.run_button = QToolButton()
+        self.run_button.setText(theme.labelled("run", "RUN"))
         self.run_button.setProperty("variant", "primary")
+        self.run_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.run_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.run_button.clicked.connect(self.start_run)
+        run_menu_button = QMenu(self.run_button)
+        self.record_action = QAction("With Recorder", self)
+        self.record_action.setToolTip(
+            "Open the windows with the Scenario Recorder available: right-click "
+            "one and choose \"Start Scenarios\".")
+        self.record_action.triggered.connect(self.start_recording)
+        run_menu_button.addAction(self.record_action)
+        self.run_button.setMenu(run_menu_button)
         self.stop_button = QPushButton(theme.labelled("stop", "Stop"))
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_run)
@@ -449,7 +464,17 @@ class MainWindow(QMainWindow):
             self.refresh_inventory()
 
     # -- running --------------------------------------------------------------
-    def start_run(self, source=None):
+    def start_recording(self):
+        """Launch with the recorder available, from whichever page RUN would use.
+
+        Deliberately the same launch: same environment, same accounts, same
+        profiles. The only difference is that the windows carry a debug port and
+        the extension that offers "Start Scenarios", and that nothing is run
+        afterwards - the launcher waits for you to ask for a recording.
+        """
+        self.start_run(recorder=True)
+
+    def start_run(self, source=None, recorder=False):
         if self.process.is_running():
             return
         if not self.core.is_configured():
@@ -465,6 +490,10 @@ class MainWindow(QMainWindow):
                                         % "\n- ".join(problems))
                 return
         args = page.argv()
+        if recorder:
+            # Ahead of --events, which build_argv always puts last.
+            args = [a for a in args if not a.startswith("--run-tests")]
+            args.insert(0, "--recorder")
         try:
             argv = self.core.argv(*args)
         except core_mod.CoreError as exc:
@@ -475,7 +504,10 @@ class MainWindow(QMainWindow):
         self._stopping = False
         self._entry_id = self.history.begin(
             *self._history_payload(source, page, args, argv))
-        if source == "launch":
+        if recorder:
+            self.run.run_started("recorder · right-click a window and choose "
+                                 "\"Start Scenarios\"")
+        elif source == "launch":
             self.run.run_started("%s · events on stdout" % page.run_meta())
         else:
             state = page.state()
@@ -521,6 +553,10 @@ class MainWindow(QMainWindow):
 
     def _on_event(self, event):
         self.run_state.handle(event)
+        # A recording is scenario work, not run work, so it is shown where
+        # scenarios live rather than in the run view.
+        if str(event.get("kind", "")).startswith("recorder."):
+            self.scenarios.handle_recorder_event(event)
 
     def _on_finished(self, code):
         self._set_running(False)

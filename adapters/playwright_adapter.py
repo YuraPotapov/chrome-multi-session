@@ -166,6 +166,32 @@ class PlaywrightAdapter(BrowserAdapter):
         except Exception as exc:
             log.debug("overlay_teardown failed: %s", exc)
 
+    # -------------------------------------------------------------- recorder
+    def recorder_setup(self, js_source):
+        """Same two-step install as the overlay: this document, and every next one."""
+        try:
+            self._page.add_init_script(js_source)
+            self._page.evaluate(js_source)
+        except Exception as exc:
+            log.debug("recorder_setup failed: %s", exc)
+
+    def recorder_call(self, expression, argument=None):
+        """Call into window.__Recorder, tolerating a page that has none yet.
+
+        This is polled several times a second while a recording is idle, and the
+        page can be navigating at any moment - so a failure here is normal and
+        means "nothing to report", never an error worth stopping for.
+        """
+        try:
+            return self._page.evaluate(
+                # The name has to be `recorder`: that is what the callers' little
+                # expressions are written against.
+                "arg => { const recorder = window.__Recorder;"
+                " return recorder ? (%s) : null; }" % expression, argument)
+        except Exception as exc:
+            log.debug("recorder_call failed: %s", exc)
+            return None
+
     # ------------------------------------------------------------ diagnostics
     def screenshot(self, path):
         try:

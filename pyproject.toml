@@ -48,7 +48,7 @@ py-modules = ["session_launcher"]
 include = ["engine*", "adapters*", "domain*"]
 
 [tool.setuptools.package-data]
-engine = ["hud.js"]
+engine = ["hud.js", "recorder.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

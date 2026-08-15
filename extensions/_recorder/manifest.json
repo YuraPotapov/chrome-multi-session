@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Scenario Recorder",
+  "version": "1.0",
+  "description": "Adds \"Start Scenarios\" to the context menu, so a recording can be started in whichever window you are already working in.",
+  "permissions": ["contextMenus"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://localhost/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

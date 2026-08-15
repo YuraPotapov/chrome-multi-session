@@ -68,10 +68,12 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -1649,6 +1651,37 @@ def _register_extension(profile, ext_id, version_dir, version, manifest, key_b64
     _merge_extension_pref(profile, ext_id, entry)
 
 
+#: Where the recorder extension's source lives, and the profile-local key file
+#: that gives it a stable id across launches (see _profile_extension_key).
+RECORDER_SRC = os.path.join(EXTENSIONS_DIR, "_recorder")
+
+
+def install_recorder_extension(profile, origin):
+    """Install the extension that puts "Start Scenarios" in the context menu.
+
+    Nothing is generated into it - it carries no credentials and needs no port,
+    because its whole job is getting a click from the menu to the page, which it
+    does by marking <html> (see extensions/_recorder/content.js). The one thing
+    that has to be rewritten is where its content script runs: the checked-in
+    manifest names localhost, and this profile is pointed at whatever ``origin``
+    the run is against.
+    """
+    staged = tempfile.mkdtemp(prefix="cms-recorder-")
+    try:
+        source = os.path.join(staged, "src")
+        shutil.copytree(RECORDER_SRC, source)
+        manifest_path = os.path.join(source, "manifest.json")
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        for entry in manifest.get("content_scripts", []):
+            entry["matches"] = [origin + "/*"]
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+        return install_local_extension(profile, source, origin, ".recorder_key")
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+
+
 def install_local_extension(profile, src_dir, origin, key_file_name):
     """Install an UNPACKED extension from a source directory in this project.
 
@@ -1796,6 +1829,14 @@ Editing scenarios (answer with JSON on stdout, then exit):
                             the application - duplicate those instead.
   --flow-import=FILE        Copy a scenario file in, validating it first.
 
+Recording:
+  --recorder                Open the windows with the Scenario Recorder available:
+                            right-click any of them and choose "Start Scenarios".
+                            Nothing is recorded until you do. Capture Step picks
+                            one element and one action at a time; Finish writes
+                            the scenario. --recorder=ID names it; the default is
+                            a timestamp.
+
 Flow execution (require --run-tests):
   --run-tests=LIST          Attach over CDP, run scenarios, write reports, then
                             exit (0 = all passed). Values: all, config (each user
@@ -1848,6 +1889,7 @@ def main():
     flow_source = None    # --from=FILE: the JSON document --flow-save writes
     users_filter = None   # None = launch every user in the config
     env_name = None       # --env=NAME; None = every environment
+    recorder = None       # --recorder: record a scenario from a live window
     run_tests = None      # None = just launch; "all" or [ids] = run flows then exit
     jobs = 1              # --jobs: windows driven at once (1 = one after another)
     flows_dir = None      # --flows-dir: where scenarios live (None = the engine default)
@@ -1943,6 +1985,11 @@ def main():
         elif arg.startswith("--flow-import="):
             flow_command = ("import", os.path.abspath(os.path.expanduser(
                 arg.split("=", 1)[1].strip())))
+        elif arg == "--recorder" or arg.startswith("--recorder="):
+            # Recording mode: open the windows as usual, but with a debug port and
+            # the recorder extension, then wait. Nothing is recorded until someone
+            # right-clicks a window and chooses "Start Scenarios".
+            recorder = arg.split("=", 1)[1].strip() if "=" in arg else True
         elif arg == "--selectors-show":
             flow_command = ("selectors-show", "")
         elif arg == "--selectors-save":
@@ -2090,8 +2137,9 @@ def main():
         extensions = [e for e in extensions if e.name not in excluded_extensions]
     if flows_dir is not None and not os.path.isdir(flows_dir):
         sys.exit("--flows-dir: %s is not a directory." % flows_dir)
-    if flows_dir is not None and run_tests is None:
-        sys.exit("--flows-dir requires --run-tests (flows are only read when scenarios run).")
+    if flows_dir is not None and run_tests is None and not recorder:
+        sys.exit("--flows-dir requires --run-tests or --recorder (flows are only read "
+                 "when scenarios run, and written when one is recorded).")
     if reports_dir is not None and run_tests is None:
         sys.exit("--reports-dir requires --run-tests (nothing is written without a run).")
     if jobs_given and run_tests is None:
@@ -2281,6 +2329,14 @@ def main():
             install_autologin_extension(profile, origin, login, password)
         except Exception as exc:  # a broken extension must not block the launch
             log.warning("Skipping auto-login extension for %s: %s", login, exc)
+        if recorder:
+            # Only under --recorder: it is what puts "Start Scenarios" in the
+            # right-click menu, and a window nobody asked to record has no use
+            # for it.
+            try:
+                install_recorder_extension(profile, origin)
+            except Exception as exc:
+                log.warning("Skipping recorder extension for %s: %s", login, exc)
         for ext_name, ext_kind, ext_path in ready:
             try:
                 if ext_kind == "local":
@@ -2310,11 +2366,12 @@ def main():
             "--no-default-browser-check",
             "--new-window",
         ]
-        if run_tests:
-            # Flow-execution mode only: open a CDP endpoint so the engine can attach
-            # and drive this window. Port 0 = auto-pick a free port; Chrome writes the
-            # chosen port to <profile>/DevToolsActivePort. Normal launches never get
-            # this switch, so their behavior is unchanged.
+        if run_tests or recorder:
+            # Flow-execution and recording only: open a CDP endpoint so the engine
+            # can attach and drive this window. Port 0 = auto-pick a free port;
+            # Chrome writes the chosen port to <profile>/DevToolsActivePort. A plain
+            # launch never gets this switch, so its behaviour is unchanged - and the
+            # port is unauthenticated, so it is not something to open by default.
             chrome_args.append("--remote-debugging-port=0")
         chrome_args.append(url)
         proc = subprocess.Popen(
@@ -2329,7 +2386,7 @@ def main():
         procs.append((cls, proc))
         _emit("window.launched", login=login, cls=cls, pid=proc.pid,
               profile=profile, session=os.path.basename(profile))
-        if run_tests:
+        if run_tests or recorder:
             # user_tests is this user's own "tests" field; the runner uses it
             # when --run-tests=config, and ignores it otherwise.
             sessions.append((cls, proc, profile, login, origin, user_tests))
@@ -2339,6 +2396,30 @@ def main():
              "login page; profiles persist the session, so later launches open already "
              "logged in.", len(procs))
     _emit("windows.ready", count=len(procs))
+
+    if recorder:
+        # Recording mode: attach to every window and wait. Nothing happens until
+        # someone right-clicks one and chooses "Start Scenarios" - so this blocks
+        # exactly like a plain launch does, and CTRL+C (or the GUI's Stop) ends it
+        # the same way, closing the windows through close_all.
+        from engine.recorder import record_sessions
+        stop = threading.Event()
+
+        def _stop_recording(_signum, _frame):
+            stop.set()
+
+        signal.signal(signal.SIGINT, _stop_recording)
+        signal.signal(signal.SIGTERM, _stop_recording)
+        rc = 1
+        try:
+            rc = record_sessions(sessions, env={"origin": origin, "url": url},
+                                 flows_dir=flows_dir,
+                                 scenario_id=recorder if recorder is not True else None,
+                                 stop_event=stop)
+        finally:
+            _emit("recorder.exit", exit_code=rc)
+            close_all(procs)
+        sys.exit(rc)
 
     if run_tests:
         # Flow-execution mode: attach to each launched window over CDP, run the

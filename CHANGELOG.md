@@ -17,6 +17,27 @@ app-agnostic, since that will break things on purpose.
 ## [Unreleased]
 
 ### Added
+- **A Scenario Recorder.** RUN ▾ → *With Recorder* opens the windows as usual,
+  with one addition: right-click any of them and there is **Start Scenarios**.
+  From then on the page carries a recorder panel, and capture is explicit -
+  moving the mouse, typing and every intermediate input event are ignored. Press
+  **Capture Step**, hover until the element you want is outlined, click it, and
+  choose from the actions that element can take. That is one step, and nothing
+  else is. The action is performed as well as recorded, so the page advances
+  exactly as the replayed flow will; assertions are recorded without acting.
+  Finish writes an ordinary scenario, through the same validator everything else
+  goes through, tagged `template` because a recording is a draft.
+- The recorder prefers a name already in `selectors.yaml` over anything it could
+  synthesize, so a recording reads like the flows beside it and follows the tree
+  when that name is re-pointed. Failing that it uses a structural attribute -
+  `data-menu-xmlid`, `name`, a stable id - and **never** a visible-text selector:
+  the same app renders Ukrainian on one environment and English on another, so a
+  selector keyed on a label is the one thing guaranteed to break.
+- `--recorder[=ID]`, and a small bundled extension (`extensions/_recorder/`) that
+  is what puts *Start Scenarios* in the context menu. It is installed only under
+  `--recorder`, and so is the debug port the recorder attaches through - a plain
+  launch is unchanged, and an unauthenticated port is not something to open by
+  default.
 - **A Scenarios page** in the GUI: every scenario and every block, a step editor
   and a YAML view of the same file, plus New, Duplicate, Import, Export, Delete
   and Revert. A step's target is an alias - another flow's id, or a name from

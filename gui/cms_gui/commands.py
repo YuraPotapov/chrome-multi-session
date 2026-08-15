@@ -87,7 +87,10 @@ GROUPS = [GENERAL, FLOW, REPORTS]
 # scenario files, since the GUI has no YAML of its own.
 GUI_OWNED = ("--config", "--events", "--describe", "--init-users-json",
              "--flow-show", "--flow-save", "--flow-delete", "--flow-import",
-             "--from", "--help", "-h", "--version", "-V")
+             "--selectors-show", "--selectors-save", "--from",
+             # RUN ▾ -> "With Recorder" adds this; it is a mode, not a form field.
+             "--recorder",
+             "--help", "-h", "--version", "-V")
 
 # One-shot commands offered in the Tools menu: (label, args, needs a config).
 ONE_SHOTS = [

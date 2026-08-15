@@ -54,6 +54,7 @@ datas = [
     (os.path.join(ROOT, "flows"), "flows"),
     (os.path.join(ROOT, "extensions"), "extensions"),
     (os.path.join(ROOT, "engine", "hud.js"), "engine"),
+    (os.path.join(ROOT, "engine", "recorder.js"), "engine"),
     (os.path.join(ROOT, "users.example.json"), "."),
     (os.path.join(ROOT, "build", "VERSION"), "."),
 ] + playwright_driver_datas()

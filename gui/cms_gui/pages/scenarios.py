@@ -69,6 +69,8 @@ class ScenariosPage(QWidget):
         self._dirty = False
         self._building = False
         self._last_edited = "steps"  # which view Save should believe
+        self._recorded = []          # steps seen on the --events stream, live
+        self._open_when_listed = ""  # a recording to open once --describe has it
 
         column = QVBoxLayout(self)
         column.setContentsMargins(24, 20, 24, 20)
@@ -307,6 +309,9 @@ class ScenariosPage(QWidget):
     def set_inventory(self, inventory):
         self.inventory = inventory
         self._reload_list()
+        if self._open_when_listed:
+            wanted, self._open_when_listed = self._open_when_listed, ""
+            self.select(wanted)
         self._reload_selector_list()
         self._refresh_resolved()
         dirs = inventory.dirs()
@@ -890,6 +895,45 @@ class ScenariosPage(QWidget):
                 "%s was written.\n\nIt refers to things this tree does not have, "
                 "so wherever it goes needs them too:\n\n- %s"
                 % (os.path.basename(path), "\n- ".join(depends)))
+
+    # -- recording ------------------------------------------------------------
+    # A recording happens in a Chrome window, not here, so this page's job is to
+    # say what is being captured as it happens and to open the result when it is
+    # written. The events arrive on the same --events stream everything else uses.
+    def handle_recorder_event(self, event):
+        kind = event.get("kind", "")
+        if kind == "recorder.ready":
+            self._recorded = []
+            self.status.setText(
+                "Recorder ready · right-click a window and choose \"Start Scenarios\"")
+        elif kind == "recorder.started":
+            self._recorded = []
+            self.status.setText("Recording %s …" % event.get("scenario", ""))
+        elif kind == "recorder.step_captured":
+            self._recorded.append(event)
+            self.status.setText(
+                "Recording %s · %d steps · last: %s %s"
+                % (event.get("scenario", ""), len(self._recorded),
+                   event.get("action", ""), event.get("target") or ""))
+        elif kind == "recorder.step_failed":
+            self.status.setText(
+                "%s %s did not take effect: %s" % (event.get("action", ""),
+                                                   event.get("target") or "",
+                                                   event.get("error", "")))
+        elif kind == "recorder.finished":
+            scenario = event.get("scenario", "")
+            if event.get("ok"):
+                self.status.setText("Recorded %s · %d steps · %s"
+                                    % (scenario, event.get("steps", 0),
+                                       event.get("path", "")))
+                # It is a real scenario now, so the list has to know about it -
+                # and the obvious next thing is to look at what was captured.
+                self.saved.emit()
+                self._open_when_listed = scenario
+                self.select(scenario)
+            else:
+                self.status.setText("Recording %s could not be written: %s"
+                                    % (scenario, "; ".join(event.get("problems") or [])))
 
     # -- selectors ------------------------------------------------------------
     def load_selectors(self):

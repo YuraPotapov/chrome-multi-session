@@ -93,5 +93,21 @@ class BrowserAdapter(ABC):
     def overlay_teardown(self):
         """Remove the injected overlay from the page."""
 
+    # --- scenario recorder (optional; default no-op) --------------------------
+    # The recorder is the overlay's mirror image: the page collects what the user
+    # picked and Python takes it away. Same reasoning for the no-ops - an adapter
+    # that cannot inject, or a test double, needs no changes.
+    def recorder_setup(self, js_source):
+        """Inject the recorder now and re-inject it on future documents."""
+
+    def recorder_call(self, expression, argument=None):
+        """Evaluate ``expression`` against window.__Recorder and return the result.
+
+        ``expression`` is a JS arrow function body taking (recorder, argument).
+        Returns None when the page has no recorder (mid-navigation, say), which
+        the caller must treat as "nothing happened", not as an error.
+        """
+        return None
+
     def disconnect(self):
         """Release the backend. Default: no-op."""
