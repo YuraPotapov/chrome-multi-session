@@ -41,7 +41,7 @@ excludes = [
 
 # Anything the GUI opens by path rather than by import. PyInstaller follows
 # imports and nothing else, so a file read at runtime is simply absent from the
-# bundle - which is how 0.8.0 shipped without its splash: the app looked for the
+# bundle - which nearly shipped a build with no splash at all: it looked for the
 # artwork, found nothing, and started straight into the main window. The target
 # is "cms_gui/assets" so it lands beside the package, where app._splash_file
 # looks for it (dirname(__file__) + "/assets") in the bundle exactly as it does

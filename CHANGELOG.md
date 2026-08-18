@@ -16,7 +16,7 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-08-18
+## [0.8.1] - 2026-08-18
 
 ### Added
 - **`--jobs` now means windows, not drivers.** With `--close-after` the launcher

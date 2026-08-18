@@ -156,7 +156,7 @@ def test_the_gui_bundle_ships_its_assets():
     """PyInstaller follows imports and nothing else.
 
     A file the app opens by path is simply absent from the bundle unless the
-    spec names it - which is how 0.8.0 first shipped with no splash: the app
+    spec names it - which is what nearly shipped a build with no splash: the app
     looked for the artwork, found nothing, and started straight into the main
     window. Nothing in the app's own tests could catch that, because in a
     checkout the file is right there.
