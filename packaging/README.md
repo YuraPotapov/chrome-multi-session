@@ -16,24 +16,75 @@ Needed on the **target** machine: nothing but Ubuntu 22.04 and Google Chrome.
 
 ### Windows (setup .exe)
 
+**This has to run on Windows.** PyInstaller does not cross-compile, so there is no
+way to produce the `.exe` from a Linux checkout. It wants a Windows machine, a VM,
+or a `windows-latest` CI runner.
+
+#### 1. On the Windows machine, install
+
+- [Python 3.10+](https://www.python.org/downloads/) — tick **"Add python.exe to
+  PATH"** in the installer. The build looks for `python`; a machine with only the
+  `py` launcher stops with a message saying so.
+- [Inno Setup 6](https://jrsoftware.org/isdl.php) — only for the installer step.
+  `-NoInstaller` skips it and leaves the two frozen bundles.
+- Google Chrome — the build's own health check reports which browser it found.
+
+#### 2. Get the source there
+
 ```powershell
-.\packaging\build_exe.ps1               # -> installers\windows\<version>\
-.\packaging\build_exe.ps1 -KeepVenv     # reuse the build venv; much faster
-.\packaging\build_exe.ps1 -NoInstaller  # freeze only, skip Inno Setup
+git clone <this repo>
+cd chrome-multi-session
+git checkout <the branch you are building>
 ```
 
-Needed on the **build** machine: Python 3.10+ on PATH, and [Inno Setup
-6](https://jrsoftware.org/isdl.php) for the installer step.
-Needed on the **target** machine: Windows 10+ and Google Chrome.
+#### 3. Build
 
-**This has to run on Windows.** PyInstaller does not cross-compile - there is no
-way to produce the `.exe` from the Linux checkout, so it wants a Windows machine,
-a VM, or a `windows-latest` CI runner.
+One command. The other two lines are variants of it, not further steps.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\build_exe.ps1
+
+.\packaging\build_exe.ps1 -KeepVenv      # later builds: skips ~200 MB of installs
+.\packaging\build_exe.ps1 -NoInstaller   # freeze only, no Inno Setup
+```
+
+`-ExecutionPolicy Bypass` is not optional on a default Windows install, which
+refuses to run unsigned `.ps1` files — without it the build fails before it starts
+with "cannot be loaded because running scripts is disabled on this system".
+
+The script resolves everything from its own location, so it does not care which
+directory you run it from.
+
+#### What it produces
+
+```
+installers\windows\<version>\
+  chrome-multi-session-<version>-setup.exe
+  SHA256SUMS
+```
 
 The installer offers a per-user install when it is not elevated, because a locked
 down QA machine is a common place to want this and needing an administrator is a
-reason not to bother. It refuses nothing if Chrome is missing - it says so, at
-install time, where that is still actionable.
+reason not to bother. Chrome's absence is reported at install time, where it is
+still actionable, rather than at first launch.
+
+#### When it fails the first time
+
+Nothing here has been run on Windows yet — it was written against the `.deb`
+build and checked as far as Linux can check it (the PowerShell parses, the `.iss`
+has no dangling string concatenation, and the shared health check still passes for
+the `.deb`). The likely stumbles, in the order they would appear:
+
+1. **A missing hidden import.** The PyInstaller specs were tuned against Linux
+   PySide6. Step 4's health check exists to catch exactly this, and names what is
+   missing rather than shipping a bundle that fails on the user's machine.
+2. **`node.exe` not where expected.** The build asserts Playwright's driver
+   arrived at `driver\node.exe`; if the Windows layout differs it stops there
+   instead of producing an installer that cannot run a flow.
+3. **The job object.** `session_launcher._windows_kill_on_close_job` builds its
+   `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` from the Win32 headers and has never met
+   a real kernel. A wrong layout fails safely — a debug line, and windows that may
+   outlive a hard kill of the launcher — so it cannot break the build.
 
 ## What comes out
 

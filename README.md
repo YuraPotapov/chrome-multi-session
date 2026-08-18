@@ -134,8 +134,24 @@ Then launch **Chrome Multi Session** from the applications menu, or run
 
 Your sessions, credentials and reports live in `~/ChromeMultiSession`, separate
 from the installed program, so installing a newer version over the top keeps all
-of them. Building the package, what lands where, and the Windows plan:
-[packaging/README.md](packaging/README.md).
+of them.
+
+## Install (Windows 10+)
+
+There is no released Windows installer yet, but the build that makes one is in the
+tree. On a Windows machine with Python 3.10+ and [Inno Setup
+6](https://jrsoftware.org/isdl.php):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\build_exe.ps1
+```
+
+That writes `installers\windows\<version>\chrome-multi-session-<version>-setup.exe`.
+Run it, and **Chrome Multi Session** appears in the Start menu. It has to be built
+on Windows - PyInstaller does not cross-compile.
+
+Both builds, what lands where, and what to expect the first time the Windows one
+runs: [packaging/README.md](packaging/README.md).
 
 ## Getting started (from source)
 
