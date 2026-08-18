@@ -16,7 +16,31 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-18
+
 ### Added
+- **`--jobs` now means windows, not drivers.** With `--close-after` the launcher
+  no longer opens every window up front: each Chrome is started inside the slot
+  that will drive it and closed when its scenarios end, so eight accounts at
+  `--jobs=2` means two resident browsers rather than eight. Before this, `--jobs`
+  only staggered the stepping while every window stayed open and resident, which
+  is why lowering it freed nothing.
+- **`--jobs=auto`**, the one value that lets a load governor move the number
+  while the run is under way. It starts at one window per core and steps down on
+  memory headroom or on the kernel's own stall figures (`/proc/pressure`, PSI),
+  not on CPU utilisation - a rig driving windows on every core *should* read
+  100%, and tripping on that is what ratchets a ceiling to one and leaves it
+  there. A step taken for CPU has to prove it helped, or it is undone and CPU
+  stops being a trigger for a while. A number you type is never moved.
+- **Stop one window.** Stop carries a menu of the windows still running; picking
+  one stops driving it and closes it while the rest of the run carries on. The
+  launcher accepts it on stdin via the new `--control=-`, the inbound half of
+  `--events=-`.
+- The Run page shows **every scenario a window has run**, each with its own steps
+  and outcome, instead of only the one running now. The in-page overlay always
+  showed the whole list; the two now agree.
+- The launch page's summary footer **folds away**, and its rarely-used options
+  live behind one unlabelled button rather than beside Save and RUN.
 - The recorder panel **edits its own steps**: delete one, move it up or down,
   or retarget it. A bad capture is obvious while the page is still on screen and
   much less so afterwards. Python owns the list, so the panel sends an intent and
@@ -27,12 +51,40 @@ app-agnostic, since that will break things on purpose.
   `sessionStorage`, because a navigation replaces the whole renderer.
 
 ### Changed
+- **A stopped run always closes its windows**, whatever `--close-after` says.
+  That flag answers what happens when a run *finishes*; someone who pressed Stop
+  is not asking to be left with seven browsers on a half-finished flow.
+- **Stop lands between steps**, not between scenarios. A forty-step flow whose
+  remaining steps each time out at 30 s took twenty minutes to reach the next
+  scenario boundary, and for all of it Stop looked like it had done nothing.
+- **`--recorder` records one window.** Several would each show their own panel,
+  only the first would get the scenario id that was asked for, and a person can
+  only be clicking in one of them. Pick the account with `--user` or
+  `--filter-users`; the GUI asks which one.
+- A session that failed a scenario **no longer reports PASS** because a later one
+  passed - in the Run page and in the in-page overlay both. The banner spoke for
+  whichever flow ended last, above a tree with a red mark still in it.
+- The Run page settles when the **scenarios** end rather than when the launcher
+  exits. Without `--close-after` the launcher stays up holding the windows open,
+  so the page sat on RUNNING with a ticking clock long after the last step.
+- Closing the window during a run warns with buttons that say what they do, and
+  waits long enough for the launcher's graceful teardown to finish.
 - **The recorder shows itself.** A window launched with `--recorder` carries the
   panel from the moment it is attached - no right-click, no menu item, nothing to
   find. That is not capturing automatically: nothing becomes a step until Capture
   Step is pressed. It removes the bundled extension entirely, along with its
   `contextMenus` permission, its per-profile install and the DOM flag the two
   halves talked over.
+
+### Fixed
+- The GUI's memory readout computed `100 * (1 - available) / total` instead of
+  `100 * (1 - available/total)`, reporting a large negative percentage - and
+  never tripping its own warning threshold. The `/proc` reader now lives in one
+  place (`system_load.py`, mirrored for the GUI) instead of three copies.
+- The launch page no longer **edits your saved configuration behind your back**:
+  it used to wind the jobs number down every two seconds the CPU was busy, which
+  is exactly while a run is going.
+- A `QThread` outliving its window took the process down on exit.
 
 ### Removed
 - `extensions/_recorder/`, which existed only to carry a right-click into the
