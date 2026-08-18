@@ -16,6 +16,73 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-18
+
+First release built and run on Windows. Everything here is a Windows-only fault
+that the Linux build never had - each one was found by installing the thing and
+using it, which is the only way these could have been found at all.
+
+### Fixed
+- **Runs never started.** `cms_gui.runner` called
+  `QProcess.setCreateProcessArgumentsModifier`, a Qt method PySide6 does not
+  bind, on the Windows branch of every launch. The `AttributeError` landed
+  before `proc.start()`, so the run was recorded as started, the page said
+  "Launching...", and no process ever existed. The modifier is now applied only
+  where it exists; losing the process group costs the graceful stop, never the
+  run. `stop()` no longer signals a process group that was never created.
+- **Extensions were never installed** - including the auto-login one, which is
+  the point of the program. Chrome's tamper protection strips an
+  `extensions.settings` entry written from outside the browser, and
+  `--load-extension` is refused (137+) with or without
+  `DisableLoadExtensionCommandLineSwitch`. Windows now installs the planted
+  directories over CDP with `Extensions.loadUnpacked` and reloads the tab so the
+  content script runs. See the `--extensions` section of the README for what
+  that costs: a loopback debug port on every launch.
+- **Chrome detection opened browser windows.** `chrome.exe --version` does not
+  print a version on Windows - it starts the browser - so every `--describe`
+  launched one window per candidate path and still reported no version. The
+  version is now read from the executable's own version resource, and duplicate
+  candidates (the `App Paths` key and `%PROGRAMFILES%` name one file between
+  them) are probed once. `version.dll` is loaded by absolute path, because
+  PyInstaller redirects a bare library name into the bundle, where our own
+  `VERSION` stamp file matched it.
+- **First launch of an installed build failed with WinError 267.** The GUI
+  spawns the core with the user's data directory as its working directory, and
+  nothing had created it yet; a working directory that does not exist stops the
+  process from starting at all.
+- **The build script could not finish on Windows.** `Set-Content -Encoding utf8`
+  writes a BOM in PowerShell 5.1, which `json.load` rejects, and `pip.exe`
+  cannot upgrade itself.
+
+### Changed
+- **Every icon in the interface is drawn, not typed.** Each mark used to be a
+  character picked at runtime from a list of candidates, by asking the resolved
+  body font whether it could draw it. On Windows the answer was almost always
+  no, so the interface fell back to its ASCII stand-ins: a navigation rail
+  reading "= o > +", a toolbar offering "% Developer mode" and "* Settings", and
+  a step tree marking passes with "+". They are now painted from vector
+  primitives (`cms_gui/icons.py`), so they render identically whatever fonts are
+  installed - the same set, at every size, in both light and dark palettes. The
+  rail is built from tool buttons because a push button centres an icon and its
+  label as one block, which would let each mark drift with the width of the word
+  beside it.
+- **The executables carry the application's icon.** Both PyInstaller specs now
+  embed `icon.ico`, and the build renders it *before* freezing rather than
+  after - without that, PyInstaller embedded its own default, which is the
+  Python logo, and that is what Windows showed in the taskbar, in Explorer and
+  on every shortcut the installer created. The `.ico` is now assembled here as a
+  genuine multi-size file (7 images, each painted at its own size) instead of
+  one 256px image left for Windows to scale down to 16. The GUI also claims an
+  explicit AppUserModelID on Windows, without which the taskbar attributes the
+  window to whatever launched it - python.exe, from a checkout.
+
+### Added
+- **The installer asks where your project folder goes** - scenarios, reports,
+  sessions and `users.json` - and writes it to `<InstallDir>\cms.ini`, which
+  `runtime_paths` reads after `$CMS_HOME` and before the `%USERPROFILE%`
+  default. The choice is remembered across upgrades, and uninstalling never
+  touches the folder.
+
 ## [0.8.1] - 2026-08-18
 
 ### Added
