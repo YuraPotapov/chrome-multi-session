@@ -499,3 +499,489 @@ def test_fill_label_includes_a_truncated_value():
         "fill 07-2026-0454"
     long_value = "x" * 40
     assert runner._mark_label(Step("fill", target=".s", value=long_value)).endswith("...")
+
+
+# ------------------------------------------------------- windows, slots, governor
+
+def _load(available_gb=16.0, mem_stall=0.0, cpu_stall=0.0, cpu_percent=None):
+    import system_load
+    return system_load.Load(cpu_percent=cpu_percent, cpu_stall=cpu_stall,
+                            mem_stall=mem_stall, total_kb=32 * 1024 * 1024,
+                            available_kb=int(available_gb * 1024 * 1024))
+
+
+def test_a_saturated_cpu_is_not_a_reason_to_throttle():
+    # The whole point of the rewrite: eight windows on eight cores SHOULD pin the
+    # CPU. Utilisation is the machine working, not the machine failing, and
+    # tripping on it is what ratcheted the old limiter down to one worker and
+    # left it there for the rest of the run.
+    assert runner._strain(_load(cpu_percent=100.0, cpu_stall=5.0), None) is None
+
+
+def test_thin_headroom_trips_before_anything_has_stalled():
+    # Predictive, not reactive: by the time reclaim shows up in the averages
+    # Chrome is already swapping.
+    assert runner._strain(_load(available_gb=0.5), None) is not None
+
+
+def test_headroom_floor_grows_with_what_a_window_actually_costs():
+    fat_window = 2 * 1024 * 1024        # 2 GB, as measured during the run
+    # 1.6 GB free clears the fixed floor, but not 1.5x the cost of the window
+    # about to be opened on it.
+    assert runner._strain(_load(available_gb=1.6), None) is None
+    assert runner._strain(_load(available_gb=1.6), fat_window) is not None
+
+
+def test_memory_stall_trips_even_with_headroom_to_spare():
+    assert runner._strain(_load(mem_stall=25.0), None) is not None
+
+
+def test_cpu_stall_trips_only_when_tasks_are_actually_queueing():
+    assert runner._strain(_load(cpu_stall=20.0), None) is None
+    assert runner._strain(_load(cpu_stall=80.0), None) is not None
+
+
+def test_calm_needs_more_room_than_strain_needs_to_trip():
+    # A gap between the two thresholds is what stops a slot chattering open and
+    # shut around one boundary.
+    edge = _load(available_gb=1.6)
+    assert runner._strain(edge, None) is None and not runner._calm(edge)
+
+
+def test_calm_is_false_when_the_machine_cannot_be_read():
+    import system_load
+    assert not runner._calm(system_load.Load())
+
+
+def test_slots_cap_how_many_windows_are_open_at_once():
+    slots = runner.WindowSlots(2)
+    assert slots.acquire() and slots.acquire()
+    assert slots.held == 2
+    done = threading.Event()
+
+    def third():
+        slots.acquire()
+        done.set()
+
+    threading.Thread(target=third, daemon=True).start()
+    assert not done.wait(0.2)          # blocked: there is no third slot
+    slots.release()
+    assert done.wait(1.0)
+
+
+def test_lowering_the_ceiling_never_evicts_an_open_window():
+    slots = runner.WindowSlots(4)
+    for _ in range(4):
+        slots.acquire()
+    slots.set_limit(1)
+    # Still four held: a window already running its scenarios finishes them. The
+    # ceiling takes effect as each one closes, which is the only moment lowering
+    # it can hand memory back.
+    assert slots.held == 4
+    assert slots.limit == 1
+
+
+def test_the_ceiling_never_reaches_zero():
+    slots = runner.WindowSlots(2)
+    assert slots.set_limit(-5) == 1
+
+
+def test_closing_the_pool_frees_waiters_without_opening_a_window():
+    slots = runner.WindowSlots(1)
+    slots.acquire()
+    got = []
+
+    def queued():
+        got.append(slots.acquire())
+
+    thread = threading.Thread(target=queued, daemon=True)
+    thread.start()
+    time.sleep(0.05)
+    slots.close()
+    thread.join(1.0)
+    # False, not a permit: CTRL+C must not leave a queued session parked until a
+    # slot frees and then start a browser for a run that is already over.
+    assert got == [False]
+
+
+def _governed(monkeypatch, loads, ceiling=8, start=8, recover_s=0.05):
+    """Run the governor over a canned sequence of readings; return the ceiling."""
+    import system_load
+    monkeypatch.setattr(runner, "GOVERNOR_SAMPLE_S", 0.01)
+    monkeypatch.setattr(runner, "GOVERNOR_BACKOFF_S", 0.02)
+    monkeypatch.setattr(runner, "GOVERNOR_RECOVER_S", recover_s)
+
+    class Canned:
+        def __init__(self):
+            self.index = 0
+
+        def read(self):
+            load = loads[min(self.index, len(loads) - 1)]
+            self.index += 1
+            return load
+
+    monkeypatch.setattr(system_load, "Sampler", Canned)
+    slots = runner.WindowSlots(start)
+    stop = threading.Event()
+    thread = threading.Thread(target=runner._governor, args=(slots, ceiling, stop))
+    thread.start()
+    time.sleep(0.4)
+    stop.set()
+    thread.join(2.0)
+    return slots
+
+
+def test_governor_steps_down_under_real_pressure(monkeypatch):
+    slots = _governed(monkeypatch, [_load(mem_stall=40.0)])
+    assert slots.limit < 8
+
+
+def test_governor_will_not_step_below_one(monkeypatch):
+    slots = _governed(monkeypatch, [_load(available_gb=0.1)], start=2)
+    assert slots.limit == 1
+
+
+def test_governor_leaves_a_busy_but_healthy_machine_alone(monkeypatch):
+    slots = _governed(monkeypatch, [_load(cpu_percent=99.0, cpu_stall=8.0)])
+    assert slots.limit == 8
+
+
+def test_governor_hands_a_slot_back_once_the_machine_is_calm(monkeypatch):
+    slots = _governed(monkeypatch, [_load(available_gb=16.0)], ceiling=8, start=4)
+    assert slots.limit > 4
+
+
+def test_governor_never_raises_past_the_ceiling_it_was_given(monkeypatch):
+    slots = _governed(monkeypatch, [_load(available_gb=16.0)], ceiling=4, start=4)
+    assert slots.limit == 4
+
+
+class _Windows:
+    """Stands in for the launcher: records opens and closes, counts overlap."""
+
+    def __init__(self, hold=0.05):
+        self.hold = hold
+        self.opened = []
+        self.closed = []
+        self.peak = 0
+        self._live = 0
+        self._lock = threading.Lock()
+
+    def open(self, session):
+        with self._lock:
+            self._live += 1
+            self.peak = max(self.peak, self._live)
+            proc = "proc-%s" % session[3]
+            self.opened.append(proc)
+        time.sleep(self.hold)
+        return proc
+
+    def close(self, proc):
+        with self._lock:
+            self._live -= 1
+            self.closed.append(proc)
+
+
+def _no_browser(monkeypatch, tmp_path):
+    monkeypatch.setattr(runner, "_attach", lambda profile, name: None)
+    monkeypatch.setattr(runner.loader, "load_selectors", lambda flows_dir: {})
+    monkeypatch.setattr(runner.artifacts, "new_run_dir", lambda d: str(tmp_path))
+    monkeypatch.setattr(runner, "_resolve_scenarios", lambda which, flows_dir: ["smoke"])
+
+
+def test_jobs_caps_windows_open_at_once_not_merely_drivers(monkeypatch, tmp_path):
+    _no_browser(monkeypatch, tmp_path)
+    windows = _Windows()
+    runner.run_scenarios(_sessions(*[(n, None) for n in "abcdef"]), ["smoke"],
+                         reports_dir=str(tmp_path), jobs=2, windows=windows)
+    assert len(windows.opened) == 6
+    assert windows.peak <= 2          # the point: two browsers, not six
+    assert sorted(windows.closed) == sorted(windows.opened)
+
+
+def test_every_window_is_closed_before_its_slot_is_reused(monkeypatch, tmp_path):
+    _no_browser(monkeypatch, tmp_path)
+    windows = _Windows()
+    runner.run_scenarios(_sessions(("a", None), ("b", None), ("c", None)), ["smoke"],
+                         reports_dir=str(tmp_path), jobs=1, windows=windows)
+    # Strict alternation: the next window must not start while the last one is
+    # still flushing cookies, or the two overlap for the seconds the slot exists
+    # to prevent.
+    assert windows.opened == windows.closed
+
+
+def test_without_a_window_source_nothing_is_opened_or_closed(monkeypatch, tmp_path):
+    # The caller handed over browsers it opened itself; a ceiling could not give
+    # anything back, so the runner must not pretend to manage them.
+    _no_browser(monkeypatch, tmp_path)
+    windows = _Windows()
+    runner.run_scenarios(_sessions(("a", None), ("b", None)), ["smoke"],
+                         reports_dir=str(tmp_path), jobs=2)
+    assert windows.opened == [] and windows.closed == []
+
+
+def test_a_number_of_jobs_is_never_moved_by_the_machine(monkeypatch, tmp_path):
+    # The governor is the auto option's behaviour, not a background service. A
+    # run told "6 at a time" does 6 from the first window to the last.
+    _no_browser(monkeypatch, tmp_path)
+    started = []
+    monkeypatch.setattr(runner, "_governor",
+                        lambda *a, **k: started.append(a))
+    runner.run_scenarios(_sessions(("a", None), ("b", None), ("c", None)), ["smoke"],
+                         reports_dir=str(tmp_path), jobs=2, windows=_Windows())
+    assert started == []
+
+
+def test_auto_lets_the_governor_move_it(monkeypatch, tmp_path):
+    _no_browser(monkeypatch, tmp_path)
+    started = []
+    monkeypatch.setattr(runner, "_governor", lambda *a, **k: started.append(a))
+    runner.run_scenarios(_sessions(("a", None), ("b", None), ("c", None)), ["smoke"],
+                         reports_dir=str(tmp_path), jobs="auto", windows=_Windows())
+    assert len(started) == 1
+
+
+def test_auto_starts_at_one_window_per_core(monkeypatch, tmp_path):
+    _no_browser(monkeypatch, tmp_path)
+    monkeypatch.setattr(runner.os, "cpu_count", lambda: 4)
+    windows = _Windows()
+    runner.run_scenarios(_sessions(*[(n, None) for n in "abcdefgh"]), ["smoke"],
+                         reports_dir=str(tmp_path), jobs="auto", windows=windows)
+    # Eight sessions, four cores: four windows at a time, not eight.
+    assert windows.peak <= 4
+
+
+def test_auto_never_starts_more_windows_than_there_are_sessions(monkeypatch, tmp_path):
+    _no_browser(monkeypatch, tmp_path)
+    monkeypatch.setattr(runner.os, "cpu_count", lambda: 64)
+    windows = _Windows()
+    runner.run_scenarios(_sessions(("a", None), ("b", None)), ["smoke"],
+                         reports_dir=str(tmp_path), jobs="auto", windows=windows)
+    assert windows.peak <= 2
+
+
+# ------------------------------------------------------------ cpu, and its proof
+
+def test_cpu_utilisation_alone_can_lower_the_ceiling(monkeypatch):
+    # Utilisation is a weaker signal than stall, but it is the number a person
+    # watching the launch page sees, so Auto has to answer to it.
+    busy, helped = _load(cpu_percent=96.0), _load(cpu_percent=75.0)
+    slots = _governed(monkeypatch, [busy, busy, busy, helped], recover_s=100)
+    # Dropping one moved the CPU by 21 points, so the step earned its place.
+    assert slots.limit == 7
+
+
+def test_a_cpu_step_that_changes_nothing_is_undone(monkeypatch):
+    # THE regression test for the ratchet. A rig driving seven windows keeps
+    # eight cores busy however few of them are being driven, so a machine that
+    # stays at 96% after a step down must end up back where it started rather
+    # than winding itself down to one and staying there for the whole run.
+    slots = _governed(monkeypatch, [_load(cpu_percent=96.0)], recover_s=100)
+    assert slots.limit == 8
+
+
+def test_memory_pressure_is_never_muted_by_a_futile_cpu_step(monkeypatch):
+    # The CPU cooldown must not switch off the trigger that actually matters.
+    slots = _governed(monkeypatch, [_load(cpu_percent=96.0, mem_stall=40.0)],
+                      recover_s=100)
+    assert slots.limit < 8
+
+
+def test_recovery_waits_for_the_cpu_to_come_down_too(monkeypatch):
+    # Free memory is not on its own a reason to add a session back while every
+    # core is still flat out.
+    slots = _governed(monkeypatch, [_load(available_gb=16.0, cpu_percent=95.0)],
+                      ceiling=8, start=4)
+    assert slots.limit == 4
+
+
+def test_yielding_stands_aside_when_the_ceiling_has_dropped():
+    slots = runner.WindowSlots(2)
+    slots.acquire()
+    slots.acquire()
+    slots.set_limit(1)
+    stood_aside = threading.Event()
+
+    def driver():
+        slots.yield_if_over()
+        stood_aside.set()
+
+    threading.Thread(target=driver, daemon=True).start()
+    assert not stood_aside.wait(0.2)     # over the ceiling: waits for room
+    slots.release()
+    assert stood_aside.wait(1.0)
+
+
+def test_yielding_costs_nothing_when_inside_the_ceiling():
+    slots = runner.WindowSlots(4)
+    slots.acquire()
+    done = threading.Event()
+    threading.Thread(target=lambda: (slots.yield_if_over(), done.set()),
+                     daemon=True).start()
+    assert done.wait(1.0)               # room to spare: straight through
+    assert slots.held == 1
+
+
+def test_auto_governs_even_when_the_windows_were_opened_for_us(monkeypatch, tmp_path):
+    # The hole worth closing: with the windows all open there is no memory to
+    # give back, but the driving can still be rationed - and an Auto that does
+    # nothing at all is indistinguishable from one that is broken.
+    _no_browser(monkeypatch, tmp_path)
+    started = []
+    monkeypatch.setattr(runner, "_governor", lambda *a, **k: started.append(k))
+    runner.run_scenarios(_sessions(("a", None), ("b", None), ("c", None)), ["smoke"],
+                         reports_dir=str(tmp_path), jobs="auto")
+    assert len(started) == 1
+    assert started[0]["unit"] == "sessions"    # sessions, not windows: nothing closes
+
+
+def test_the_governor_announces_where_it_starts(monkeypatch, tmp_path):
+    # Emitted before anything has moved, so a watcher shows the real number from
+    # the first moment instead of a blank until the first adjustment.
+    seen = []
+    monkeypatch.setattr(runner.events, "emit",
+                        lambda kind, **fields: seen.append((kind, fields)))
+    monkeypatch.setattr(runner, "GOVERNOR_SAMPLE_S", 0.01)
+    slots = runner.WindowSlots(7)
+    stop = threading.Event()
+    thread = threading.Thread(target=runner._governor, args=(slots, 7, stop))
+    thread.start()
+    time.sleep(0.1)
+    stop.set()
+    thread.join(2.0)
+    limits = [f for kind, f in seen if kind == "governor.limit"]
+    assert limits and limits[0]["limit"] == 7 and limits[0]["ceiling"] == 7
+
+
+def test_every_move_is_announced_with_its_reason(monkeypatch):
+    seen = []
+    monkeypatch.setattr(runner.events, "emit",
+                        lambda kind, **fields: seen.append((kind, fields)))
+    _governed(monkeypatch, [_load(mem_stall=40.0)], recover_s=100)
+    moves = [f for kind, f in seen if kind == "governor.limit"]
+    assert len(moves) > 1                       # the start, then at least one move
+    assert all(m["why"] for m in moves)         # none of them silent
+
+
+def test_a_fixed_run_reports_its_number_too(monkeypatch, tmp_path):
+    # Not governed, but still worth saying: a readout that is blank for most
+    # runs is one nobody learns to read.
+    _no_browser(monkeypatch, tmp_path)
+    seen = []
+    monkeypatch.setattr(runner.events, "emit",
+                        lambda kind, **fields: seen.append((kind, fields)))
+    runner.run_scenarios(_sessions(("a", None), ("b", None), ("c", None)), ["smoke"],
+                         reports_dir=str(tmp_path), jobs=2)
+    limits = [f for kind, f in seen if kind == "governor.limit"]
+    assert len(limits) == 1
+    assert (limits[0]["limit"], limits[0]["ceiling"]) == (2, 2)
+
+
+# ---------------------------------------------------------------------- stopping
+
+class _SlowAdapter:
+    """Every step succeeds; the test drives the stop flag around them."""
+
+    def __init__(self):
+        self.clicks = 0
+
+    def click(self, selector, timeout=None):
+        self.clicks += 1
+
+    def visible(self, selector, timeout=None):
+        return True
+
+
+def _plan(monkeypatch, steps):
+    monkeypatch.setattr(runner.compiler, "compile_plan",
+                        lambda *a, **k: ([Step("click", target=".b")] * steps, None))
+    monkeypatch.setattr(runner.artifacts, "Reporter", lambda *a, **k: _NullReporter())
+
+
+class _NullReporter:
+    def capture_start(self):
+        pass
+
+    def capture_step(self):
+        pass
+
+    def finalize(self, result, failed=False):
+        pass
+
+    def finalize_compile_error(self, result):
+        pass
+
+
+def test_stop_lands_between_steps_not_at_the_end_of_the_scenario(monkeypatch, tmp_path):
+    # THE fix: a forty-step flow whose remaining steps each time out at 30 s took
+    # twenty minutes to reach the next scenario boundary, and for all that time
+    # the GUI's Stop looked like it had done nothing.
+    _plan(monkeypatch, 40)
+    monkeypatch.setattr(runner.artifacts, "scenario_dir", lambda *a: str(tmp_path))
+    adapter = _SlowAdapter()
+    ctx = runner.RunContext(user={"login": "agent", "class": "Agent"},
+                            env={"origin": "http://x", "url": "http://x"})
+    runner._stop_requested.set()
+    try:
+        result = runner._run_scenario(adapter, "s", "dev-agent", None, {}, ctx,
+                                      str(tmp_path))
+    finally:
+        runner._stop_requested.clear()
+    assert adapter.clicks == 0                  # not one step was taken
+    assert result.status == ERROR and "stopped" in result.error
+
+
+def test_stopping_one_session_leaves_the_others_alone():
+    runner.request_session_stop("dev-agent")
+    try:
+        assert runner._stopping("dev-agent")
+        assert not runner._stopping("dev-manager")
+        assert not runner._stopping()           # the run as a whole carries on
+    finally:
+        with runner._stopped_lock:
+            runner._stopped_sessions.clear()
+
+
+def test_stopping_everything_stops_every_session():
+    runner._stop_requested.set()
+    try:
+        assert runner._stopping("dev-agent") and runner._stopping("anything")
+    finally:
+        runner._stop_requested.clear()
+
+
+def test_a_new_run_forgets_which_sessions_were_stopped(monkeypatch, tmp_path):
+    runner.request_session_stop("dev-agent")
+    _no_browser(monkeypatch, tmp_path)
+    runner.run_scenarios(_sessions(("a", None), ("b", None)), ["smoke"],
+                         reports_dir=str(tmp_path), jobs=2)
+    # Otherwise a session stopped by hand would stay stopped for every later run
+    # in the same process.
+    assert not runner._stopping("dev-agent")
+
+
+def test_a_step_that_fails_because_its_window_closed_says_so(monkeypatch, tmp_path):
+    # Closing a window mid-step makes the CDP call fail. The report should say
+    # the session was stopped, not blame a click for a browser that went away.
+    _plan(monkeypatch, 5)
+    monkeypatch.setattr(runner.artifacts, "scenario_dir", lambda *a: str(tmp_path))
+    ctx = runner.RunContext(user={"login": "agent", "class": "Agent"},
+                            env={"origin": "http://x", "url": "http://x"})
+    runner.request_session_stop("dev-agent")
+    try:
+        result = runner._run_scenario(Recorder(fail_times=99), "s", "dev-agent",
+                                      None, {}, ctx, str(tmp_path))
+    finally:
+        with runner._stopped_lock:
+            runner._stopped_sessions.clear()
+    assert result.status == ERROR and "stopped" in result.error
+
+
+def test_one_window_at_a_time_also_forgets_a_stopped_session(monkeypatch, tmp_path):
+    # The clear used to sit on the parallel path only, so a single-window run
+    # inherited whatever the last one had stopped.
+    runner.request_session_stop("dev-agent")
+    _no_browser(monkeypatch, tmp_path)
+    runner.run_scenarios(_sessions(("a", None)), ["smoke"],
+                         reports_dir=str(tmp_path), jobs=1)
+    assert not runner._stopping("dev-agent")

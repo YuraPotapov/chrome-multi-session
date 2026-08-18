@@ -112,6 +112,9 @@ class ExecutionOverlay:
         # or failed one stays on screen instead of being replaced by the next.
         self._planned = []          # [{"id", "node", "tree"}] in run order
         self._active_node = None    # node id of the scenario currently running
+        # Every finished flow's status, so the banner can speak for the session
+        # rather than for whichever scenario happened to end last.
+        self._results = []
 
     # -- execution hooks ---------------------------------------------------
     def _ensure_setup(self):
@@ -256,14 +259,25 @@ class ExecutionOverlay:
         self._push()
 
     def flow_end(self, status, passed, total):
-        if status == PASS:
-            self._banner = {"kind": "success", "text": "✓ Flow completed",
-                            "sub": "%d / %d steps executed" % (passed, total)}
-            self._status["state"] = "Completed"
-        else:
+        self._results.append(status)
+        failed = [s for s in self._results if s != PASS]
+        if status != PASS:
             self._banner = {"kind": "failed", "text": "✖ Flow failed",
                             "sub": self._status.get("action") or ""}
             self._status["state"] = "Failed"
+        elif failed:
+            # This flow passed, but an earlier one in the same window did not.
+            # Saying "✓ Flow completed" here reports the last scenario as if it
+            # were the session, and the red mark in the tree above says otherwise.
+            self._banner = {"kind": "failed",
+                            "text": "✖ %d of %d scenarios failed"
+                                    % (len(failed), len(self._results)),
+                            "sub": "this one passed: %d / %d steps" % (passed, total)}
+            self._status["state"] = "Failed earlier"
+        else:
+            self._banner = {"kind": "success", "text": "✓ Flow completed",
+                            "sub": "%d / %d steps executed" % (passed, total)}
+            self._status["state"] = "Completed"
         # The HUD stays on screen after the run, so freeze the elapsed clock here.
         self._status["stoppedAt"] = _now_ms()
         self._push()

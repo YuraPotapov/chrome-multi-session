@@ -16,6 +16,7 @@ import threading
 import time
 
 import runtime_paths
+import system_load
 
 from domain.result import FlowResult, RunResult, StepResult, PASS, FAIL, ERROR
 from engine import artifacts, assertions, compiler, events, loader
@@ -65,10 +66,33 @@ class _OverlayLogBridge(logging.Handler):
 # everything the launcher logs) stay unprefixed.
 _session_ctx = contextvars.ContextVar("flowengine_session", default=None)
 
-# Set on CTRL+C during a parallel run. Workers check it BETWEEN scenarios, so an
-# interrupted run stops after the current step's timeout instead of grinding
-# through every remaining scenario in every running window.
+# Set on CTRL+C during a parallel run. Workers check it between every STEP, not
+# only between scenarios: a forty-step flow whose remaining steps each time out
+# at 30 s would otherwise take twenty minutes to reach the next scenario
+# boundary, and for all that time Stop looks like it did nothing.
 _stop_requested = threading.Event()
+
+# Sessions the user has stopped one at a time, by name. _stop_requested is "stop
+# everything"; this is "stop that window and leave the others running".
+_stopped_sessions = set()
+_stopped_lock = threading.Lock()
+
+
+def request_session_stop(session_name):
+    """Stop driving ONE session. Whoever owns its window closes that."""
+    with _stopped_lock:
+        _stopped_sessions.add(session_name)
+    log.warning("--- session %s: stop requested ---", session_name)
+
+
+def _stopping(session_name=None):
+    """Whether to put this session down: everything, or just this one."""
+    if _stop_requested.is_set():
+        return True
+    if session_name is None:
+        return False
+    with _stopped_lock:
+        return session_name in _stopped_sessions
 
 
 class _SessionPrefixFilter(logging.Filter):
@@ -128,8 +152,302 @@ DEVTOOLS_WAIT_S = 30              # how long to wait for Chrome to open its debu
 DEFAULT_REPORTS_DIR = runtime_paths.reports_dir()
 
 
+# --- how many windows the machine can carry ----------------------------------
+# The governor samples every SAMPLE_S but acts on ten-second averages, and will
+# not step down twice inside BACKOFF_S. That dead time is not caution for its own
+# sake: closing a window is a graceful Chrome shutdown worth up to 15 s (see
+# close_all), so a faster loop would be reading a machine that has not yet felt
+# its own last decision and would step 8 -> 1 before the first close landed.
+GOVERNOR_SAMPLE_S = 5.0
+GOVERNOR_BACKOFF_S = 30.0
+GOVERNOR_RECOVER_S = 60.0     # calm this long before a slot is handed back
+MEM_STALL_TRIP = 10.0         # % of wall time some task waited on memory
+MEM_STALL_CALM = 1.0
+# Measured on an 8-core box: 4 busy tasks read 1%, 8 (saturated, healthy) read
+# 20%, 16 read 66%, 32 read 78%. So the trip is set above what a fully used
+# machine reads and the calm mark well clear of it - at 20 a healthy saturated
+# machine would sit exactly on the line and never be judged calm enough to get a
+# slot back, which is the one-way ratchet this design exists to avoid.
+CPU_STALL_TRIP = 50.0         # tasks genuinely queueing, ~2x oversubscribed
+CPU_STALL_CALM = 35.0
+CPU_BUSY_TRIP = 90.0          # plain utilisation - the number on the launch page
+CPU_BUSY_CALM = 70.0
+# A step down taken for CPU has to earn its keep. If dropping one worker does not
+# move utilisation by at least this much, the load is the WORK rather than the
+# parallelism - seven windows rendering the same app keep eight cores busy however
+# few of them are being driven - and taking more away would only make the run
+# longer. The step is undone and CPU stops being a trigger for a while. This is
+# what stops a busy-but-healthy machine ratcheting itself down to one.
+CPU_STEP_MARGIN = 5.0
+CPU_FUTILE_COOLDOWN_S = 300.0
+MEM_FLOOR_KB = 1536 * 1024    # never open a window on less headroom than this
+WINDOW_HEADROOM = 1.5         # x the measured cost of a window, before opening one
+
+
+class WindowSlots:
+    """How many browser windows may be open at once.
+
+    A permit is a WINDOW, not a worker. The holder opens Chrome only after
+    acquiring one and does not release until that Chrome has exited, which is
+    what makes lowering the ceiling give memory back - throttling the step loop
+    in front of a browser that stays resident cannot.
+
+    Lowering the ceiling never evicts a window that is already open: it finishes
+    its scenarios and the new ceiling takes effect as it closes. Anything else
+    would abandon a half-run scenario to save memory that the abandoned window is
+    still holding until it shuts down anyway.
+    """
+
+    def __init__(self, limit):
+        self._limit = max(1, int(limit))
+        self._held = 0
+        self._closed = False
+        self._cond = threading.Condition()
+
+    @property
+    def limit(self):
+        with self._cond:
+            return self._limit
+
+    @property
+    def held(self):
+        with self._cond:
+            return self._held
+
+    def acquire(self):
+        """Wait for a permit. False means the run is stopping: open nothing."""
+        with self._cond:
+            while self._held >= self._limit and not self._closed:
+                self._cond.wait()
+            if self._closed:
+                return False
+            self._held += 1
+            return True
+
+    def release(self):
+        with self._cond:
+            self._held -= 1
+            self._cond.notify_all()
+
+    def set_limit(self, limit):
+        """Move the ceiling; returns what it actually became (never below 1)."""
+        with self._cond:
+            self._limit = max(1, int(limit))
+            self._cond.notify_all()
+            return self._limit
+
+    def yield_if_over(self):
+        """Hand the permit back and re-queue for one, if the ceiling has dropped.
+
+        For permits that govern DRIVING rather than a window's lifetime. There it
+        is the only way a lowered ceiling takes effect before the session ends,
+        and the browser stays open and resident while its driver waits - so this
+        buys CPU back, never memory. Where a permit owns a window, closing it is
+        what returns the memory and this must not be used: a parked driver would
+        hold an idle browser open and give nothing back.
+
+        Called at scenario boundaries, never between steps: parking halfway
+        through a flow leaves a form half filled in for as long as the machine
+        stays busy, which is how a throttle turns into a failure.
+        """
+        with self._cond:
+            if self._held <= self._limit or self._closed:
+                return
+            self._held -= 1
+            self._cond.notify_all()
+            while self._held >= self._limit and not self._closed:
+                self._cond.wait()
+            self._held += 1
+
+    def close(self):
+        """Release everyone waiting, for good. Held permits are unaffected.
+
+        Without this, CTRL+C would leave queued sessions parked on the condition
+        until enough windows closed to let them through - each one then opening a
+        browser for a run that is already over.
+        """
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
+
+
+def _headroom_short(load, window_cost_kb):
+    """Too little memory free to open another window, or None.
+
+    Acted on from a single sample, unlike stall: this is a prediction, and
+    waiting for a second reading to confirm it is precisely the delay it exists
+    to avoid. ``window_cost_kb`` is what a window has actually cost during this
+    run, so the floor is what this workload needs rather than a guess.
+    """
+    if load.available_kb is None:
+        return None
+    floor = MEM_FLOOR_KB
+    if window_cost_kb:
+        floor = max(floor, int(WINDOW_HEADROOM * window_cost_kb))
+    if load.available_kb >= floor:
+        return None
+    return ("%.1f GB free, under the %.1f GB the next window needs"
+            % (load.available_kb / system_load.KB_PER_GB, floor / system_load.KB_PER_GB))
+
+
+def _stalling(load):
+    """The kernel reporting tasks actually blocked, or None.
+
+    Deliberately not a function of CPU utilisation: a rig driving windows on
+    every core SHOULD read 100%, and tripping on that is what ratchets a ceiling
+    to one and leaves it there. Stall is the machine failing to keep up; use is
+    the machine being used.
+    """
+    if load.mem_stall is not None and load.mem_stall > MEM_STALL_TRIP:
+        return "memory stalled %.0f%% of the last 10 s" % load.mem_stall
+    if load.cpu_stall is not None and load.cpu_stall > CPU_STALL_TRIP:
+        return "cpu stalled %.0f%% of the last 10 s" % load.cpu_stall
+    return None
+
+
+def _strain(load, window_cost_kb):
+    """Why the machine cannot carry another window, or None if it can."""
+    return _headroom_short(load, window_cost_kb) or _stalling(load)
+
+
+def _calm(load):
+    """True when there is room to hand a slot back.
+
+    Stricter than "not strained" on purpose, so the two thresholds cannot chatter
+    a slot open and shut. Absent PSI this asks only for headroom, which is the
+    honest limit of what a machine without it can tell us.
+    """
+    if load.available_kb is not None and load.available_kb < 2 * MEM_FLOOR_KB:
+        return False
+    if load.mem_stall is not None and load.mem_stall > MEM_STALL_CALM:
+        return False
+    if load.cpu_stall is not None and load.cpu_stall > CPU_STALL_CALM:
+        return False
+    return load.available_kb is not None or load.mem_stall is not None
+
+
+def _busy(load):
+    """Plain CPU utilisation over the trip line, or None.
+
+    Utilisation is a weaker signal than stall - a saturated machine is usually
+    just a machine being used - so this one is checked and then CHECKED AGAIN
+    against its own effect (see CPU_STEP_MARGIN). It is here because it is the
+    number a person watching the launch page can see, and a governor that never
+    responds to it is indistinguishable from a governor that is broken.
+    """
+    if load.cpu_percent is not None and load.cpu_percent > CPU_BUSY_TRIP:
+        return "cpu at %.0f%%" % load.cpu_percent
+    return None
+
+
+def _governor(slots, ceiling, stop_event, unit="windows"):
+    """Hold the number of parallel sessions to what this machine can carry.
+
+    Runs only under ``--jobs=auto``. Three things lower the ceiling, in order of
+    how much they are trusted: memory headroom too thin to open the next session
+    (acted on at once - it is a measurement), the kernel reporting real stall
+    (two samples - one can be another program), and plain CPU utilisation (which
+    then has to prove it was worth doing).
+
+    Every move is logged. A run that quietly got slower with no line saying why
+    is worse than one that never throttled.
+    """
+    sampler = system_load.Sampler()
+    # The priming read happens before the pool has opened anything, which makes it
+    # the one honest measure of free memory with none of our sessions up - the
+    # mark a session's cost is measured against below.
+    baseline_kb = sampler.read().available_kb
+    strain_streak = busy_streak = 0
+    calm_since = None
+    stepped_at = 0.0
+    probe = None                # (cpu_before, limit_before) awaiting its verdict
+    cpu_muted_until = 0.0
+
+    def step(to, why, level=log.warning):
+        current = slots.limit
+        new = slots.set_limit(to)
+        if new != current:
+            level("Load governor: %d -> %d %s (%s)", current, new, unit, why)
+            events.emit("governor.limit", limit=new, ceiling=ceiling, unit=unit,
+                        why=why)
+        return new
+
+    # Say where it starts, so a watcher shows the real number from the first
+    # moment rather than only once something has moved.
+    events.emit("governor.limit", limit=slots.limit, ceiling=ceiling, unit=unit,
+                why="starting at one per core")
+
+    while not stop_event.wait(GOVERNOR_SAMPLE_S):
+        load = sampler.read()
+        now = time.monotonic()
+        held = slots.held
+        if load.available_kb is not None and (held == 0 or baseline_kb is None):
+            baseline_kb = max(baseline_kb or 0, load.available_kb)   # re-mark when idle
+        cost_kb = None
+        if baseline_kb and held and load.available_kb is not None:
+            cost_kb = max(0, baseline_kb - load.available_kb) // held
+
+        # Did the last CPU step down actually make the machine less busy?
+        if probe is not None and now - stepped_at >= GOVERNOR_BACKOFF_S:
+            cpu_before, limit_before = probe
+            probe = None
+            gained = cpu_before - (load.cpu_percent if load.cpu_percent is not None
+                                   else cpu_before)
+            if gained < CPU_STEP_MARGIN:
+                cpu_muted_until = now + CPU_FUTILE_COOLDOWN_S
+                step(limit_before,
+                     "one fewer moved the CPU by %.0f points, so this load is the "
+                     "work and not the parallelism" % gained, level=log.info)
+                stepped_at = now
+                continue
+
+        short = _headroom_short(load, cost_kb)
+        stalling = _stalling(load)
+        if short or stalling:
+            calm_since = None
+            busy_streak = 0
+            strain_streak += 1
+            if not short and strain_streak < 2:
+                continue
+            if now - stepped_at < GOVERNOR_BACKOFF_S or slots.limit <= 1:
+                continue
+            step(slots.limit - 1, short or stalling)
+            stepped_at = now
+            probe = None            # memory is not judged by its effect on CPU
+            continue
+
+        strain_streak = 0
+        busy = None if now < cpu_muted_until else _busy(load)
+        if busy:
+            calm_since = None
+            busy_streak += 1
+            if busy_streak < 2:
+                continue
+            if now - stepped_at < GOVERNOR_BACKOFF_S or slots.limit <= 1:
+                continue
+            probe = (load.cpu_percent, slots.limit)
+            step(slots.limit - 1, busy)
+            stepped_at = now
+            busy_streak = 0
+            continue
+
+        busy_streak = 0
+        if not _calm(load) or (load.cpu_percent is not None
+                               and load.cpu_percent > CPU_BUSY_CALM):
+            calm_since = None
+            continue
+        calm_since = calm_since or now
+        if slots.limit < ceiling and now - calm_since >= GOVERNOR_RECOVER_S:
+            step(slots.limit + 1,
+                 "%.1f GB free, cpu at %.0f%%"
+                 % ((load.available_kb or 0) / system_load.KB_PER_GB,
+                    load.cpu_percent or 0), level=log.info)
+            calm_since = now
+            stepped_at = now
+
+
 def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
-                  overlay_components=None, report=None, jobs=1):
+                  overlay_components=None, report=None, jobs=1, windows=None):
     """Run ``which`` scenarios against every launched ``sessions`` entry.
 
     ``sessions`` is a list of ``(cls, proc, profile, login, origin[, tests])``
@@ -141,11 +459,23 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
     ``report`` (from ``--report-*``) is a :class:`artifacts.ReportConfig`; ``None``
     means the legacy default (result.json on success, full bundle on failure).
 
-    ``jobs`` (from ``--jobs``) is how many WINDOWS may be driven at once; 1 keeps
+    ``jobs`` (from ``--jobs``) is how many WINDOWS may be open at once; 1 keeps
     the original one-window-at-a-time behaviour byte for byte. Scenarios inside a
     window always run one after another - a single page cannot be driven twice -
     so this only removes the wait between windows. With more windows than jobs the
     extras queue and start as soon as a slot frees.
+
+    ``jobs="auto"`` is the one value that lets the load governor move that number
+    while the run is under way. A number is a number: given 6, this runs 6 at a
+    time from the first window to the last, whatever the machine is doing.
+
+    ``windows`` is the launcher's :class:`WindowSource` - ``open(session)`` and
+    ``close(proc)`` - and is what makes ``jobs`` mean windows rather than merely
+    drivers. Given one, this opens each Chrome inside its own slot and closes it
+    when its scenarios are done, so a lowered ceiling actually returns memory,
+    and the load governor is started. Without one (the tests, and any caller that
+    hands over browsers it opened itself) every window is already resident, a
+    ceiling can give nothing back, and no governor runs.
     """
     env = env or {}
     # flows_dir stays None when it was not given: the loader turns that into its
@@ -160,6 +490,11 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
         log.error("No scenarios to run.")
         return 1
 
+    # Both paths, not only the parallel one: a session stopped by hand must not
+    # still be stopped for the next run in the same process.
+    with _stopped_lock:
+        _stopped_sessions.clear()
+
     run = RunResult()
     run_dir = artifacts.new_run_dir(reports_dir)
     log.info("Reports -> %s", run_dir)
@@ -169,13 +504,50 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
     # the summary lists sessions in the order given no matter what order they
     # complete in.
     slots = [[] for _ in sessions]
-    workers = max(1, min(int(jobs), len(sessions) or 1))
+    auto = str(jobs).lower() == "auto"
+    if auto:
+        # One window per core to begin with - the governor takes it from there,
+        # and only ever downwards from a starting point the machine can plainly
+        # carry rather than upwards from a guess.
+        workers = max(1, min(len(sessions) or 1, os.cpu_count() or 4))
+    else:
+        workers = max(1, min(int(jobs), len(sessions) or 1))
     plan = _plan_sessions(sessions, per_session, shared, flows_dir, slots)
 
+    staged = windows is not None
+    slot_pool = WindowSlots(workers) if (staged or auto) else None
+    # Where the runner owns the window, a lowered ceiling takes effect by closing
+    # it - which is what gives memory back. Where the windows were opened for us
+    # and stay open, the only thing left to ration is the driving, so sessions
+    # yield between scenarios instead. That buys CPU and not memory, and is why
+    # --close-after is worth having.
+    yielding = slot_pool if (auto and not staged) else None
+
     def drive(session, session_name, scenarios, log_prefix=None):
-        return _run_one_session(session, session_name, scenarios, env, flows_dir,
-                                selectors, run_dir, overlay_components, report,
-                                log_prefix=log_prefix)
+        if slot_pool is None:
+            return _run_one_session(session, session_name, scenarios, env, flows_dir,
+                                    selectors, run_dir, overlay_components, report,
+                                    log_prefix=log_prefix)
+        if not slot_pool.acquire():
+            return []            # stopping: this session never started
+        proc = None
+        try:
+            if not staged:
+                return _run_one_session(session, session_name, scenarios, env, flows_dir,
+                                        selectors, run_dir, overlay_components, report,
+                                        log_prefix=log_prefix, slots=yielding)
+            proc = windows.open(session)
+            opened = (session[0], proc) + tuple(session[2:])
+            return _run_one_session(opened, session_name, scenarios, env, flows_dir,
+                                    selectors, run_dir, overlay_components, report,
+                                    log_prefix=log_prefix)
+        finally:
+            # Close BEFORE releasing: the next window must not start while this
+            # one is still flushing cookies, or the two overlap for the seconds
+            # the slot exists to prevent.
+            if proc is not None:
+                windows.close(proc)
+            slot_pool.release()
 
     if workers == 1:
         # Lazy consumption keeps the planner's warnings interleaved with the runs,
@@ -195,6 +567,29 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
         prefixes = {i: ("[%s]" % name).ljust(width + 3) for i, _s, name, _sc in planned}
         undo_prefix = _install_session_prefix()
         _stop_requested.clear()
+
+        governor_stop = threading.Event()
+        if auto:
+            # Only with --jobs=auto. A number the user typed is a promise, and a
+            # run that quietly does 3 at a time when it was told 8 is a worse
+            # failure than one that runs out of memory where the user can see it.
+            log.info("Auto: starting at %d %s, adjusted as the machine allows.",
+                     workers, "windows" if staged else "parallel sessions")
+            if not staged:
+                log.info("Windows were all opened up front, so this can free CPU "
+                         "but not memory; --close-after lets it free both.")
+            threading.Thread(target=_governor,
+                             args=(slot_pool, workers, governor_stop),
+                             kwargs={"unit": "windows" if staged else "sessions"},
+                             name="load-governor", daemon=True).start()
+        else:
+            # Fixed runs report their number too, once. "How many are running"
+            # is a fair question whether or not the answer can change, and a
+            # readout that is blank for most runs is one nobody learns to read.
+            events.emit("governor.limit", limit=workers, ceiling=workers,
+                        unit="windows" if staged else "sessions",
+                        why="fixed by --jobs")
+
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers,
                                                      thread_name_prefix="session")
         try:
@@ -221,6 +616,8 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
             # Queued sessions are dropped outright; running ones stop after the
             # step they are in (bounded by that step's timeout, 30 s by default).
             _stop_requested.set()
+            if slot_pool is not None:
+                slot_pool.close()   # queued sessions give up instead of opening a browser
             pool.shutdown(wait=False, cancel_futures=True)
             running = sum(1 for _i, _n, f in futures if f.running())
             log.warning("Interrupted - waiting for %d running session(s) to finish the "
@@ -230,6 +627,7 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
             # Always drain here: an undrained pool would otherwise be joined by
             # concurrent.futures' atexit hook, hanging the process AFTER the
             # traceback with nothing on screen to explain it.
+            governor_stop.set()
             pool.shutdown(wait=True)
             undo_prefix()
 
@@ -285,7 +683,7 @@ def _plan_sessions(sessions, per_session, shared, flows_dir, slots):
 
 
 def _run_one_session(session, session_name, scenarios, env, flows_dir, selectors,
-                     run_dir, overlay_components, report, log_prefix=None):
+                     run_dir, overlay_components, report, log_prefix=None, slots=None):
     """Drive ONE window: attach, run its scenarios, disconnect. Returns its results.
 
     Everything here - the CDP attach, every step, every screenshot and the
@@ -303,14 +701,15 @@ def _run_one_session(session, session_name, scenarios, env, flows_dir, selectors
     token = _session_ctx.set(log_prefix) if log_prefix else None
     try:
         return _drive_session(session, session_name, scenarios, env, flows_dir,
-                              selectors, run_dir, overlay_components, report, results)
+                              selectors, run_dir, overlay_components, report, results,
+                              slots)
     finally:
         if token is not None:
             _session_ctx.reset(token)
 
 
 def _drive_session(session, session_name, scenarios, env, flows_dir, selectors,
-                   run_dir, overlay_components, report, results):
+                   run_dir, overlay_components, report, results, slots=None):
     cls, _proc, profile, login, origin = session[:5]
     log.info("--- session %s: %s ---", session_name, ", ".join(scenarios))
     adapter = _attach(profile, session_name)
@@ -336,9 +735,13 @@ def _drive_session(session, session_name, scenarios, env, flows_dir, selectors,
     overlay.session_start(scenarios)
     try:
         for scenario_id in scenarios:
-            if _stop_requested.is_set():
-                log.warning("Interrupted: skipping %s", scenario_id)
+            if _stopping(session_name):
+                log.warning("Stopped: skipping %s", scenario_id)
                 break
+            if slots is not None:
+                # A scenario boundary is the only safe place to stand aside: the
+                # page is between flows, so a wait here costs time and nothing else.
+                slots.yield_if_over()
             results.append(
                 _run_scenario(adapter, scenario_id, session_name, flows_dir,
                               selectors, ctx, run_dir, overlay, report))
@@ -438,11 +841,26 @@ def _run_scenario(adapter, scenario_id, session_name, flows_dir, selectors, ctx,
     overlay.flow_start(plan, role=ctx.user.get("class"))
     reporter.capture_start()
     for index, step in enumerate(steps):
+        if _stopping(session_name):
+            # Stop has to bite BETWEEN STEPS, not merely between scenarios. A
+            # forty-step flow whose remaining steps each time out at 30 s takes
+            # twenty minutes to reach the next scenario boundary, and for all of
+            # that time the GUI's Stop looks like it did nothing at all.
+            result.status = ERROR
+            result.error = "stopped at step %d of %d" % (index + 1, len(steps))
+            log.warning("[%s] stopped at step %d of %d", scenario_id, index + 1, len(steps))
+            break
         overlay.step_start(index)
         step_result = _run_step(adapter, index, step, overlay)
         result.steps.append(step_result)
         overlay.step_end(index, step_result.status, step_result.attempts, step_result.message)
         if step_result.status != PASS:
+            if _stopping(session_name):
+                # The window was closed under this step. Report what happened
+                # rather than the CDP error that closing it produced.
+                result.status = ERROR
+                result.error = "stopped during step %d of %d" % (index + 1, len(steps))
+                break
             result.status = step_result.status
             result.error = "%s(%s): %s" % (
                 step.action, step.target or step.value or "", step_result.message)

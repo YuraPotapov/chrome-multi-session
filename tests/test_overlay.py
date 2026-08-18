@@ -299,3 +299,39 @@ def test_scenario_ids_are_namespaced_so_states_cannot_collide():
     ov.flow_start(_tree(), role="Admin")
     second = set(adapter.renders[-1]["nodeStates"]) - first
     assert first and second and not (first & second)
+
+
+def test_a_later_pass_does_not_erase_an_earlier_failure():
+    """The banner speaks for the window, not for whichever flow ended last.
+
+    A session runs several scenarios in one window. Reporting the last one as if
+    it were the session put a green "Flow completed" above a tree with a red mark
+    still in it.
+    """
+    ov, adapter = _overlay()
+    ov.flow_start(_tree(), role="Agent")
+    ov.step_start(0)
+    ov.step_end(0, FAIL)
+    ov.flow_end(FAIL, passed=0, total=3)
+
+    ov.flow_start(_tree(), role="Agent")
+    for i in range(3):
+        ov.step_start(i)
+        ov.step_end(i, PASS)
+    ov.flow_end(PASS, passed=3, total=3)
+
+    banner = adapter.renders[-1]["banner"]
+    assert banner["kind"] == "failed"
+    assert "1 of 2 scenarios failed" in banner["text"]
+    assert "this one passed" in banner["sub"]
+
+
+def test_every_scenario_passing_still_says_completed():
+    ov, adapter = _overlay()
+    for _ in range(2):
+        ov.flow_start(_tree(), role="Agent")
+        for i in range(3):
+            ov.step_start(i)
+            ov.step_end(i, PASS)
+        ov.flow_end(PASS, passed=3, total=3)
+    assert adapter.renders[-1]["banner"]["kind"] == "success"

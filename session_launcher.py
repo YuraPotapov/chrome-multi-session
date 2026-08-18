@@ -1674,6 +1674,137 @@ def install_local_extension(profile, src_dir, origin, key_file_name):
     return ext_id
 
 
+def read_commands(windows_by_session):
+    """Take one JSON command per stdin line, for as long as stdin is open.
+
+    The other half of ``--events``: facts go out on stdout, instructions come in
+    here. Opt-in through ``--control=-`` because a reader on stdin would
+    otherwise swallow the keystrokes of anyone running this in a terminal.
+
+    Only one command so far - stop ONE session - and it does both halves of what
+    that means: tell the engine to stop driving that window (so it stops issuing
+    steps rather than having them fail against a browser being torn down), then
+    close the window itself. Unknown commands are ignored rather than fatal: a
+    newer GUI talking to an older core should lose a feature, not the run.
+    """
+    from engine import runner as engine_runner
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except ValueError:
+            log.warning("Ignoring an unreadable control line: %.80s", line)
+            continue
+        command = message.get("command")
+        session = message.get("session")
+        if command == "stop-session" and session:
+            engine_runner.request_session_stop(session)
+            _emit("session.stopping", session=session)
+            proc = windows_by_session.get(session)
+            if proc is not None:
+                close_all([(session, proc)])
+        else:
+            log.warning("Ignoring an unknown control command: %r", command)
+
+
+def open_window(chrome, profile, cls, login, url, debug_port, spawn_kwargs):
+    """Start one Chrome on one profile and announce it. Returns the Popen.
+
+    Split out of the launch loop because a --run-tests run may open a window long
+    after its profile was prepared - see :class:`WindowSource`.
+    """
+    clear_devtools_port(profile)  # so --run-tests cannot attach to a dead/reused port
+    log.info("Launching %-8s (login: %s)", cls, login)
+    chrome_args = [
+        chrome,
+        "--user-data-dir=%s" % profile,
+        "--class=%s" % cls,
+        # Linux only: basic store => cookies AND saved passwords use the same
+        # deterministic key, so the seeded credential is decryptable. macOS keys
+        # off the login Keychain instead (see _encrypt_password).
+        *_PASSWORD_STORE_ARGS,
+        # The auto-login extension is installed into the profile itself
+        # (install_autologin_extension), so no --load-extension is needed -
+        # recent Chrome (137+) blocks that command-line switch anyway.
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--new-window",
+    ]
+    if debug_port:
+        # Flow-execution and recording only: open a CDP endpoint so the engine
+        # can attach and drive this window. Port 0 = auto-pick a free port;
+        # Chrome writes the chosen port to <profile>/DevToolsActivePort. A plain
+        # launch never gets this switch, so its behaviour is unchanged - and the
+        # port is unauthenticated, so it is not something to open by default.
+        chrome_args.append("--remote-debugging-port=0")
+    chrome_args.append(url)
+    proc = subprocess.Popen(
+        chrome_args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        # own process group so we can close the whole window tree later; also
+        # detaches the window so --detach can leave it running. In foreground
+        # mode this also arms PR_SET_PDEATHSIG (see spawn_kwargs above).
+        **spawn_kwargs,
+    )
+    _emit("window.launched", login=login, cls=cls, pid=proc.pid,
+          profile=profile, session=os.path.basename(profile))
+    return proc
+
+
+class WindowSource:
+    """Opens and closes one window at a time, on the runner's worker threads.
+
+    This is what makes ``--jobs`` mean *windows* rather than merely drivers. The
+    old arrangement opened every window up front and let the runner decide how
+    many to step at once, so eight accounts meant eight resident browsers no
+    matter what ``--jobs`` said, and throttling could not hand a byte back. Here
+    the runner holds a slot, asks for a window, runs that session's scenarios,
+    and gives the window back - so a ceiling the load governor lowers turns into
+    a browser that is not running.
+
+    Only used when the windows are going to be closed anyway (``--close-after``);
+    without it the user asked to keep them for inspection and every one stays up.
+    """
+
+    def __init__(self, chrome, url, spawn_kwargs, procs, stagger_s=0.4,
+                 by_session=None):
+        self._chrome = chrome
+        self._url = url
+        self._spawn_kwargs = spawn_kwargs
+        self._procs = procs          # shared with close_all; appended under the lock
+        self._names = {}             # proc -> cls, so close() can name what it closes
+        self._by_session = by_session   # session name -> Popen, for --control
+        self._stagger_s = stagger_s
+        self._lock = threading.Lock()
+
+    def open(self, session):
+        cls, profile, login = session[0], session[2], session[3]
+        # Serialised, with the same pause the sequential loop used: several Chrome
+        # cold starts landing together is its own load spike, and one arriving
+        # inside another's profile setup is how DevToolsActivePort races appear.
+        with self._lock:
+            proc = open_window(self._chrome, profile, cls, login, self._url,
+                               debug_port=True, spawn_kwargs=self._spawn_kwargs)
+            self._procs.append((cls, proc))
+            self._names[proc] = cls
+            if self._by_session is not None:
+                self._by_session[os.path.basename(profile)] = proc
+            time.sleep(self._stagger_s)
+        return proc
+
+    def close(self, proc):
+        """Graceful shutdown, waited on, so the slot's memory is really back.
+
+        close_all is reused rather than reimplemented: the SIGTERM-then-wait
+        dance it does is what flushes the login session to disk, and a window
+        closed any other way loses it.
+        """
+        close_all([(self._names.get(proc, "session"), proc)])
+
+
 def close_all(procs):
     """Close every launched window gracefully so the login session is flushed to disk.
 
@@ -1778,6 +1909,12 @@ Options:
                             default set, "list" prints what is available.
   --log-level=LEVEL         DEBUG/INFO/WARNING/ERROR (default: INFO; also via
                             the OPEN_USERS_LOG_LEVEL env var).
+  --control=-               Accept JSON commands on stdin, one per line - for a
+                            program driving this launcher. Currently
+                            {"command":"stop-session","session":"NAME"}, which
+                            stops driving that window and closes it while the
+                            other windows carry on. Off by default: a reader on
+                            stdin would eat a terminal user's keystrokes.
   --events=-|FILE           Emit a structured JSONL event stream for another
                             program (the GUI) to follow: windows launched, CDP
                             attached, every step, artifacts written, run summary.
@@ -1804,12 +1941,15 @@ Editing scenarios (answer with JSON on stdout, then exit):
                             override the ones that ship with the application.
 
 Recording:
-  --recorder                Open the windows with the Scenario Recorder shown in
-                            each of them. Nothing is recorded until you ask:
-                            Capture Step (or F2) picks one element and one action
-                            at a time, and Finish writes the scenario.
+  --recorder                Open ONE window with the Scenario Recorder shown in
+                            it. Nothing is recorded until you ask: Capture Step
+                            (or F2) picks one element and one action at a time,
+                            and Finish writes the scenario.
                             --recorder=ID continues an existing scenario or names
                             a new one; the default is a timestamp.
+                            Records one account at a time - you can only be
+                            clicking in one window anyway - so select a single
+                            user with --user=LOGIN or --filter-users=LOGIN.
 
 Flow execution (require --run-tests):
   --run-tests=LIST          Attach over CDP, run scenarios, write reports, then
@@ -1823,11 +1963,19 @@ Flow execution (require --run-tests):
                             flows/ next to the script). Lets the flows live in
                             their own repository.
   --reports-dir=DIR         Where run artifacts are written (default: reports/).
-  --jobs=N|all              Drive N windows at once (default 1 = one after
+  --jobs=N|all|auto         Drive N windows at once (default 1 = one after
                             another); extras queue for a free slot. Scenarios
-                            within a window always run in order.
+                            within a window always run in order. A number is
+                            kept: nothing raises or lowers it. "auto" starts at
+                            one window per core and lets the machine decide -
+                            fewer while memory is under real pressure, back up
+                            again once it is not. With --close-after this also
+                            caps how many windows are OPEN at once, launched a
+                            slot at a time and closed as they finish; "auto"
+                            needs --close-after to have anything to give back.
   --close-after             Close the browser windows once the run finishes;
-                            without it they stay open for inspection.
+                            without it they stay open for inspection - which
+                            also means every window is launched up front.
 
 Reports (require --run-tests):
   --report-level=LIST       What artifacts to generate: console,dom,result,
@@ -1865,7 +2013,7 @@ def main():
     env_name = None       # --env=NAME; None = every environment
     recorder = None       # --recorder: record a scenario from a live window
     run_tests = None      # None = just launch; "all" or [ids] = run flows then exit
-    jobs = 1              # --jobs: windows driven at once (1 = one after another)
+    jobs = 1              # --jobs: windows at once (1 = one after another)
     flows_dir = None      # --flows-dir: where scenarios live (None = the engine default)
     reports_dir = None    # --reports-dir: where run artifacts are written
     jobs_given = False
@@ -1879,6 +2027,7 @@ def main():
     excluded_extensions = set()   # from the deprecated --no-odoo-debug
     legacy_odoo_flag = None   # --odoo-debug / --no-odoo-debug, reported once after parsing
     events_target = None  # --events: "-" (stdout) or a file path; None = off
+    control_stdin = False # --control=-: accept commands (stop one session) on stdin
     log_level = os.environ.get("OPEN_USERS_LOG_LEVEL", "INFO")
     bad_option = None     # unusable option we saw, reported once argv is fully parsed
     positional = []
@@ -1938,6 +2087,13 @@ def main():
             if not events_target:
                 sys.exit("--events= is empty. Use --events=- for stdout, or "
                          "--events=PATH to append to a file.")
+        elif arg.startswith("--control="):
+            # The inbound half of --events. Only "-" (stdin) is meaningful: a
+            # program that drives this launcher already has its pipes.
+            value = arg.split("=", 1)[1].strip()
+            if value != "-":
+                sys.exit("--control: only '-' (stdin) is supported, got %r." % value)
+            control_stdin = True
         elif arg.startswith("--log-level="):
             log_level = arg.split("=", 1)[1].strip()
         elif arg == "--init-users-json":
@@ -2016,10 +2172,15 @@ def main():
             jobs_given = True
             if val == "all":
                 jobs = "all"
+            elif val == "auto":
+                # The ONLY value that lets the load governor move the number of
+                # windows. A number given here is a number kept.
+                jobs = "auto"
             elif val.isascii() and val.isdigit() and int(val) >= 1:
                 jobs = int(val)
             else:
-                sys.exit("--jobs: expected a positive number or 'all', got %r." % val)
+                sys.exit("--jobs: expected a positive number, 'all' or 'auto', got %r."
+                         % val)
         elif arg == "--execution-overlay" or arg.startswith("--execution-overlay="):
             # Enable the in-page execution HUD. Value is a comma-separated list of
             # components (tree, progress, status, logs, ...) or "all"; bare flag = all.
@@ -2223,6 +2384,16 @@ def main():
                      "to launch a single environment." % (seen_dirs[sd], login, sd))
         seen_dirs[sd] = login
 
+    # Recording is a one-window activity. Several windows would each show their own
+    # recorder, only the first would get the scenario id that was asked for (see
+    # engine.recorder.record_sessions) and the rest would write files nobody asked
+    # for - while the person doing the recording can only be clicking in one of
+    # them anyway. Checked before any window opens, so the answer costs nothing.
+    if recorder and len(users) > 1:
+        sys.exit("--recorder records ONE window: %d users are selected (%s). Pick one "
+                 "with --user=LOGIN or --filter-users=LOGIN."
+                 % (len(users), ", ".join(u.login for u in users)))
+
     # --run-tests=config is only meaningful if somebody actually has tests. Check it
     # here, before any window opens, so a typo does not cost a full launch first.
     if run_tests == "config":
@@ -2287,6 +2458,13 @@ def main():
 
     procs = []
     sessions = []  # (cls, proc, profile, login, origin, tests) per window, for --run-tests
+    windows_by_session = {}  # session name -> Popen, for "stop just this one"
+    # Staged launching: open each window inside the runner's slot instead of all of
+    # them here, so --jobs caps resident browsers and the load governor has a lever
+    # that returns memory. Only when the windows are going to be closed anyway -
+    # without --close-after the user asked to keep them for inspection, and a
+    # window closed the moment its scenarios end is not that.
+    staged = bool(run_tests) and not recorder and close_after
     for entry_prefix, cls, login, password, user_tests in users:
         # The profile folder is "<prefix>-<login>" (a single safe path segment),
         # keyed by prefix+login so each user/environment gets its own reused profile.
@@ -2296,7 +2474,6 @@ def main():
         os.makedirs(profile, exist_ok=True)
         set_profile_name(profile, "%s - %s" % (cls, login))
         clear_previous_tabs(profile)  # always start with one tab, keep the login
-        clear_devtools_port(profile)  # so --run-tests cannot attach to a dead/reused port
         # Install the auto-login extension into the profile (must run after
         # set_profile_name, which writes the Preferences file this merges into).
         try:
@@ -2316,52 +2493,39 @@ def main():
             seed_password(chrome, profile, origin, login, password)
         except Exception as exc:  # never let a save failure block the launch
             log.warning("Skipping password save for %s: %s", login, exc)
-        log.info("Launching %-8s (login: %s)", cls, login)
-        chrome_args = [
-            chrome,
-            "--user-data-dir=%s" % profile,
-            "--class=%s" % cls,
-            # Linux only: basic store => cookies AND saved passwords use the same
-            # deterministic key, so the seeded credential is decryptable. macOS keys
-            # off the login Keychain instead (see _encrypt_password).
-            *_PASSWORD_STORE_ARGS,
-            # The auto-login extension is installed into the profile itself
-            # (install_autologin_extension), so no --load-extension is needed -
-            # recent Chrome (137+) blocks that command-line switch anyway.
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--new-window",
-        ]
-        if run_tests or recorder:
-            # Flow-execution and recording only: open a CDP endpoint so the engine
-            # can attach and drive this window. Port 0 = auto-pick a free port;
-            # Chrome writes the chosen port to <profile>/DevToolsActivePort. A plain
-            # launch never gets this switch, so its behaviour is unchanged - and the
-            # port is unauthenticated, so it is not something to open by default.
-            chrome_args.append("--remote-debugging-port=0")
-        chrome_args.append(url)
-        proc = subprocess.Popen(
-            chrome_args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            # own process group so we can close the whole window tree later; also
-            # detaches the window so --detach can leave it running. In foreground
-            # mode this also arms PR_SET_PDEATHSIG (see spawn_kwargs above).
-            **spawn_kwargs,
-        )
+        if staged:
+            # Prepared, not opened: the runner starts this Chrome when it has a
+            # slot for it. proc is None until then.
+            sessions.append((cls, None, profile, login, origin, user_tests))
+            continue
+        proc = open_window(chrome, profile, cls, login, url,
+                           bool(run_tests or recorder), spawn_kwargs)
         procs.append((cls, proc))
-        _emit("window.launched", login=login, cls=cls, pid=proc.pid,
-              profile=profile, session=os.path.basename(profile))
+        # Keyed the way the engine and the event stream name a session, so a
+        # "stop this one" command can be addressed to what the user is looking at.
+        windows_by_session[os.path.basename(profile)] = proc
         if run_tests or recorder:
             # user_tests is this user's own "tests" field; the runner uses it
             # when --run-tests=config, and ignores it otherwise.
             sessions.append((cls, proc, profile, login, origin, user_tests))
         time.sleep(0.4)
 
-    log.info("All %d windows launched. The auto-login extension signs each one in on the "
-             "login page; profiles persist the session, so later launches open already "
-             "logged in.", len(procs))
-    _emit("windows.ready", count=len(procs))
+    if control_stdin:
+        # Daemon: a run must never wait on stdin to finish. Started once the
+        # windows exist so an early command finds something to address.
+        threading.Thread(target=read_commands, args=(windows_by_session,),
+                         name="control", daemon=True).start()
+
+    if staged:
+        log.info("%d session(s) prepared. Windows open as slots free, %s at a time; "
+                 "each closes when its scenarios are done.", len(sessions),
+                 {"all": "all", "auto": "as many as the machine allows"}.get(jobs, jobs))
+        _emit("windows.deferred", count=len(sessions))
+    else:
+        log.info("All %d windows launched. The auto-login extension signs each one in on the "
+                 "login page; profiles persist the session, so later launches open already "
+                 "logged in.", len(procs))
+        _emit("windows.ready", count=len(procs))
 
     if recorder:
         # Recording mode: attach to every window and show the recorder in it.
@@ -2393,14 +2557,25 @@ def main():
         # never loads playwright/yaml.
         from engine.runner import run_scenarios
         rc = None   # stays None if the run raises: the event still says so
+        stopped = False
         try:
             rc = run_scenarios(sessions, run_tests, env={"origin": origin, "url": url},
                                flows_dir=flows_dir, reports_dir=reports_dir,
                                overlay_components=overlay_components, report=report_config,
-                               jobs=len(sessions) if jobs == "all" else jobs)
+                               jobs=len(sessions) if jobs == "all" else jobs,   # "auto" passes through
+                               windows=WindowSource(chrome, url, spawn_kwargs, procs,
+                                                    by_session=windows_by_session)
+                                       if staged else None)
+        except KeyboardInterrupt:
+            stopped = True
+            raise
         finally:
             _emit("run.finished", exit_code=rc)
-            if close_after:
+            # A STOPPED run always closes its windows, whatever --close-after
+            # says. That flag answers "what should happen when a run finishes";
+            # someone who pressed Stop is not asking to be left with seven
+            # browsers open on a half-finished flow.
+            if close_after or stopped:
                 close_all(procs)  # graceful teardown flushes each login session to disk
         if close_after:
             _emit("launcher.exit", exit_code=rc)

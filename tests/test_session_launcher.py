@@ -514,10 +514,17 @@ def test_main_rejects_bare_jobs(monkeypatch, config):
 
 
 def test_main_rejects_invalid_jobs(monkeypatch, config):
-    for value in ("0", "-1", "abc", "2.5", "", "+2"):
+    for value in ("0", "-1", "abc", "2.5", "", "+2", "automatic"):
         message = _main(monkeypatch, config, "--env=dev", "--run-tests=config",
                         "--jobs=" + value)
-        assert "expected a positive number or 'all'" in message, value
+        assert "expected a positive number, 'all' or 'auto'" in message, value
+
+
+def test_main_accepts_jobs_auto(monkeypatch, config):
+    # "auto" is the one value that hands the number to the load governor; every
+    # other value is a number the run keeps.
+    message = _main(monkeypatch, config, "--env=dev", "--run-tests=config", "--jobs=auto")
+    assert "--jobs" not in (message or "")
 
 
 def test_main_rejects_jobs_without_run_tests(monkeypatch, config):
@@ -1167,3 +1174,75 @@ def test_describe_advertises_the_step_grammar(monkeypatch, capsys, flow_tree, co
     assert set(actions["selector_and_value"]) == compiler.SELECTOR_AND_VALUE
     assert set(actions["selector_only"]) == compiler.SELECTOR_ONLY
     assert "goto" in actions["url_target"] and "use" in actions["use"]
+
+
+# ------------------------------------------------------ staged window launching
+
+class _FakeProc:
+    def __init__(self, argv):
+        self.argv = argv
+        self.pid = 4242
+
+    def poll(self):
+        return 0            # already exited, so close_all leaves it alone
+
+
+@pytest.fixture
+def staging(monkeypatch):
+    """A WindowSource over a fake Chrome, with the profile writes stubbed out."""
+    opened = []
+
+    def fake_popen(argv, **kwargs):
+        opened.append(argv)
+        return _FakeProc(argv)
+
+    monkeypatch.setattr(sl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(sl, "clear_devtools_port", lambda profile: None)
+    procs = []
+    source = sl.WindowSource("/usr/bin/chrome", "http://x", {}, procs, stagger_s=0)
+    return source, procs, opened
+
+
+def test_a_staged_window_still_opens_its_debug_port(staging):
+    source, _procs, opened = staging
+    # Without this the runner has no DevToolsActivePort to attach to, which is
+    # the whole reason a --run-tests window differs from a plain one.
+    source.open(("Agent", None, "/tmp/dev-agent", "agent", "http://x", ()))
+    assert "--remote-debugging-port=0" in opened[0]
+    assert "--user-data-dir=/tmp/dev-agent" in opened[0]
+    assert opened[0][-1] == "http://x"
+
+
+def test_a_staged_window_joins_the_list_close_all_sweeps(staging):
+    source, procs, _opened = staging
+    source.open(("Agent", None, "/tmp/dev-agent", "agent", "http://x", ()))
+    # A crash or CTRL+C between opening and closing must still leave the window
+    # somewhere the launcher's own teardown can find it.
+    assert [cls for cls, _proc in procs] == ["Agent"]
+
+
+def test_closing_a_staged_window_names_it(staging, monkeypatch):
+    source, _procs, _opened = staging
+    closed = []
+    monkeypatch.setattr(sl, "close_all", lambda procs: closed.extend(procs))
+    proc = source.open(("Agent", None, "/tmp/dev-agent", "agent", "http://x", ()))
+    source.close(proc)
+    assert closed == [("Agent", proc)]
+
+
+# ------------------------------------------------------------ recorder is one window
+
+def test_recorder_refuses_more_than_one_user(monkeypatch, config):
+    # A person can only be clicking in one window, and only the first would get
+    # the scenario id that was asked for. No --env means all three entries.
+    message = _main(monkeypatch, config, "--url=http://localhost:8069", "--recorder")
+    assert "--recorder records ONE window" in message
+    assert "--user=LOGIN" in message
+    assert "admin" in message           # says which accounts made it ambiguous
+
+
+def test_recorder_accepts_a_single_user(monkeypatch, config):
+    # Reaching the browser lookup means every argument check passed.
+    message = _main(monkeypatch, config, "--env=dev", "--recorder")
+    assert "--recorder records ONE window" not in message
+    assert "Google Chrome was not found" in message

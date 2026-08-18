@@ -133,13 +133,23 @@ def _default_scenario_id():
 
 def record_sessions(sessions, env=None, flows_dir=None, scenario_id=None,
                     stop_event=None):
-    """Show the recorder in every launched window and keep it fed.
+    """Show the recorder in the launched window and keep it fed.
+
+    Normally one window: the launcher refuses --recorder with more than one user
+    selected, because a person can only be clicking in one of them and only the
+    first would get the scenario id that was asked for. The loop still handles a
+    list so the shape matches ``engine.runner``, and so a caller that builds its
+    own session list is not silently mis-served.
 
     One thread per window, because Playwright's sync API is bound to the thread
     that created it - the same rule ``engine.runner`` follows for parallel runs.
     Returns when ``stop_event`` is set, which is what CTRL+C and the GUI's Stop
     both come down to.
     """
+    if len(sessions) > 1:
+        log.warning("Recording %d windows at once: only the first is given the "
+                    "scenario id, the rest write timestamped files of their own.",
+                    len(sessions))
     stop_event = stop_event or threading.Event()
     threads = []
     for index, session in enumerate(sessions):
