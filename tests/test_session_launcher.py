@@ -1246,3 +1246,98 @@ def test_recorder_accepts_a_single_user(monkeypatch, config):
     message = _main(monkeypatch, config, "--env=dev", "--recorder")
     assert "--recorder records ONE window" not in message
     assert "Google Chrome was not found" in message
+
+
+# ------------------------------------------------------- closing, on any platform
+
+class _StuckProc:
+    """A browser that ignores SIGTERM, so close_all reaches its force path."""
+
+    def __init__(self):
+        self.pid = 4242
+        self.killed = False
+        self.terminated = False
+        self.returncode = None
+
+    def poll(self):
+        return None
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, timeout=None):
+        raise sl.subprocess.TimeoutExpired("chrome", timeout)
+
+    def kill(self):
+        self.killed = True
+
+
+def test_a_hung_window_is_group_killed_on_posix(monkeypatch):
+    calls = []
+    monkeypatch.setattr(sl.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(sl.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    proc = _StuckProc()
+    sl.force_kill(proc)
+    # The group, not the leader: Chrome has stopped managing its renderers by
+    # now, so killing it alone leaves them behind.
+    assert calls == [(4242, sl.signal.SIGKILL)]
+    assert not proc.killed
+
+
+def test_a_hung_window_does_not_crash_the_teardown_without_killpg(monkeypatch):
+    """The Windows shape: os.killpg does not exist there at all.
+
+    close_all used to name only ProcessLookupError and PermissionError, so the
+    AttributeError went straight up and took the whole teardown with it - and it
+    is reachable the moment one window outlasts the 15-second grace period.
+    """
+    monkeypatch.delattr(sl.os, "killpg", raising=False)
+    monkeypatch.delattr(sl.os, "getpgid", raising=False)
+    proc = _StuckProc()
+    sl.force_kill(proc)                 # must not raise
+    assert proc.killed
+
+
+def test_a_refused_group_kill_still_kills_the_browser(monkeypatch):
+    monkeypatch.setattr(sl.os, "getpgid", lambda pid: pid)
+    def _refuse(pgid, sig):
+        raise PermissionError(1, "not permitted")
+    monkeypatch.setattr(sl.os, "killpg", _refuse)
+    proc = _StuckProc()
+    sl.force_kill(proc)
+    assert proc.killed
+
+
+def test_close_all_survives_a_window_that_will_not_die(monkeypatch):
+    monkeypatch.delattr(sl.os, "killpg", raising=False)
+    proc = _StuckProc()
+    sl.close_all([("Agent", proc)])     # the whole path, not just the helper
+    assert proc.terminated and proc.killed
+
+
+# ------------------------------------------------- binding windows to the launcher
+
+def test_the_job_object_is_a_windows_only_idea(monkeypatch):
+    monkeypatch.setattr(sl.os, "name", "posix")
+    monkeypatch.setattr(sl, "_windows_job", None)
+    assert sl._windows_kill_on_close_job() is None
+
+
+def test_adopting_is_a_no_op_where_there_is_no_job(monkeypatch):
+    monkeypatch.setattr(sl, "_windows_kill_on_close_job", lambda: None)
+    sl._adopt_into_windows_job(_StuckProc())      # must not raise
+
+
+def test_detached_windows_are_never_adopted(monkeypatch):
+    """--detach means the windows outlive the launcher; the job would kill them."""
+    adopted = []
+    monkeypatch.setattr(sl, "_adopt_into_windows_job", lambda p: adopted.append(p))
+    monkeypatch.setattr(sl, "clear_devtools_port", lambda profile: None)
+    monkeypatch.setattr(sl.subprocess, "Popen",
+                        lambda argv, **kw: _StuckProc())
+    sl.open_window("/usr/bin/chrome", "/tmp/p", "Agent", "a", "http://x",
+                   False, {}, bind_lifetime=False)
+    assert adopted == []
+    sl.open_window("/usr/bin/chrome", "/tmp/p", "Agent", "a", "http://x",
+                   False, {}, bind_lifetime=True)
+    assert len(adopted) == 1

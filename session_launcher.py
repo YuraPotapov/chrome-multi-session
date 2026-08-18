@@ -1003,6 +1003,100 @@ def _preexec_die_with_parent():
     except (OSError, AttributeError):
         pass  # non-Linux libc or prctl missing: best-effort, skip silently
 
+
+# Windows job-object constants (winnt.h). The extended-limit struct is passed by
+# class 9, and bit 0x2000 of its LimitFlags is what makes the kernel kill every
+# member when the last handle to the job closes.
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+#: Created once, on first use, and never closed on purpose: the handle closing is
+#: precisely the signal that kills the windows, so it must live exactly as long as
+#: the launcher process does.
+_windows_job = None
+
+
+def _windows_kill_on_close_job():
+    """A job object whose members die when this launcher does. None off Windows.
+
+    Windows has no PR_SET_PDEATHSIG. What it has is a job: put every browser in
+    one, mark it kill-on-close, and the kernel tears the whole set down when the
+    last handle goes - which happens when this process exits, however it exits,
+    including a hard kill no Python handler could catch. That is the same promise
+    the Linux path makes, made by the other operating system's own mechanism.
+
+    Deliberately not used with --detach, where the windows are meant to outlive
+    us. Best-effort: a machine that refuses the call gets windows that may
+    outlive a hard kill, which is what it would have had anyway.
+    """
+    global _windows_job
+    if os.name != "nt":
+        return None
+    if _windows_job is not None:
+        return _windows_job
+    try:
+        import ctypes.wintypes as wintypes
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [("ReadOperationCount", ctypes.c_ulonglong),
+                        ("WriteOperationCount", ctypes.c_ulonglong),
+                        ("OtherOperationCount", ctypes.c_ulonglong),
+                        ("ReadTransferCount", ctypes.c_ulonglong),
+                        ("WriteTransferCount", ctypes.c_ulonglong),
+                        ("OtherTransferCount", ctypes.c_ulonglong)]
+
+        class _BasicLimits(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong),
+                        ("PerJobUserTimeLimit", ctypes.c_longlong),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _ExtendedLimits(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", _BasicLimits),
+                        ("IoInfo", _IoCounters),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+        limits = _ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+                job, _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise OSError(ctypes.get_last_error(), "SetInformationJobObject failed")
+    except (OSError, AttributeError, ImportError) as exc:
+        log.debug("No kill-on-close job object (%s); windows may outlive a hard "
+                  "kill of the launcher.", exc)
+        _windows_job = False        # asked and answered; do not try again
+        return None
+    _windows_job = job
+    return job
+
+
+def _adopt_into_windows_job(proc):
+    """Put one launched browser into the kill-on-close job, if there is one."""
+    job = _windows_kill_on_close_job()
+    handle = getattr(proc, "_handle", None)
+    if not job or handle is None:
+        return
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if not kernel32.AssignProcessToJobObject(job, int(handle)):
+            log.debug("Could not adopt pid %s into the job object (%s).",
+                      proc.pid, ctypes.get_last_error())
+    except (OSError, AttributeError):
+        pass
+
 # Keychain items Chrome/Chromium store their macOS "Safe Storage" secret under.
 _MACOS_KEYCHAIN_ITEMS = (("Chrome Safe Storage", "Chrome"),
                          ("Chromium Safe Storage", "Chromium"))
@@ -1709,11 +1803,17 @@ def read_commands(windows_by_session):
             log.warning("Ignoring an unknown control command: %r", command)
 
 
-def open_window(chrome, profile, cls, login, url, debug_port, spawn_kwargs):
+def open_window(chrome, profile, cls, login, url, debug_port, spawn_kwargs,
+                bind_lifetime=False):
     """Start one Chrome on one profile and announce it. Returns the Popen.
 
     Split out of the launch loop because a --run-tests run may open a window long
     after its profile was prepared - see :class:`WindowSource`.
+
+    ``bind_lifetime`` ties the window to this launcher: on Windows it joins the
+    kill-on-close job, so a hard kill takes the browsers with it. False for
+    --detach, where the windows are meant to outlive us. On Linux the same tie is
+    made by the child itself through preexec_fn, so this does nothing there.
     """
     clear_devtools_port(profile)  # so --run-tests cannot attach to a dead/reused port
     log.info("Launching %-8s (login: %s)", cls, login)
@@ -1749,6 +1849,13 @@ def open_window(chrome, profile, cls, login, url, debug_port, spawn_kwargs):
         # mode this also arms PR_SET_PDEATHSIG (see spawn_kwargs above).
         **spawn_kwargs,
     )
+    # The Windows half of the same promise: on Linux the child arms
+    # PR_SET_PDEATHSIG for itself in preexec_fn, which Windows has no equivalent
+    # of, so the parent puts it in a kill-on-close job instead. Passed in rather
+    # than read off spawn_kwargs, which on Windows looks identical with and
+    # without --detach and so cannot answer "should this outlive us?".
+    if bind_lifetime:
+        _adopt_into_windows_job(proc)
     _emit("window.launched", login=login, cls=cls, pid=proc.pid,
           profile=profile, session=os.path.basename(profile))
     return proc
@@ -1770,10 +1877,11 @@ class WindowSource:
     """
 
     def __init__(self, chrome, url, spawn_kwargs, procs, stagger_s=0.4,
-                 by_session=None):
+                 by_session=None, bind_lifetime=True):
         self._chrome = chrome
         self._url = url
         self._spawn_kwargs = spawn_kwargs
+        self._bind_lifetime = bind_lifetime
         self._procs = procs          # shared with close_all; appended under the lock
         self._names = {}             # proc -> cls, so close() can name what it closes
         self._by_session = by_session   # session name -> Popen, for --control
@@ -1787,7 +1895,8 @@ class WindowSource:
         # inside another's profile setup is how DevToolsActivePort races appear.
         with self._lock:
             proc = open_window(self._chrome, profile, cls, login, self._url,
-                               debug_port=True, spawn_kwargs=self._spawn_kwargs)
+                               debug_port=True, spawn_kwargs=self._spawn_kwargs,
+                               bind_lifetime=self._bind_lifetime)
             self._procs.append((cls, proc))
             self._names[proc] = cls
             if self._by_session is not None:
@@ -1803,6 +1912,33 @@ class WindowSource:
         closed any other way loses it.
         """
         close_all([(self._names.get(proc, "session"), proc)])
+
+
+def force_kill(proc):
+    """Kill a browser that ignored SIGTERM, and its helpers with it.
+
+    On POSIX the whole process group goes: by this point Chrome has stopped
+    managing its renderers, and killing the leader alone leaves them behind.
+
+    ``os.killpg`` and ``os.getpgid`` do not exist on Windows at all, and the
+    ``except`` here used to name only ProcessLookupError and PermissionError -
+    so the AttributeError went straight up and took the teardown with it. That
+    is reachable on any non-POSIX platform the moment one window outlasts the
+    15-second grace period. On Windows the browser and its children are held in
+    a job object instead (see ``_windows_kill_on_close_job``), so terminating
+    the one process is enough; ``proc.kill`` is also the honest fallback where
+    the group call is refused.
+    """
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
 
 
 def close_all(procs):
@@ -1830,10 +1966,7 @@ def close_all(procs):
             _emit("window.exited", cls=cls, pid=proc.pid, returncode=proc.returncode)
         except subprocess.TimeoutExpired:
             _emit("window.killed", cls=cls, pid=proc.pid)
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                proc.kill()
+            force_kill(proc)
 
 
 def keep_open_until_closed(procs):
@@ -2499,7 +2632,8 @@ def main():
             sessions.append((cls, None, profile, login, origin, user_tests))
             continue
         proc = open_window(chrome, profile, cls, login, url,
-                           bool(run_tests or recorder), spawn_kwargs)
+                           bool(run_tests or recorder), spawn_kwargs,
+                           bind_lifetime=not detach)
         procs.append((cls, proc))
         # Keyed the way the engine and the event stream name a session, so a
         # "stop this one" command can be addressed to what the user is looking at.
@@ -2564,7 +2698,8 @@ def main():
                                overlay_components=overlay_components, report=report_config,
                                jobs=len(sessions) if jobs == "all" else jobs,   # "auto" passes through
                                windows=WindowSource(chrome, url, spawn_kwargs, procs,
-                                                    by_session=windows_by_session)
+                                                    by_session=windows_by_session,
+                                                    bind_lifetime=not detach)
                                        if staged else None)
         except KeyboardInterrupt:
             stopped = True
