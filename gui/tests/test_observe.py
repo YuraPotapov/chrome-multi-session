@@ -21,6 +21,13 @@ from cms_gui.pages.log import LIVE, LogPage
 from cms_gui.settings import Settings
 
 
+#: The profile folder a run writes its artifacts under. The launcher builds this
+#: name with session_dir_for(), which keeps ":" on POSIX and replaces it on
+#: Windows because NTFS has no such filename - so a fixture that hardcodes the
+#: POSIX spelling cannot even create its own directories there.
+SESSION = "localhost_8069-admin" if os.name == "nt" else "localhost:8069-admin"
+
+
 class FakeSettings:
     """Settings without QSettings, so a test's memory is its own."""
 
@@ -35,7 +42,7 @@ def history(tmp_path, qapp):
 
 
 def _run_dir(tmp_path, name, files=("result.json", "screenshot.png")):
-    directory = tmp_path / "reports" / name / "localhost:8069-admin" / "auth.login"
+    directory = tmp_path / "reports" / name / SESSION / "auth.login"
     directory.mkdir(parents=True)
     for index, filename in enumerate(files):
         path = directory / filename
@@ -145,8 +152,7 @@ def test_a_selection_the_user_made_survives_a_rescan(history, tmp_path, qapp):
     _record(history, tmp_path, "20260813-100000")
     page = ArtifactsPage(FakeSettings())
     page.set_history(history)
-    target = os.path.join(page._shown_dir, "localhost:8069-admin", "auth.login",
-                          "result.json")
+    target = os.path.join(page._shown_dir, SESSION, "auth.login", "result.json")
 
     assert page._select_path(target)
     page.rescan()

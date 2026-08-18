@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidg
                                QListWidgetItem, QPushButton, QSizePolicy, QSpinBox,
                                QVBoxLayout, QWidget)
 
-from . import theme
+from . import icons, theme
 
 
 class BlueprintPanel(QFrame):
@@ -149,7 +149,7 @@ class Stepper(QWidget):
         self._match_heights()
 
     def _button(self, mark, edge, step):
-        button = QPushButton(theme.glyph(mark))
+        button = icons.button(QPushButton(""), mark)
         button.setProperty("variant", "step")
         button.setProperty("edge", edge)
         button.setCursor(Qt.PointingHandCursor)
@@ -409,9 +409,9 @@ class Disclosure(QWidget):
         # A chevron that turns: pointing down at an open section, right at a
         # folded one. Whatever the mark, it has to say "this opens" while the
         # section is shut, which is the state most people meet it in.
-        self.button.setText("%s  %s" % (theme.glyph("disclosure_open") if checked
-                                        else theme.glyph("disclosure_closed"),
-                                        self._title))
+        icons.button(self.button,
+                     "disclosure_open" if checked else "disclosure_closed",
+                     self._title)
         self.toggled.emit(checked)
 
 

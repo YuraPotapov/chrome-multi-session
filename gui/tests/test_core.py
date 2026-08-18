@@ -84,6 +84,64 @@ def test_a_packaged_core_runs_in_the_users_data_directory(packaged, tmp_path):
     assert core.config_path == str(tmp_path / "data" / "users.json")
 
 
+def test_the_data_directory_is_created_before_a_core_is_spawned(packaged, tmp_path):
+    # A working directory that does not exist stops the process from starting at
+    # all - WinError 267 on Windows - and the core cannot create the directory
+    # it is being started in. First launch of an installed build is exactly that
+    # case: nothing has made ~/ChromeMultiSession yet.
+    core = core_mod.Core()
+    assert not (tmp_path / "data").exists()
+    assert core.spawn_dir() == str(tmp_path / "data")
+    assert (tmp_path / "data").is_dir()
+
+
+def test_reading_root_creates_nothing(packaged, tmp_path):
+    # It is rendered in the Command page and the settings dialog; showing a path
+    # must not bring it into being.
+    assert core_mod.Core().root == str(tmp_path / "data")
+    assert not (tmp_path / "data").exists()
+
+
+def test_a_checkout_spawns_in_the_checkout_and_makes_no_data_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("CMS_HOME", str(tmp_path / "data"))
+    script = tmp_path / "checkout" / "session_launcher.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("", encoding="utf-8")
+    core = core_mod.Core(str(script), sys.executable)
+    assert core.spawn_dir() == str(tmp_path / "checkout")
+    assert not (tmp_path / "data").exists()
+
+
+def test_the_folder_chosen_at_install_time_is_where_the_core_runs(tmp_path, monkeypatch):
+    """The GUI must reach the same answer as runtime_paths, or the two disagree
+    about where users.json is and the front-end edits a file the core ignores."""
+    monkeypatch.delenv("CMS_HOME", raising=False)
+    install = tmp_path / "install"
+    (install / "core").mkdir(parents=True)
+    (install / "gui").mkdir()
+    core_exe = install / "core" / core_mod.CORE_EXE
+    core_exe.write_text("", encoding="utf-8")
+    chosen = tmp_path / "D" / "CMS Projects"
+    (install / "cms.ini").write_text(
+        "[Paths]%sdata_dir=%s%s" % ("\n", chosen, "\n"), encoding="utf-8")
+
+    core = core_mod.Core(str(core_exe))
+    assert core.root == str(chosen)
+    assert core.config_path == str(chosen / "users.json")
+
+
+def test_cms_home_still_wins_in_the_gui_too(tmp_path, monkeypatch):
+    install = tmp_path / "install"
+    (install / "core").mkdir(parents=True)
+    core_exe = install / "core" / core_mod.CORE_EXE
+    core_exe.write_text("", encoding="utf-8")
+    (install / "cms.ini").write_text(
+        "[Paths]%sdata_dir=%s%s" % ("\n", tmp_path / "chosen", "\n"),
+        encoding="utf-8")
+    monkeypatch.setenv("CMS_HOME", str(tmp_path / "scratch"))
+    assert core_mod.Core(str(core_exe)).root == str(tmp_path / "scratch")
+
+
 def test_display_argv_shortens_both_shapes(packaged):
     assert core_mod.Core().display_argv("--describe") == (
         "%s --describe" % core_mod.CORE_EXE)

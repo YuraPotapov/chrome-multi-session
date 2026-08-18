@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QHeaderView, QLabel, QMessageBox, QPushButton,
                                QSplitter, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
-from .. import commands, history as history_mod, launch, theme, widgets
+from .. import commands, history as history_mod, icons, launch, theme, widgets
 
 HEADERS = ["When", "Type", "Environment", "Users", "Scenarios", "Result", "Took"]
 
@@ -108,16 +108,16 @@ class HistoryPage(QWidget):
         panel.layout().addWidget(self.command_line)
         panel.layout().addStretch(1)
 
-        self.rerun_button = QPushButton(theme.labelled("run", "Run again"))
+        self.rerun_button = icons.button(QPushButton("Run again"), "run")
         self.rerun_button.setProperty("variant", "primary")
         self.rerun_button.clicked.connect(self.rerun_selected)
         self.restore_button = QPushButton("Open in page")
         self.restore_button.clicked.connect(self.restore_selected)
-        self.log_button = QPushButton(theme.labelled("log", "Open log"))
+        self.log_button = icons.button(QPushButton("Open log"), "log")
         self.log_button.clicked.connect(self.open_log)
-        self.artifacts_button = QPushButton(theme.labelled("artifacts", "Open artifacts"))
+        self.artifacts_button = icons.button(QPushButton("Open artifacts"), "artifacts")
         self.artifacts_button.clicked.connect(self.open_artifacts)
-        self.copy_button = QPushButton(theme.labelled("copy", "Copy command"))
+        self.copy_button = icons.button(QPushButton("Copy command"), "copy")
         self.copy_button.clicked.connect(self.copy_command)
         self.delete_button = QPushButton("Delete")
         self.delete_button.clicked.connect(self.delete_selected)
@@ -241,10 +241,10 @@ class HistoryPage(QWidget):
             return
         from PySide6.QtWidgets import QApplication
         QApplication.clipboard().setText(self.command_line.text())
-        self.copy_button.setText(theme.labelled("pass", "Copied"))
+        icons.button(self.copy_button, "pass", "Copied")
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(1400, lambda: self.copy_button.setText(
-            theme.labelled("copy", "Copy command")))
+        QTimer.singleShot(1400, lambda: icons.button(
+            self.copy_button, "copy", "Copy command"))
 
     def delete_selected(self):
         entry = self.selected_entry()

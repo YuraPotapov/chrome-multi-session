@@ -298,10 +298,11 @@ def test_the_fold_is_remembered(page):
 def test_desktop_link_moved_into_the_overflow_menu(page):
     # Rare, per-configuration housekeeping: one unlabelled button, not a third
     # thing competing with Save and RUN for the same glance.
-    assert page.more_button.text() == theme.glyph("more")
+    assert page.more_button.text() == ""
+    assert not page.more_button.icon().isNull()
     assert [a.text() for a in page.more_menu.actions()] == ["Desktop Link"]
     assert page.desktop_link.isCheckable()
-    # The glyph IS the menu hint, so Qt must not draw its own arrow under it.
+    # The icon IS the menu hint, so Qt must not draw its own arrow under it.
     assert page.more_button.property("menuglyph") == "true"
 
 

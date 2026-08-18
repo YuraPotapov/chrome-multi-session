@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel,
                                QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from .. import history as history_mod, theme, widgets
+from .. import history as history_mod, icons, theme, widgets
 
 TEXT_SUFFIXES = (".json", ".log", ".txt", ".html", ".yaml", ".yml", ".md", ".csv")
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -56,7 +56,7 @@ class ArtifactsPage(QWidget):
         self.run_combo.setMaximumWidth(420)
         self.run_combo.currentIndexChanged.connect(self._run_chosen)
         self.run_label = widgets.elided_mono(NO_RUNS)
-        browse = QPushButton(theme.labelled("browse", "Open another folder"))
+        browse = icons.button(QPushButton("Open another folder"), "browse")
         browse.clicked.connect(self._browse)
         self.open_dir = QPushButton("Open folder")
         self.open_dir.clicked.connect(self._open_run_dir)

@@ -17,7 +17,7 @@ import re
 import signal
 import sys
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
 # "13:38:26  INFO    [dev-agent] message" - the launcher's console format, with
 # the session prefix the runner adds during parallel runs.
@@ -47,6 +47,7 @@ class LauncherProcess(QObject):
         self._proc = None
         self._out_buffer = ""
         self._err_buffer = ""
+        self._own_group = False
 
     # -- lifecycle ------------------------------------------------------------
     def is_running(self):
@@ -64,10 +65,19 @@ class LauncherProcess(QObject):
         proc.errorOccurred.connect(self._on_error)
         if working_dir:
             proc.setWorkingDirectory(working_dir)
-        if os.name == "nt":
+        self._own_group = False
+        if os.name == "nt" and hasattr(proc, "setCreateProcessArgumentsModifier"):
             # Own process group, so a CTRL_BREAK can be delivered on stop -
             # Windows has no SIGINT to send to another process.
+            #
+            # Guarded because PySide6 does not bind this Qt method (6.11 has
+            # only {set,}nativeArguments). Calling it unconditionally raised
+            # AttributeError here, before proc.start() - so on Windows every
+            # run died at "Launching...", with no process and no error. A
+            # missing process group must cost the graceful stop below, never
+            # the run itself.
             proc.setCreateProcessArgumentsModifier(_new_process_group)
+            self._own_group = True
         self._proc = proc
         self._out_buffer = self._err_buffer = ""
         proc.start(argv[0], list(argv[1:]))
@@ -85,14 +95,23 @@ class LauncherProcess(QObject):
             return
         pid = int(self._proc.processId())
         if os.name == "nt":
-            try:
-                import ctypes
-                # CTRL_BREAK_EVENT (1) - CTRL_C cannot be sent to another group.
-                ctypes.windll.kernel32.GenerateConsoleCtrlEvent(1, pid)
-                return
-            except Exception:
-                self._proc.terminate()
-                return
+            if self._own_group:
+                try:
+                    import ctypes
+                    # CTRL_BREAK_EVENT (1) - CTRL_C cannot be sent to another
+                    # group. A zero return means it was not delivered, so fall
+                    # through rather than report a stop that never happened.
+                    if ctypes.windll.kernel32.GenerateConsoleCtrlEvent(1, pid):
+                        return
+                except Exception:
+                    pass
+            # No group to signal: terminate() only reaches a process with a
+            # window, which a console core has none of, so the kill is what
+            # actually ends it. The windows go with it - the launcher puts every
+            # Chrome it starts in a kill-on-close job owned by that process.
+            self._proc.terminate()
+            QTimer.singleShot(2000, self._kill_if_still_running)
+            return
         try:
             os.kill(pid, signal.SIGINT)
         except (ProcessLookupError, PermissionError, OSError):
@@ -110,6 +129,11 @@ class LauncherProcess(QObject):
         line = json.dumps(command) + "\n"
         self._proc.write(line.encode("utf-8"))
         return True
+
+    def _kill_if_still_running(self):
+        """The second half of a Windows stop, once terminate() has had its go."""
+        if self.is_running():
+            self._proc.kill()
 
     def kill(self):
         if self.is_running():

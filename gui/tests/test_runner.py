@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cms_gui.runner import RunState, parse_log_line
+from cms_gui.runner import LauncherProcess, RunState, parse_log_line
 
 
 # ------------------------------------------------------------------ log lines
@@ -251,3 +251,36 @@ def test_the_scenarios_finishing_is_not_the_launcher_finishing(qapp):
     assert state.flows_finished is True and state.exit_code == 1
     state.reset()
     assert state.flows_finished is False
+
+
+# ------------------------------------------------------------------- starting
+
+def test_a_run_starts_even_where_qt_lacks_the_process_group_api(qapp, tmp_path):
+    """PySide6 does not bind QProcess.setCreateProcessArgumentsModifier.
+
+    Calling it unconditionally raised AttributeError inside start(), before the
+    process was ever spawned - so on Windows every run sat at "Launching..."
+    with nothing behind it. Losing the process group may cost the graceful
+    stop; it must never cost the run.
+    """
+    launcher = LauncherProcess()
+    assert not hasattr(launcher._proc or object(), "setCreateProcessArgumentsModifier")
+
+    script = tmp_path / "quiet.py"
+    script.write_text("print('{}')", encoding="utf-8")
+    assert launcher.start([sys.executable, str(script)]) is True
+    assert launcher._proc is not None
+    launcher._proc.waitForFinished(15000)
+
+
+def test_the_process_group_flag_records_whether_it_was_applied(qapp, tmp_path):
+    # stop() reads this: signalling a group that was never created reports a
+    # stop that did not happen.
+    launcher = LauncherProcess()
+    script = tmp_path / "quiet.py"
+    script.write_text("print('{}')", encoding="utf-8")
+    launcher.start([sys.executable, str(script)])
+    expected = os.name == "nt" and hasattr(launcher._proc,
+                                           "setCreateProcessArgumentsModifier")
+    assert launcher._own_group is expected
+    launcher._proc.waitForFinished(15000)

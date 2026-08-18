@@ -124,73 +124,13 @@ def color(name):
     return QColor(name)
 
 
-# --- glyphs -----------------------------------------------------------------
-# Never hard-code a symbol in a widget: the three platforms ship different
-# fonts, and a character the font lacks renders as an empty box. Each name below
-# is a list of candidates in order of preference, ending in something ASCII that
-# every font has; :func:`glyph` picks the first one the resolved body font can
-# actually draw.
-_GLYPH_CANDIDATES = {
-    "run": ("▶", "►", ">"),
-    "stop": ("■", "▪", "#"),
-    # No ASCII fallback on purpose: every stand-in for "copy" is a bare square,
-    # which reads as a missing-glyph box rather than as an icon. Better nothing.
-    "copy": ("⧉", ""),
-    "refresh": ("↻", "⟲", "~"),
-    "settings": ("⚙", "✱", "*"),
-    "environments": ("▤", "▦", "="),
-    "credentials": ("◍", "●", "o"),
-    "command": ("⌗", "#", "#"),
-    "launch": ("◈", "◆", "+"),
-    "scenarios": ("▷", "▹", ">"),
-    "history": ("◷", "◔", "@"),
-    "developer": ("◧", "◐", "%"),
-    "log": ("≡", "☰", "="),
-    "artifacts": ("◫", "▢", "[]"),
-    "pass": ("✓", "√", "+"),
-    "fail": ("✖", "×", "x"),
-    "running": ("▸", "►", ">"),
-    "pending": ("·", "•", "."),
-    "group": ("▸", "►", ">"),
-    "browse": ("…", "...", "..."),
-    # A folded section needs a mark that says "there is more here": a chevron
-    # that turns. The collapsed state used to be a middle dot, which reads as a
-    # bullet - decoration, not a control.
-    "disclosure_open": ("▾", "▼", "v"),
-    "disclosure_closed": ("▸", "►", ">"),
-    "minus": ("−", "–", "-"),
-    "plus": ("+",),
-    "check": ("✓", "√", "v"),
-    "more": ("⋮", "︙", ":"),
-}
-_glyph_cache = {}
-
-
-def glyph(name):
-    """The best available character for ``name`` in the resolved body font."""
-    if name in _glyph_cache:
-        return _glyph_cache[name]
-    candidates = _GLYPH_CANDIDATES.get(name, ("",))
-    chosen = candidates[-1]
-    try:
-        from PySide6.QtGui import QFont, QRawFont
-        font = QFont()
-        font.setFamilies(FONT_BODY)
-        raw = QRawFont.fromFont(font)
-        for candidate in candidates:
-            if all(raw.supportsCharacter(ord(c)) for c in candidate):
-                chosen = candidate
-                break
-    except Exception:
-        pass          # no QApplication yet, or a Qt build without QRawFont
-    _glyph_cache[name] = chosen
-    return chosen
-
-
-def labelled(name, text):
-    """"<glyph> text", or just the text when nothing suitable is installed."""
-    mark = glyph(name)
-    return "%s %s" % (mark, text) if mark else text
+# --- marks ------------------------------------------------------------------
+# There used to be a glyph table here: each icon was a character picked at
+# runtime from a list of candidates, by asking the resolved body font whether it
+# could draw it. On Windows the answer was almost always no, so the interface
+# fell back to its ASCII stand-ins - a rail reading "= o > +" and a toolbar
+# offering "* Settings". A program cannot fix that by choosing another
+# character, so the marks are painted instead: see cms_gui/icons.py.
 
 
 # --- stylesheet -------------------------------------------------------------
@@ -266,6 +206,20 @@ QPushButton[variant="nav"] {{
 }}
 QPushButton[variant="nav"]:hover {{ background: {n200}; }}
 QPushButton[variant="nav"][active="true"] {{
+    background: {a200}; color: {a900}; border-left: 3px solid {accent};
+}}
+/* The rail is built from tool buttons - the one widget Qt lays out flush left
+   when it carries both an icon and a label - so the nav rules above are
+   mirrored here. The reset of the global QToolButton look below matters as much
+   as the layout: without it the rail would inherit RUN's condensed mono. */
+QToolButton[variant="nav"] {{
+    text-align: left; border: none; border-left: 3px solid transparent;
+    font-family: {body}; font-size: 13px; font-weight: 400; letter-spacing: 0;
+    background: transparent; color: {text};
+    padding: 7px 13px; border-radius: 0; min-height: 20px;
+}}
+QToolButton[variant="nav"]:hover {{ background: {n200}; }}
+QToolButton[variant="nav"][active="true"] {{
     background: {a200}; color: {a900}; border-left: 3px solid {accent};
 }}
 /* RUN is a QToolButton so it can carry a menu, and Qt styles that as a separate

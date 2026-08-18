@@ -50,7 +50,45 @@ def needs_interpreter(path):
     return bool(path) and os.path.splitext(path)[1].lower() in (".py", ".pyw")
 
 
-def user_data_root():
+#: The installer writes the directory the user picked into this file, beside the
+#: installation. Mirrored from ``runtime_paths.INSTALL_CONFIG_NAME``.
+INSTALL_CONFIG_NAME = "cms.ini"
+INSTALL_CONFIG_KEY = "data_dir"
+
+
+def configured_data_root(program=""):
+    """The data directory chosen at install time, or "".
+
+    ``program`` is the core executable, because the answer belongs to the
+    *installation* that owns it: cms.ini sits one level above <install>/core/
+    and <install>/gui/, so either executable finds the same file.
+    """
+    anchor = os.path.abspath(program or sys.executable)
+    directory = os.path.dirname(anchor)
+    for where in (os.path.dirname(directory), directory):
+        path = os.path.join(where, INSTALL_CONFIG_NAME)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8-sig") as handle:
+                lines = handle.read().splitlines()
+        except OSError:
+            return ""
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith((";", "#", "[")):
+                continue
+            key, separator, value = line.partition("=")
+            if separator and key.strip().lower() == INSTALL_CONFIG_KEY:
+                value = value.strip().strip('"')
+                if value:
+                    return os.path.abspath(os.path.expanduser(
+                        os.path.expandvars(value)))
+        return ""
+    return ""
+
+
+def user_data_root(program=""):
     """Where an installed core keeps users.json, profiles and reports.
 
     A deliberate mirror of ``runtime_paths.user_data_root`` in the core, not an
@@ -60,7 +98,31 @@ def user_data_root():
     override = os.environ.get("CMS_HOME", "").strip()
     if override:
         return os.path.abspath(os.path.expanduser(override))
+    chosen = configured_data_root(program)
+    if chosen:
+        return chosen
     return os.path.join(os.path.expanduser("~"), "ChromeMultiSession")
+
+
+def ensure_user_data_root(program=""):
+    """The user's data directory, created if this is the first run.
+
+    The core creates its own directories on every start
+    (``runtime_paths.ensure_user_data_root``) - but it is spawned *with this
+    directory as its working directory*, and a working directory that does not
+    exist yet means the process never starts at all: WinError 267 on Windows,
+    ENOENT elsewhere. So the one directory the core cannot create for itself is
+    created here, and the rest is still left to the core.
+
+    Only the root, and only best-effort: seeding users.json stays the core's
+    job, and a home that cannot be written fails louder further along.
+    """
+    root = user_data_root(program)
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError:
+        pass
+    return root
 
 
 def frozen_core():
@@ -142,7 +204,18 @@ class Core:
             return ""
         if needs_interpreter(self.script):
             return os.path.dirname(self.script)
-        return user_data_root()
+        return user_data_root(self.script)
+
+    def spawn_dir(self):
+        """``root``, created if it does not exist yet, for handing to a child.
+
+        Reading ``root`` stays free of side effects - it is rendered in the
+        Command page and the settings dialog - so the directory is created here,
+        at the two places that actually start a core process.
+        """
+        if self.script and not needs_interpreter(self.script):
+            ensure_user_data_root(self.script)
+        return self.root or None
 
     @property
     def config_path(self):
@@ -178,7 +251,7 @@ class Core:
         """Run the launcher to completion; returns (returncode, stdout, stderr)."""
         try:
             proc = subprocess.run(self.argv(*args), capture_output=True, text=True,
-                                  timeout=timeout, cwd=self.root or None,
+                                  timeout=timeout, cwd=self.spawn_dir(),
                                   # Windows: never flash a console window.
                                   creationflags=getattr(subprocess,
                                                         "CREATE_NO_WINDOW", 0))

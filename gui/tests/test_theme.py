@@ -1,8 +1,9 @@
-"""The theme's glyph resolution.
+"""The interface's marks, and the sheets that paint around them.
 
 The GUI runs on three platforms with three different font sets, and a character
-the font lacks renders as an empty box. Nothing may hard-code a symbol: every
-one goes through :func:`theme.glyph`, which is what these tests check.
+the font lacks renders as an empty box - or, once a fallback is chosen for it,
+as "%" where a gear was meant to be. So no mark is a character at all any more:
+they are painted (cms_gui/icons.py), and these tests hold that line.
 """
 
 import os
@@ -10,51 +11,73 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cms_gui import theme
+from cms_gui import icons, theme
 
 GUI_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def test_every_glyph_resolves_to_something_the_font_can_draw(qapp):
-    from PySide6.QtGui import QFont, QRawFont
-    font = QFont()
-    font.setFamilies(theme.FONT_BODY)
-    raw = QRawFont.fromFont(font)
-    unusable = []
-    for name in theme._GLYPH_CANDIDATES:
-        chosen = theme.glyph(name)
-        if not all(raw.supportsCharacter(ord(c)) for c in chosen):
-            unusable.append("%s -> %r" % (name, chosen))
-    assert not unusable, ("these would render as empty boxes in %s: %s"
-                          % (raw.familyName(), ", ".join(unusable)))
+def test_every_mark_paints_something(qapp):
+    """The property a character could never guarantee: it is actually drawn."""
+    faint = []
+    for name in icons.DRAWINGS:
+        image = icons.pixmap(name, 32).toImage()
+        inked = sum(1 for y in range(32) for x in range(32)
+                    if image.pixelColor(x, y).alpha() > 0)
+        if inked < 20:
+            faint.append("%s (%d pixels)" % (name, inked))
+    assert not faint, "these would look blank: %s" % ", ".join(faint)
 
 
-def test_every_candidate_list_ends_in_something_ascii():
-    # The last entry is the guaranteed fallback, so it must not itself be exotic.
-    for name, candidates in theme._GLYPH_CANDIDATES.items():
-        assert candidates[-1].isascii(), name
+def test_every_mark_the_interface_asks_for_exists(qapp):
+    """A name with no drawing is a silently empty button, so none may be missing."""
+    import re
+    wanted = set()
+    for root, _dirs, files in os.walk(os.path.join(GUI_DIR, "cms_gui")):
+        for name in sorted(files):
+            if not name.endswith(".py") or name == "icons.py":
+                continue
+            with open(os.path.join(root, name), encoding="utf-8") as fh:
+                text = fh.read()
+            wanted |= set(re.findall(r"""icons\.(?:icon|pixmap|button)\(\s*[^,)]*,\s*["'](\w+)["']""", text))
+            wanted |= set(re.findall(r"""icons\.(?:icon|pixmap)\(["'](\w+)["']""", text))
+    assert wanted, "the scan found no icon call sites at all"
+    assert wanted <= set(icons.DRAWINGS), (
+        "no drawing for: %s" % ", ".join(sorted(wanted - set(icons.DRAWINGS))))
 
 
-def test_labelled_puts_the_glyph_before_the_text(qapp):
-    assert theme.labelled("run", "RUN").endswith("RUN")
-    assert len(theme.labelled("run", "RUN")) > len("RUN")
+def test_a_mark_is_the_widgets_icon_not_part_of_its_label(qapp):
+    from PySide6.QtWidgets import QPushButton
+    button = icons.button(QPushButton("Settings"), "settings")
+    assert button.text() == "Settings"       # no character smuggled into the text
+    assert not button.icon().isNull()
 
 
-def test_an_unknown_glyph_name_degrades_to_no_icon(qapp):
-    assert theme.glyph("no-such-icon") == ""
-    assert theme.labelled("no-such-icon", "Text") == "Text"
+def test_an_unknown_mark_is_blank_rather_than_a_crash(qapp):
+    # A page asking for a name nobody drew must not take the window down.
+    assert icons.pixmap("no-such-icon", 16).toImage().pixelColor(8, 8).alpha() == 0
+    assert icons.icon("no-such-icon").availableSizes()
 
 
-def test_no_module_hard_codes_a_symbol_outside_the_theme():
+def test_colour_is_the_callers_choice(qapp):
+    """Status marks are drawn in the colour of the status they report."""
+    red = icons.pixmap("fail", 32, theme.BAD).toImage()
+    seen = {red.pixelColor(x, y).name().lower()
+            for x in range(32) for y in range(32)
+            if red.pixelColor(x, y).alpha() > 200}
+    assert theme.BAD.lower() in seen
+
+
+def test_no_module_hard_codes_a_symbol():
     """Guards the rule, not just today's symbols.
 
-    A literal glyph in a page is exactly how the broken '⧉' and '⌗' got in: they
-    looked fine in the design's web font and rendered as boxes in DejaVu.
+    A literal glyph in a page is exactly how the broken '⧉' and '⌗' got
+    in: they looked fine in the design's web font, rendered as boxes in DejaVu,
+    and on Windows resolved to their ASCII stand-ins.
     """
     offenders = []
     for root, _dirs, files in os.walk(os.path.join(GUI_DIR, "cms_gui")):
         for name in sorted(files):
-            if not name.endswith(".py") or name == "theme.py":
+            if not name.endswith(".py"):
                 continue
             path = os.path.join(root, name)
             with open(path, encoding="utf-8") as fh:
@@ -66,7 +89,7 @@ def test_no_module_hard_codes_a_symbol_outside_the_theme():
                         # dash, ellipsis and middle dot used in prose do not.
                         if ord(char) > 0x2100:
                             offenders.append("%s:%d %r" % (name, number, char))
-    assert not offenders, ("use theme.glyph() instead of a literal: %s"
+    assert not offenders, ("draw it in icons.py instead of typing it: %s"
                            % ", ".join(offenders[:8]))
 
 

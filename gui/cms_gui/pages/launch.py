@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QFil
                                QLineEdit, QMenu, QMessageBox, QPushButton, QRadioButton,
                                QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
-from .. import launch, load as load_mod, store, theme, widgets
+from .. import icons, launch, load as load_mod, store, theme, widgets
 
 SCENARIO_MODES = [
     (launch.SCENARIOS_NONE, "Just open the windows",
@@ -57,7 +57,7 @@ class DesktopLinkDialog(QDialog):
         path_layout.setContentsMargins(0, 0, 0, 0)
         self.path_edit = QLineEdit(default_path)
         path_layout.addWidget(self.path_edit)
-        browse_btn = QPushButton(theme.glyph("browse"))
+        browse_btn = icons.button(QPushButton(""), "browse")
         browse_btn.setFixedWidth(38)
         browse_btn.clicked.connect(self._browse)
         path_layout.addWidget(browse_btn)
@@ -68,7 +68,7 @@ class DesktopLinkDialog(QDialog):
         icon_layout.setContentsMargins(0, 0, 0, 0)
         self.icon_edit = QLineEdit(default_icon)
         icon_layout.addWidget(self.icon_edit)
-        browse_icon_btn = QPushButton(theme.glyph("browse"))
+        browse_icon_btn = icons.button(QPushButton(""), "browse")
         browse_icon_btn.setFixedWidth(38)
         browse_icon_btn.clicked.connect(self._browse_icon)
         icon_layout.addWidget(browse_icon_btn)
@@ -394,7 +394,7 @@ class LaunchSessionsPage(QWidget):
             edit.setProperty("mono", True)
             edit.setPlaceholderText("(default)")
             edit.textChanged.connect(self._changed)
-            browse = QPushButton(theme.glyph("browse"))
+            browse = icons.button(QPushButton(""), "browse")
             browse.setFixedWidth(38)
             browse.clicked.connect(lambda _c=False, e=edit: self._browse(e))
             self.dir_edits[key] = edit
@@ -433,9 +433,9 @@ class LaunchSessionsPage(QWidget):
         # never mid-flow - so it folds into one unlabelled button rather than
         # standing beside Save and RUN competing for the same glance.
         self.more_button = QToolButton()
-        self.more_button.setText(theme.glyph("more"))
+        icons.button(self.more_button, "more", "")
         self.more_button.setPopupMode(QToolButton.InstantPopup)
-        self.more_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.more_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.more_button.setProperty("menuglyph", "true")
         self.more_button.setToolTip("More options for this configuration")
         self.more_menu = QMenu(self.more_button)
@@ -446,7 +446,10 @@ class LaunchSessionsPage(QWidget):
         self.desktop_link.triggered.connect(self._toggle_desktop_link)
         self.more_menu.addAction(self.desktop_link)
         self.more_button.setMenu(self.more_menu)
-        self.run_button = QPushButton(theme.labelled("run", "RUN"))
+        # theme.BG, not the default ink: a primary button paints its label in
+        # the background colour against the accent fill, and the mark beside it
+        # has to be the same colour or it reads as a different control.
+        self.run_button = icons.button(QPushButton("RUN"), "run", color=theme.BG)
         self.run_button.setProperty("variant", "primary")
         self.run_button.clicked.connect(self.run_requested.emit)
         # Built by hand rather than with widgets.row: the summary is the long part
@@ -675,8 +678,9 @@ class LaunchSessionsPage(QWidget):
         which of these have anything to say - two writers would fight over it and
         the next edit would quietly unfold what was just folded.
         """
-        self.summary_toggle.setText(theme.labelled(
-            "disclosure_open" if expanded else "disclosure_closed", "SUMMARY"))
+        icons.button(self.summary_toggle,
+                     "disclosure_open" if expanded else "disclosure_closed",
+                     "SUMMARY")
         if self._building:
             return          # _restore() settles the footer once, at the end
         self.settings.launch_summary_expanded = expanded

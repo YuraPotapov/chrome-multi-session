@@ -1,5 +1,6 @@
 """Application entry point."""
 
+import os
 import sys
 
 from PySide6.QtCore import Qt, QRect
@@ -9,7 +10,6 @@ from PySide6.QtWidgets import QApplication, QSplashScreen
 from . import icon, theme
 from .settings import Settings
 from .main_window import MainWindow
-import os
 
 #: Edge of the splash, in px. The artwork is square and readable at this size;
 #: bigger starts to look like a window rather than a splash.
@@ -56,8 +56,28 @@ class Splash(QSplashScreen):
                          Qt.AlignVCenter | Qt.AlignLeft, self.message())
 
 
+def _claim_windows_identity():
+    """Tell Windows this process is its own application, not its host's.
+
+    Without an explicit AppUserModelID the taskbar attributes the window to
+    whatever launched it - python.exe when run from a checkout - and shows that
+    program's icon and grouping instead of ours. Set before the first window
+    exists, which is the only time it takes effect. Silent everywhere else, and
+    on any Windows that will not answer: an icon is not worth an exception.
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "chrome-multi-session.gui")
+    except Exception:
+        pass
+
+
 def main(argv=None):
     argv = list(sys.argv if argv is None else argv)
+    _claim_windows_identity()
     app = QApplication(argv)
     app.setApplicationName("chrome-multi-session GUI")
     app.setOrganizationName("chrome-multi-session")

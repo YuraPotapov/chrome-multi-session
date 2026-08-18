@@ -9,10 +9,10 @@ an event the launcher sent.
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QLabel, QProgressBar, QScrollArea, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QProgressBar, QScrollArea,
+                               QVBoxLayout, QWidget)
 
-from .. import theme, widgets
+from .. import icons, theme, widgets
 
 STATE_TAGS = {
     "launching": ("LAUNCHING", "neutral"),
@@ -24,10 +24,33 @@ STATE_TAGS = {
     "closed": ("CLOSED", "neutral"),
 }
 
+#: How wide one level of the step tree is indented. Was four spaces of a
+#: monospaced string, and is now a margin, because the mark beside it is a
+#: painted icon rather than a character in the same run of text.
+INDENT_PX = 14
+
+#: Status -> (icon name, colour token). The mark and the colour say the same
+#: thing twice on purpose: colour alone is not something everyone can read.
+STATUS_MARKS = {
+    "pass": ("pass", theme.OK),
+    "fail": ("fail", theme.BAD),
+    "error": ("fail", theme.BAD),
+    "running": ("running", theme.ACCENT),
+}
+
+
 def _mark(status):
-    """Status character, resolved against the installed font."""
-    name = {"error": "fail"}.get(status, status)
-    return theme.glyph(name if name in ("pass", "fail", "running") else "pending")
+    """(icon name, colour) for a step in ``status``."""
+    return STATUS_MARKS.get(status, ("pending", theme.NEUTRAL[500]))
+
+
+def _mark_label(name, colour, size=13):
+    """The mark itself: a painted icon in a label, so no font has to have it."""
+    label = QLabel()
+    label.setPixmap(icons.pixmap(name, size, colour))
+    label.setFixedWidth(size + 6)
+    label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+    return label
 
 
 class SessionPanel(widgets.BlueprintPanel):
@@ -123,12 +146,17 @@ def _scenario_header(scenario, run):
     counts = ""
     if run.get("total"):
         counts = "   %s/%s" % (run.get("done", 0), run["total"])
-    label = QLabel("%s  %s%s" % (theme.glyph(mark), scenario, counts))
-    colour = {"pass": theme.OK, "fail": theme.BAD, "error": theme.BAD,
-              "running": theme.ACCENT}.get(status, theme.NEUTRAL[500])
+    name, colour = _mark(status)
+    label = QLabel("%s%s" % (scenario, counts))
     label.setStyleSheet("font-family: %s; font-size: 12px; font-weight: 600; "
-                        "color: %s; padding-top: 6px;" % (theme.MONO_CSS, colour))
-    return label
+                        "color: %s;" % (theme.MONO_CSS, colour))
+    row = QWidget()
+    line = QHBoxLayout(row)
+    line.setContentsMargins(0, 6, 0, 0)
+    line.setSpacing(0)
+    line.addWidget(_mark_label(name, colour))
+    line.addWidget(label, 1)
+    return row
 
 
 def _walk(node, depth=0):
@@ -144,15 +172,16 @@ def _step_row(node, depth, session):
     state = session["steps"].get(index, {}) if is_step else {}
     status = state.get("status", "pending" if is_step else "")
     row = QWidget()
-    line = QVBoxLayout(row)
-    line.setContentsMargins(0, 0, 0, 0)
+    line = QHBoxLayout(row)
+    line.setContentsMargins(depth * INDENT_PX, 0, 0, 0)
+    line.setSpacing(0)
 
-    mark = _mark(status) if is_step else theme.glyph("group")
-    text = "%s%s  %s" % ("    " * depth, mark, node.get("label", ""))
-    label = QLabel(text)
     if is_step:
-        colour = {"pass": theme.OK, "fail": theme.BAD, "error": theme.BAD,
-                  "running": theme.ACCENT}.get(status, theme.NEUTRAL[500])
+        name, colour = _mark(status)
+    else:
+        name, colour = "group", theme.ACCENT_RAMP[800]
+    label = QLabel(node.get("label", ""))
+    if is_step:
         label.setStyleSheet("font-family: %s; font-size: 12px; color: %s;"
                             % (theme.MONO_CSS, colour))
     else:
@@ -160,7 +189,8 @@ def _step_row(node, depth, session):
                             "color: %s;" % (theme.HEADING_CSS, theme.ACCENT_RAMP[800]))
     if state.get("message") and status in ("fail", "error"):
         label.setToolTip(state["message"])
-    line.addWidget(label)
+    line.addWidget(_mark_label(name, colour, 12 if is_step else 13))
+    line.addWidget(label, 1)
     return row
 
 

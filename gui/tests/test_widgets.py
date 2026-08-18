@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cms_gui import theme, widgets
+from cms_gui import icons, theme, widgets
 
 
 # ------------------------------------------------------------------- stepper
@@ -69,13 +69,16 @@ def test_a_folded_section_says_it_opens(qapp):
     has to be there in the closed one, where most people meet it.
     """
     section = widgets.Disclosure("Advanced")
-    closed = section.button.text()
+    closed = section.button.icon().pixmap(16).toImage()
     section.set_expanded(True)
-    opened = section.button.text()
-    assert closed.endswith("Advanced") and opened.endswith("Advanced")
-    assert closed != opened
-    assert closed.split()[0] == theme.glyph("disclosure_closed")
-    assert opened.split()[0] == theme.glyph("disclosure_open")
+    opened = section.button.icon().pixmap(16).toImage()
+    # The label never moves; the chevron is what turns, and it is an icon now
+    # rather than a character the font may not have.
+    assert section.button.text() == "Advanced"
+    assert not closed.isNull() and closed != opened
+    # ...and each state shows the chevron that belongs to it.
+    assert closed == icons.pixmap("disclosure_closed", 16).toImage()
+    assert opened == icons.pixmap("disclosure_open", 16).toImage()
 
 
 def test_folding_hides_the_body(qapp):

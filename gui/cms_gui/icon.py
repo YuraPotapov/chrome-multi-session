@@ -16,6 +16,7 @@ build needs.
 """
 
 import os
+import struct
 import sys
 
 from PySide6.QtCore import QRectF, Qt
@@ -106,16 +107,45 @@ def write_png(path, size=256):
 
 
 def write_ico(path, sizes=(16, 24, 32, 48, 64, 128, 256)):
-    """A multi-size .ico, which is what a Windows build wants."""
-    images = [pixmap(size).toImage() for size in sizes]
-    icon = QIcon()
-    for size in sizes:
-        icon.addPixmap(pixmap(size))
-    # Qt writes ICO from a QPixmap; the largest one carries, and Windows scales
-    # the rest, so the individual PNGs are written alongside for build systems
-    # that want to assemble the ICO themselves.
-    del images
-    return pixmap(max(sizes)).save(path, "ICO")
+    """A genuinely multi-size .ico - every size painted at its own size.
+
+    Assembled here rather than handed to Qt's ICO writer, which takes a single
+    pixmap: that wrote one 256px image and left Windows to scale it down, which
+    is exactly what the 16px taskbar icon must not be. The container is the
+    PNG-in-ICO form every Windows since Vista reads.
+    """
+    from PySide6.QtCore import QBuffer, QIODevice
+
+    encoded = []
+    for size in sorted(sizes):
+        # The buffer owns its bytes: handing QBuffer a temporary QByteArray
+        # leaves Qt writing into something Python has already freed.
+        buffer = QBuffer()
+        buffer.open(QIODevice.WriteOnly)
+        if not pixmap(size).save(buffer, "PNG"):
+            return False
+        buffer.close()
+        encoded.append((size, bytes(buffer.data())))
+
+    header = struct.pack("<HHH", 0, 1, len(encoded))     # reserved, type=icon, count
+    offset = len(header) + 16 * len(encoded)
+    directory, payload = b"", b""
+    for size, data in encoded:
+        directory += struct.pack(
+            "<BBBBHHII",
+            0 if size >= 256 else size,      # 0 means 256 in this field
+            0 if size >= 256 else size,
+            0, 0,                            # palette, reserved
+            1, 32,                           # planes, bits per pixel
+            len(data), offset)
+        payload += data
+        offset += len(data)
+    try:
+        with open(path, "wb") as handle:
+            handle.write(header + directory + payload)
+    except OSError:
+        return False
+    return True
 
 
 def main(argv=None):

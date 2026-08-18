@@ -19,10 +19,10 @@ from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QInputDialog, QLabel,
                                QMainWindow, QMenu,
-                               QMessageBox, QPushButton, QStackedWidget,
+                               QMessageBox, QPushButton, QSizePolicy, QStackedWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-from . import (commands, core as core_mod, history as history_mod, icon,
+from . import (commands, core as core_mod, history as history_mod, icon, icons,
                launch as launch_mod, load as load_mod, theme, widgets)
 from .loader import LoaderThread
 from . import version as gui_version
@@ -39,7 +39,7 @@ from .pages.run import RunPage
 from .pages.scenarios import ScenariosPage
 from .pages.settings_dialog import SettingsDialog
 
-# (page key, label, glyph name resolved by theme.glyph at build time)
+# (page key, label, icon name painted by icons.icon)
 CONFIGURE = [("environments", "Environments", "environments"),
              ("credentials", "Credentials", "credentials"),
              ("scenarios", "Scenarios", "scenarios"),
@@ -81,7 +81,12 @@ SPLASH_MAX_MS = 15000
 
 def _run_label(text):
     """RUN. The menu's arrow is drawn by Qt in the button's own arrow half."""
-    return theme.labelled("run", text)
+    return text
+
+
+def _run_icon():
+    """The play mark, in the ink a primary button paints its label in."""
+    return icons.icon("run", theme.BG)
 
 
 def _close_warning(windows):
@@ -238,10 +243,11 @@ class MainWindow(QMainWindow):
         # stays one click, while recording is the same launch with the recorder
         # available - a mode of running, not a separate thing to go and find.
         self.run_button = QToolButton()
+        self.run_button.setIcon(_run_icon())
         self.run_button.setText(_run_label("RUN"))
         self.run_button.setProperty("variant", "primary")
         self.run_button.setPopupMode(QToolButton.MenuButtonPopup)
-        self.run_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.run_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.run_button.setProperty("hasmenu", "true")   # reserves the arrow's half
         self.run_button.clicked.connect(self.start_run)
         self.run_menu = QMenu(self.run_button)
@@ -259,9 +265,10 @@ class MainWindow(QMainWindow):
         # window you are actually looking at. Same shape, because "stop" reads as
         # one idea with a narrower version of itself inside it.
         self.stop_button = QToolButton()
-        self.stop_button.setText(theme.labelled("stop", "Stop"))
+        self.stop_button.setText("Stop")
+        icons.button(self.stop_button, "stop")
         self.stop_button.setPopupMode(QToolButton.MenuButtonPopup)
-        self.stop_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.stop_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.stop_button.setProperty("hasmenu", "true")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_run)
@@ -270,9 +277,9 @@ class MainWindow(QMainWindow):
         # is running, and stale entries would offer to stop what is already gone.
         self.stop_menu.aboutToShow.connect(self._fill_stop_menu)
         self.stop_button.setMenu(self.stop_menu)
-        self.copy_button = QPushButton(theme.labelled("copy", "Copy command"))
+        self.copy_button = icons.button(QPushButton("Copy command"), "copy")
         self.copy_button.clicked.connect(lambda: self.command.copy_command())
-        self.refresh_button = QPushButton(theme.labelled("refresh", "Refresh"))
+        self.refresh_button = icons.button(QPushButton("Refresh"), "refresh")
         self.refresh_button.clicked.connect(self.refresh_inventory)
         self.describe_label = widgets.mono("")
         # A checkable button rather than a menu item alone: which mode you are in
@@ -282,7 +289,7 @@ class MainWindow(QMainWindow):
         self.developer_button.setCheckable(True)
         self.developer_button.setCursor(Qt.PointingHandCursor)
         self.developer_button.toggled.connect(self.set_developer_mode)
-        settings_button = QPushButton(theme.labelled("settings", "Settings"))
+        settings_button = icons.button(QPushButton("Settings"), "settings")
         settings_button.clicked.connect(self.open_settings)
         bar_layout.addWidget(widgets.row(
             self.run_button, self.stop_button, widgets.vline(), self.copy_button,
@@ -321,8 +328,15 @@ class MainWindow(QMainWindow):
             heading.setContentsMargins(RAIL_PADDING, 8, RAIL_PADDING, 6)
             widest = max(widest, heading.sizeHint().width() - HEADING_TRIM)
             rail_layout.addWidget(heading)
-            for key, label, glyph in entries:
-                button = QPushButton("%s   %s" % (theme.glyph(glyph), label))
+            for key, label, mark in entries:
+                # A QToolButton, not a QPushButton: a push button centres its
+                # icon and label as one block whatever text-align says, so the
+                # rail's marks would slide left and right with the length of the
+                # word beside them. Text-beside-icon on a tool button is the one
+                # arrangement Qt keeps flush left.
+                button = icons.button(QToolButton(), mark, label)
+                button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+                button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 button.setProperty("variant", "nav")
                 button.setCursor(Qt.PointingHandCursor)
                 button.clicked.connect(lambda _c=False, k=key: self.show_page(k))
@@ -487,9 +501,8 @@ class MainWindow(QMainWindow):
         limit, ceiling = workers["limit"], workers["ceiling"]
         held_back = limit is not None and ceiling is not None and limit < ceiling
         self.workers_label.setText(
-            "<span style='color: %s'>%s %s of %s</span>"
-            % (theme.WARN if held_back else theme.NEUTRAL[600],
-               theme.glyph("run"), limit, ceiling))
+            "<span style='color: %s'>%s of %s</span>"
+            % (theme.WARN if held_back else theme.NEUTRAL[600], limit, ceiling))
         self.workers_label.setToolTip(
             "%s %s running at once, out of %s.\nLast change: %s"
             % (limit, workers["unit"], ceiling, workers["why"] or "none yet"))
@@ -533,9 +546,8 @@ class MainWindow(QMainWindow):
             control.blockSignals(True)
             control.setChecked(enabled)
             control.blockSignals(False)
-        self.developer_button.setText(
-            theme.labelled("developer", "Developer mode: on" if enabled
-                           else "Developer mode: off"))
+        icons.button(self.developer_button, "developer",
+                     "Developer mode: on" if enabled else "Developer mode: off")
         self.developer_button.setProperty("variant", "primary" if enabled else "")
         self.developer_button.style().unpolish(self.developer_button)
         self.developer_button.style().polish(self.developer_button)
@@ -847,7 +859,7 @@ class MainWindow(QMainWindow):
                                  % (state.get("--jobs") or "1",
                                     state.get("--run-tests") or "(launch only)"))
         self.show_page("run")
-        self.process.start(argv, working_dir=self.core.root or None)
+        self.process.start(argv, working_dir=self.core.spawn_dir())
 
     def _history_payload(self, source, page, args, argv):
         """(kind, entry fields) for the run about to start.

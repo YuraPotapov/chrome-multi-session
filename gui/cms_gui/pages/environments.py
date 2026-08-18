@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QPushButton, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from .. import theme, widgets
+from .. import icons, theme, widgets
 
 
 class EnvironmentsPage(QWidget):
@@ -71,7 +71,7 @@ class EnvironmentsPage(QWidget):
             edit.setPlaceholderText("(core default)")
             edit.editingFinished.connect(
                 lambda k=key, e=edit: self._save_directory(k, e.text()))
-            browse = QPushButton(theme.glyph("browse"))
+            browse = icons.button(QPushButton(""), "browse")
             browse.setFixedWidth(38)
             browse.clicked.connect(lambda _c=False, k=key, e=edit: self._browse(k, e))
             self.dir_edits[key] = edit

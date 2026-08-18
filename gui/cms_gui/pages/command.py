@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QLineEdit, QListWidget, QListWidgetItem, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
-from .. import commands, theme, widgets
+from .. import commands, icons, theme, widgets
 
 
 class ScenarioPicker(QDialog):
@@ -128,10 +128,13 @@ class CommandPage(QWidget):
         self.preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.preview.setProperty("role", "preview")
         strip.addWidget(self.preview, 1)
-        self.copy_button = QPushButton(theme.labelled("copy", "Copy"))
+        self.copy_button = icons.button(QPushButton("Copy"), "copy")
         self.copy_button.clicked.connect(self.copy_command)
         strip.addWidget(self.copy_button)
-        self.run_button = QPushButton(theme.labelled("run", "RUN"))
+        # theme.BG, not the default ink: a primary button paints its label in
+        # the background colour against the accent fill, and the mark beside it
+        # has to be the same colour or it reads as a different control.
+        self.run_button = icons.button(QPushButton("RUN"), "run", color=theme.BG)
         self.run_button.setProperty("variant", "primary")
         self.run_button.clicked.connect(self.run_requested.emit)
         strip.addWidget(self.run_button)
@@ -185,7 +188,7 @@ class CommandPage(QWidget):
         self._controls[flag.name] = edit
 
         if flag.kind == "path":
-            browse = QPushButton(theme.glyph("browse"))
+            browse = icons.button(QPushButton(""), "browse")
             browse.setFixedWidth(38)
             browse.clicked.connect(lambda _c=False, e=edit: self._browse(e))
             return widgets.field(flag.name, widgets.row(edit, browse), flag.help)
@@ -194,7 +197,7 @@ class CommandPage(QWidget):
             pick.clicked.connect(self._pick_scenarios)
             return widgets.field(flag.name, widgets.row(edit, pick), flag.help)
         if flag.kind == "list" and flag.choices:
-            pick = QPushButton(theme.glyph("browse"))
+            pick = icons.button(QPushButton(""), "browse")
             pick.setFixedWidth(38)
             pick.clicked.connect(lambda _c=False, f=flag: self._pick_list(f))
             return widgets.field(flag.name, widgets.row(edit, pick), flag.help)
@@ -321,9 +324,9 @@ class CommandPage(QWidget):
     def copy_command(self):
         from PySide6.QtWidgets import QApplication
         QApplication.clipboard().setText(self.preview.text())
-        self.copy_button.setText(theme.labelled("pass", "Copied"))
+        icons.button(self.copy_button, "pass", "Copied")
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(1400, lambda: self.copy_button.setText(theme.labelled("copy", "Copy")))
+        QTimer.singleShot(1400, lambda: icons.button(self.copy_button, "copy", "Copy"))
 
     def set_running(self, running):
         self.run_button.setEnabled(not running)
