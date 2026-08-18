@@ -36,7 +36,10 @@ def problems(payload, expected_version):
 def main(argv):
     if len(argv) != 3:
         sys.exit(__doc__)
-    with open(argv[1], encoding="utf-8") as handle:
+    # utf-8-sig, not utf-8: a describe.json written by a Windows shell may carry
+    # a BOM, which json.load() refuses. Reading one is harmless where there
+    # isn't one.
+    with open(argv[1], encoding="utf-8-sig") as handle:
         payload = json.load(handle)
     found = problems(payload, argv[2])
     if found:

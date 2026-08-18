@@ -54,7 +54,9 @@ if ((-not $KeepVenv) -or (-not (Test-Path $Py))) {
     # downloaded browser - the adapter only ever connect_over_cdp's to the Chrome
     # already on the machine - so skip it and save ~400 MB.
     $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"
-    & $Pip install -q --upgrade pip wheel
+    # Through the interpreter, not pip.exe: on Windows pip cannot replace its own
+    # running executable ("To modify pip, please run ...") and the upgrade fails.
+    & $Py -m pip install -q --upgrade pip wheel
     & $Pip install -q -r (Join-Path $Root "requirements.txt") `
                       -r (Join-Path $Root "gui\requirements.txt") `
                       "pyinstaller>=6.6" pyinstaller-hooks-contrib
@@ -65,7 +67,19 @@ if ((-not $KeepVenv) -or (-not (Test-Path $Py))) {
 New-Item -ItemType Directory -Force -Path $Build | Out-Null
 Set-Content -Path (Join-Path $Build "VERSION") -Value $Version -Encoding ascii
 
-# -- 3. freeze ----------------------------------------------------------------
+# -- 3. icons -----------------------------------------------------------------
+# Before the freeze, not after: the .exe embeds icon.ico (see the specs), so it
+# has to exist by the time PyInstaller runs. Building it afterwards is how the
+# executables ended up carrying PyInstaller's default Python icon.
+Say "Rendering icons"
+Remove-Item -Recurse -Force $Icons -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $Icons | Out-Null
+Push-Location (Join-Path $Root "gui")
+& $Py -m cms_gui.icon $Icons | Out-Null
+Pop-Location
+if (-not (Test-Path (Join-Path $Icons "icon.ico"))) { Die "icon.ico was not rendered" }
+
+# -- 4. freeze ----------------------------------------------------------------
 Remove-Item -Recurse -Force (Join-Path $Build "dist"), (Join-Path $Build "pyi") `
             -ErrorAction SilentlyContinue
 foreach ($spec in @("core", "gui")) {
@@ -90,25 +104,21 @@ if (-not (Test-Path $GuiBin))  { Die "the GUI bundle was not produced" }
 $Node = Join-Path $Build "dist\core\_internal\playwright\driver\node.exe"
 if (-not (Test-Path $Node)) { Die "playwright's node driver is missing from the core bundle" }
 
-# -- 4. sanity-check the frozen core ------------------------------------------
+# -- 5. sanity-check the frozen core ------------------------------------------
 # Cheap, and it catches the two failures that are otherwise only visible to the
 # person who installs the package: a lazy import the spec did not list, and a
 # resource that did not make it into the bundle.
 Say "Checking the frozen core"
 $env:CMS_HOME = Join-Path $Build "smoke"
 & $CoreBin --version
-& $CoreBin --describe | Set-Content -Path (Join-Path $Build "describe.json") -Encoding utf8
-& $Py (Join-Path $PSScriptRoot "check_frozen.py") (Join-Path $Build "describe.json") $Version
+# Not Set-Content -Encoding utf8: Windows PowerShell 5.1 spells that with a BOM,
+# and json.load() rejects one. WriteAllText with a BOM-less encoder is the only
+# spelling that works on both PowerShell editions.
+$Describe = Join-Path $Build "describe.json"
+[System.IO.File]::WriteAllText($Describe, (& $CoreBin --describe | Out-String),
+                               (New-Object System.Text.UTF8Encoding($false)))
+& $Py (Join-Path $PSScriptRoot "check_frozen.py") $Describe $Version
 if ($LASTEXITCODE -ne 0) { Die "the frozen core is not healthy" }
-
-# -- 5. icons -----------------------------------------------------------------
-Say "Rendering icons"
-Remove-Item -Recurse -Force $Icons -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $Icons | Out-Null
-Push-Location (Join-Path $Root "gui")
-& $Py -m cms_gui.icon $Icons | Out-Null
-Pop-Location
-if (-not (Test-Path (Join-Path $Icons "icon.ico"))) { Die "icon.ico was not rendered" }
 
 # -- 6. the installer ---------------------------------------------------------
 if ($NoInstaller) {

@@ -39,6 +39,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; Per-machine when elevated, per-user when not: a QA machine is often locked
 ; down, and needing an administrator to try the tool is a reason not to try it.
 PrivilegesRequiredOverridesAllowed=dialog
+; An upgrade installs over the old copy rather than beside it, and keeps
+; the project folder the user picked last time (see DataDirPage).
+UsePreviousAppDir=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -58,12 +61,30 @@ Source: "{#RepoRoot}\build\dist\core\*"; DestDir: "{app}\core"; \
 Source: "{#RepoRoot}\build\dist\gui\*";  DestDir: "{app}\gui"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\build\VERSION";     DestDir: "{app}"; Flags: ignoreversion
+; The icon as a file as well as a resource inside the two .exe files. The
+; shortcuts below name it directly: Windows caches a shortcut's icon, and an
+; upgrade that only changes what is embedded in the executable can leave the
+; old one sitting on the desktop.
+Source: "{#RepoRoot}\build\icons\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
+
+[Dirs]
+; The user's own directory, made at install time so the app never has to ask
+; where to put its first report. uninsneveruninstall is the whole contract of
+; this folder: scenarios, reports, sessions and credentials outlive the program.
+Name: "{code:GetDataDir}"; Flags: uninsneveruninstall
+
+[INI]
+; How the installer tells the app where that folder is. Read by
+; runtime_paths.configured_data_root() in the core and cms_gui.core in the GUI.
+Filename: "{app}\cms.ini"; Section: "Paths"; Key: "data_dir"; \
+    String: "{code:GetDataDir}"; Flags: createkeyifdoesntexist uninsdeleteentry
 
 [Icons]
-Name: "{group}\{#AppName}";       Filename: "{app}\gui\{#AppExeName}"
+Name: "{group}\{#AppName}";       Filename: "{app}\gui\{#AppExeName}"; \
+    IconFilename: "{app}\icon.ico"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\gui\{#AppExeName}"; \
-    Tasks: desktopicon
+    IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 
 [Registry]
 ; Opt-in, and on the user's own PATH rather than the machine's, so it works
@@ -77,6 +98,54 @@ Filename: "{app}\gui\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}
     Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  DataDirPage: TInputDirWizardPage;
+
+// The project folder: where scenarios, reports, browser sessions and users.json
+// live. Deliberately its own question rather than a subfolder of the install
+// directory - the program is replaced wholesale on upgrade and sits in Program
+// Files, and none of that is true of the things the user makes.
+procedure InitializeWizard();
+begin
+  DataDirPage := CreateInputDirPage(wpSelectDir,
+    'Select Project Folder',
+    'Where should Chrome Multi Session keep your work?',
+    'Your accounts (users.json), the scenarios you record or edit, run reports' + #13#10 +
+    'and screenshots, and one Chrome profile per test user are all stored here.' + #13#10#13#10 +
+    'This folder is yours: installing, upgrading and uninstalling never touch' + #13#10 +
+    'its contents. Pick any location you like, then click Next.',
+    False, '');
+  DataDirPage.Add('');
+  // An upgrade offers the folder already in use; a first install offers the
+  // default the app would have picked for itself.
+  DataDirPage.Values[0] := GetPreviousData('DataDir',
+    ExpandConstant('{%USERPROFILE}\ChromeMultiSession'));
+end;
+
+procedure RegisterPreviousData(PreviousDataKey: Integer);
+begin
+  SetPreviousData(PreviousDataKey, 'DataDir', DataDirPage.Values[0]);
+end;
+
+function GetDataDir(Param: string): string;
+begin
+  Result := DataDirPage.Values[0];
+end;
+
+// Named on the final page, because it is the answer to "where did my reports
+// go?" and nobody reads an installer log to find out.
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo,
+  MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+begin
+  Result := MemoDirInfo + NewLine + NewLine +
+            'Project folder (your scenarios, reports and sessions):' + NewLine +
+            Space + GetDataDir('') + NewLine;
+  if MemoGroupInfo <> '' then
+    Result := Result + NewLine + MemoGroupInfo + NewLine;
+  if MemoTasksInfo <> '' then
+    Result := Result + NewLine + MemoTasksInfo + NewLine;
+end;
+
 // True when this directory is not already on the user's PATH. Without the
 // check, repeated installs append the same entry until PATH stops working.
 function NeedsAddPath(Param: string): Boolean;

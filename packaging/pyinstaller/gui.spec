@@ -48,6 +48,16 @@ excludes = [
 # in a checkout.
 datas = [(os.path.join(GUI, "cms_gui", "assets"), os.path.join("cms_gui", "assets"))]
 
+# The Windows executable's own icon. Without this PyInstaller embeds its
+# default, which is the Python logo - and that is what Windows then shows in the
+# taskbar, in Explorer, and on every shortcut the installer creates. Rendered by
+# `python -m cms_gui.icon` before the freeze; absent on Linux, where an ELF
+# carries no icon and the .desktop file names the PNG instead.
+WINDOWS_ICON = os.path.join(ROOT, "build", "icons", "icon.ico")
+if not os.path.isfile(WINDOWS_ICON):
+    WINDOWS_ICON = None
+
+
 analysis = Analysis(
     [os.path.join(SPECPATH, "gui_entry.py")],
     pathex=[GUI],
@@ -73,6 +83,7 @@ exe = EXE(
     upx=False,
     # A desktop launcher must not open a terminal behind the window.
     console=False,
+    icon=WINDOWS_ICON,
 )
 
 COLLECT(

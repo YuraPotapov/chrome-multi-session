@@ -192,12 +192,12 @@ What remains is packaging only:
 
 1. `packaging/pyinstaller/{core,gui}-win.spec` — the same two specs plus
    `icon=` from `python -m cms_gui.icon` (it already writes a multi-size `.ico`).
-2. `packaging/windows/chrome-multi-session.iss` — Inno Setup, with a constant
-   `AppId` GUID and `UsePreviousAppDir=yes` so a new version installs over the old
-   one; wizard step 1 a project-directory picker that writes `data_dir` into
-   `<InstallDir>\cms.ini` (add that as the second source in
-   `runtime_paths.user_data_root`, before the `%USERPROFILE%` default); step 2 the
-   Desktop-shortcut task; and a `[Code]` check for the Chrome registry key.
+2. `packaging/windows/installer.iss` — Inno Setup, with a constant `AppId` GUID
+   and `UsePreviousAppDir=yes` so a new version installs over the old one; a
+   project-directory picker that writes `data_dir` into `<InstallDir>\cms.ini`
+   (read by `runtime_paths.configured_data_root`, second after `$CMS_HOME` and
+   before the `%USERPROFILE%` default); the Desktop-shortcut task; and a
+   `[Code]` check for the Chrome registry key. **Done.**
 3. `packaging/windows/build.ps1`, run on a machine with Python 3.11+ and Inno
    Setup 6 — or a `windows-latest` job that calls it.
 
