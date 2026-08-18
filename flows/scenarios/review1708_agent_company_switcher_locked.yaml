@@ -1,0 +1,24 @@
+# Review 17.08.2026 item 5 - a user who cannot choose a company keeps the company they
+# were given. Run as role_agent.
+#
+# WHAT THIS DOES NOT ASSERT, deliberately: that the active company equals the user's
+# Default Company. That value is admin-configurable per user and per environment, the
+# engine can only compare a DOM node against a LITERAL, and {{user.*}} carries only
+# login/class - so any expected company name here is a fixture that goes stale the moment
+# someone edits the user, which is what happened on the first run (expected ROSAN, the
+# user had been moved to Acme Logistics, and the build was correct).
+#
+# What remains is the premise the review item rests on: the role is genuinely restricted
+# in its company choice. If the switcher ever becomes selectable for a non-system user,
+# "show the Default Company as active" stops being enforceable at all, and that IS
+# env-agnostic. The ordering half of the fix (switch_company_menu_patch.js putting the
+# default company first) has no browser-assertable, admin-proof form - it is covered by
+# the module's own code and by the server-side session_info values instead.
+id: review1708_agent_company_switcher_locked
+name: "Review 17.08 - Agent cannot choose a company"
+tags: [DEMO-76-review-17-08]
+steps:
+  - use: access.open_app
+  # Company shown, switcher present, switcher not selectable - asserted in both directions
+  # so neither an empty systray nor a working picker can pass silently.
+  - use: multicompany.company_navbar_readonly

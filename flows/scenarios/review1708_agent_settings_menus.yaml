@@ -1,0 +1,62 @@
+# Review 17.08.2026 item 3 - the VRR Agent reaches Agent Grouping, Response Templates and
+# Response Refusal Templates, and nothing else in the Settings section.
+#
+# Widening the ACL rows alone did not deliver this: the whole Settings section and all its
+# children were manager/admin-only, so the models stayed unreachable from the UI. The
+# negative half guards a second bug found while fixing it - menu_reclamation_expense_category
+# carried NO groups= of its own and inherited protection from the parent, so opening the
+# parent to the agent exposed it.
+#
+# Menu assertions go through [data-menu-xmlid], which Odoo 19 stamps on both the section <li>
+# and the items inside its dropdown (web/.../navbar/navbar.xml) - label- and language-independent.
+id: review1708_agent_settings_menus
+name: "Review 17.08 - VRR Agent settings entries"
+tags: [DEMO-76-review-17-08]
+steps:
+  - use: access.open_app
+
+  # The section itself: hidden from the agent before the fix.
+  - assert_visible: "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_settings']"
+  - click: "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_settings']"
+
+  # The three entries the review asked for.
+  - assert_visible: "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_agent_assignment']"
+  - assert_visible: "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_canned_response']"
+  - assert_visible: "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_response_template']"
+
+  # ...and nothing else. Expense Categories is the regression guard for the ungated menuitem;
+  # the other two stand for the manager-only and admin-only remainder of the section.
+  - type: assert_not_visible
+    target: "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_expense_category']"
+    timeout: 2500
+  - type: assert_not_visible
+    target: "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_reason']"
+    timeout: 2500
+  - type: assert_not_visible
+    target: "[data-menu-xmlid='demo_reclamation_management.reclamation_email_condition_rules_menu']"
+    timeout: 2500
+
+  # A visible menu proves nothing about the ACL, so open each list as well. For canned
+  # responses the record rule is the real gate: the agent inherits base.group_user's ACL
+  # anyway, but without being added to the reclamation manage-all rule they only read the
+  # ones shared with them - which would show an empty list here, not an error.
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_agent_assignment"
+  - wait_for: ".o_list_view"
+  - type: assert_not_visible
+    target: ".o_error_dialog"
+    timeout: 2500
+
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_canned_response"
+  - wait_for: ".o_list_view"
+  - type: assert_not_visible
+    target: ".o_error_dialog"
+    timeout: 2500
+  - type: assert_visible
+    target: ".o_data_row"
+    timeout: 10000
+
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_response_template"
+  - wait_for: ".o_list_view"
+  - type: assert_not_visible
+    target: ".o_error_dialog"
+    timeout: 2500

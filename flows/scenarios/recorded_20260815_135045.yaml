@@ -1,0 +1,14 @@
+id: recorded_20260815_135045
+name: "Recorded recorded_20260815_135045"
+description: "Captured with the Scenario Recorder."
+tags: [template]
+steps:
+  - click: "i.oi.oi-apps"
+  - click: "[data-menu-xmlid=\"base.menu_administration\"]"
+  - click: "[data-menu-xmlid=\"base.menu_users\"] span"
+  - click: "[data-menu-xmlid=\"base.menu_action_res_users\"]"
+  - fill: {target: "searchview_input", value: "Division Manager"}
+  - click: "span.o-dropdown-item[role=\"menuitem\"]:first-of-type"
+  - assert_text_contains: {target: "[name=\"name\"]:text-is(\"Division Manager [DIVISION]\")", value: "Division Manager [DIVISION]"}
+  - click: "[name=\"name\"]"
+  - assert_exists: "input[type=\"radio\"][name=\"radio_field_2\"][data-value=\"division_manager\"]:checked"

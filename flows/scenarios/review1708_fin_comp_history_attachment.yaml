@@ -1,0 +1,52 @@
+# Review 17.08.2026 item 4 - Compensation Finance opens the registry file from the
+# compensation Submission History.
+#
+# The registry xlsx was created with no res_model/res_id, and Odoo only lets the creator or
+# a system user read such an attachment (odoo/addons/base/models/ir_attachment.py, _check_access:
+# "if not res_id and attachment.create_uid.id != self.env.uid"). Finance got the record-rule
+# dialog. The file is now linked to the first history row of its batch, so the check
+# delegates to a record finance can read.
+#
+# DATA DEPENDENCY (run it explicitly): needs a compensation whose Submission History has at
+# least one row WITH a registry file - i.e. a registry cron run that produced and mailed an
+# xlsx. Read-only otherwise: it opens records, changes nothing.
+#
+# REGRESSION SCOPE: on an upgraded database this only proves the runtime linking if the row
+# is new. Rows created before 19.0.1.5.2 are covered by that version's post-migrate backfill,
+# so running this against a pre-existing history row is the migration's test.
+id: review1708_fin_comp_history_attachment
+name: "Review 17.08 - Finance opens the registry file from Submission History"
+tags: [DEMO-76-review-17-08]
+steps:
+  - use: access.open_app
+
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_compensation_finance"
+  - wait_for: ".o_list_view"
+  - type: assert_visible
+    target: ".o_data_row"
+    timeout: 10000
+  - click: ".o_data_row:first-child"
+  - wait_for: ".o_form_view"
+
+  # The Submission History notebook page (page name="submission_history"). Matched on the
+  # label in EN + uk_UA because Odoo does not stamp the page name on the tab anchor.
+  - click: ".o_notebook .nav-link:text-is(\"Submission History\"), .o_notebook .nav-link:text-is(\"Історія подачі\")"
+  # FIXTURE GUARD - no history row means the data dependency above is unmet, which is a
+  # different failure from a real access regression.
+  - type: assert_visible
+    target: ".o_field_widget[name='submission_history_ids'] .o_data_row"
+    timeout: 10000
+
+  # The o2m list is readonly, so the row opens the history record in a dialog.
+  - click: ".o_field_widget[name='submission_history_ids'] .o_data_row:first-child"
+  - wait_for: ".o_dialog .modal-content"
+  # attachment_id renders as a readonly many2one, i.e. an internal link to the ir.attachment.
+  - type: assert_visible
+    target: ".o_dialog .o_field_widget[name='attachment_id'] a"
+    timeout: 5000
+
+  # Following it is the exact click that raised the record-rule dialog before the fix.
+  - click: ".o_dialog .o_field_widget[name='attachment_id'] a"
+  - type: assert_not_visible
+    target: ".o_error_dialog"
+    timeout: 5000

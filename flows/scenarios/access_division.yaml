@@ -1,50 +1,41 @@
-# DEMO-526 access matrix - Division Manager (log in as role_division). QA doc section 6.
 id: access_division
 name: "Access matrix - Division Manager"
-tags: [DEMO-526, role:division, access, template]   # template: excluded from --run-tests=all; run per-role by id / tag:access
+tags: [DEMO-526, role:division, access, template]
 steps:
-  - use: access.open_app
-  # 6.1 Only the Fines section is visible.
-  - assert_visible: menu_fines
+  - use: "access.open_app"
+  - assert_visible: "menu_fines"
   - type: assert_not_visible
-    target: menu_compensation
+    target: "menu_compensation"
     timeout: 2500
   - type: assert_not_visible
-    target: menu_reclamations
+    target: "menu_reclamations"
     timeout: 2500
   - type: assert_not_visible
-    target: menu_reporting
+    target: "menu_reporting"
     timeout: 2500
   - type: assert_not_visible
-    target: menu_settings
+    target: "menu_settings"
     timeout: 2500
-  # 6.2 Fines list: own-department fines only, all types (empty allowed_fine_type_ids means
-  # all types, so a Carrier fine in the own dept IS visible). Department scoping is asserted
-  # on the department_id COLUMN via the 76SEED dept names - data, so language-independent
-  # (row_dept_* in selectors.yaml): the own-dept row renders, the other-dept row never does.
   - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_fines_restricted"
-  - wait_for: list_view
+  - wait_for: "list_view"
   - type: assert_visible
-    target: row_dept_own
+    target: "row_dept_own"
     timeout: 10000
   - type: assert_not_visible
-    target: row_dept_other
+    target: "row_dept_other"
     timeout: 2500
-  # 6.3 Open a fine: readonly form; Register Payment + Write Off hidden (Distribute /
-  # Submit Appeal appear per status - exercised by write_division_distribute).
-  - click: first_list_row
-  - wait_for: form_view
-  - type: assert_not_visible      # readonly proof: no editable input/textarea in the sheet
-    target: form_editable_field
+  - click: "first_list_row"
+  - wait_for: "form_view"
+  - type: assert_not_visible
+    target: "form_editable_field"
     timeout: 2500
   - type: assert_not_visible
-    target: btn_fine_register_payment
+    target: "btn_fine_register_payment"
     timeout: 2500
   - type: assert_not_visible
-    target: btn_fine_write_off
+    target: "btn_fine_write_off"
     timeout: 2500
   - type: assert_not_visible
-    target: btn_fine_appeal_review
+    target: "btn_fine_appeal_review"
     timeout: 2500
-  # 6.7 Direct-URL to any ticket -> access denied.
-  - use: access.deny_tickets
+  - use: "access.deny_tickets"

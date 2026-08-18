@@ -1,0 +1,10 @@
+# Review 17.08.2026 item 2, VRR Manager half. Run as role_manager.
+# The review names both roles; the manager was the one the first fix forgot - the menu
+# override granted admin + agent only, and manager does not imply agent
+# (reclamation_security_groups.xml: each role implies base.group_user directly).
+id: review1708_manager_1c_shipment_search
+name: "Review 17.08 - Manager reaches 1C Shipment Search"
+tags: [DEMO-76-review-17-08]
+steps:
+  - use: access.open_app
+  - use: review1708.shipment_search

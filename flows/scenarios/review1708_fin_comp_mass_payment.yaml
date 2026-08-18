@@ -1,0 +1,52 @@
+# Review 17.08.2026 item 1 - Compensation Finance registers a payment through the LIST
+# action "Register Payment" (the mass wizard), not the single-record form button.
+#
+# The reported bug: the form button worked, the mass wizard raised an AccessError on
+# reclamation.ticket. group_reclamation_finance_compensation has no ticket ACL row at all,
+# and the wizard read ticket fields directly. It now reads them through sudo and validates
+# the company instead. This flow fails on the old build and passes on the fixed one.
+#
+# DATA DEPENDENCY (run it explicitly, not as part of a sweep): the selected compensation
+# must be in a payable status - scheduled / submitted / partially - or action_confirm
+# raises a ValidationError about the status instead. Same precondition as
+# write_fin_comp_register_payment. It MUTATES data: it registers a real payment.
+#
+# The confirm button is unscoped because the wizard action is target=fullscreen: it renders
+# as a normal form view with its own buttons, not inside .o_dialog.
+id: review1708_fin_comp_mass_payment
+name: "Review 17.08 - Finance registers payment via the mass Register Payment action"
+tags: [DEMO-76-review-17-08]
+steps:
+  - use: access.open_app
+
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_compensation_finance"
+  - wait_for: ".o_list_view"
+  # FIXTURE GUARD - an empty list would make every assertion below vacuous.
+  - type: assert_visible
+    target: ".o_data_row"
+    timeout: 10000
+
+  # Tick the first row, then drive the cog: the binding only appears once a record is selected.
+  - click: ".o_data_row:first-child .o_list_record_selector input"
+  - click: ".o_cp_action_menus button.dropdown-toggle"
+  - click: ".o-dropdown--menu .dropdown-item:has-text('Register Payment'), .o-dropdown--menu .dropdown-item:has-text('Зареєструвати оплату')"
+
+  # default_get runs here: on the broken build it either raised the ticket AccessError or
+  # marked every line blocked and refused with "None of the selected compensations...".
+  - wait_for: ".o_form_view"
+  - type: assert_not_visible
+    target: ".o_error_dialog"
+    timeout: 2500
+  - type: assert_visible
+    target: ".o_data_row"
+    timeout: 5000
+
+  # action_confirm - this is where the old build raised "no access to reclamation.ticket".
+  - click: "button[name='action_confirm']"
+  - type: assert_not_visible
+    target: ".o_error_dialog"
+    timeout: 5000
+  # Success returns the All Compensation action, so landing on a list is the positive proof.
+  - type: assert_visible
+    target: ".o_list_view"
+    timeout: 10000

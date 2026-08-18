@@ -11,13 +11,19 @@ name: "Access matrix - VRR Agent"
 tags: [DEMO-526, role:agent, access, template]   # template: excluded from --run-tests=all; run per-role by id / tag:access
 steps:
   - use: access.open_app
-  # 2.1 Menus: Reclamations / Compensation / Fines / Reporting visible; Settings + 1C hidden.
+  # 2.1 Menus: Reclamations / Compensation / Fines / Reporting visible; 1C Logistics hidden.
   - assert_visible: menu_reclamations
   - assert_visible: menu_compensation
   - assert_visible: menu_fines
   - assert_visible: menu_reporting
+  # Settings USED TO be hidden here. The 17.08 review opened three of its entries to the
+  # agent, so the section now renders - with only those three inside. Which entries appear
+  # is asserted by review1708_agent_settings_menus; this keeps the tightest check that still
+  # belongs to the agent access matrix: Team Roles stays manager/admin-only (QA 8.3).
+  - assert_visible: menu_settings
+  - click: menu_settings
   - type: assert_not_visible
-    target: menu_settings
+    target: "[data-menu-xmlid='demo_reclamation_management.menu_reclamation_user_roles']"
     timeout: 2500
   - type: assert_not_visible
     target: menu_1c_logistics
@@ -69,7 +75,8 @@ steps:
   # Admin-only Email Condition Rules is unreachable even by direct URL.
   - use: access.deny_email_rules
 
-  # 8.3 The Team Roles wizard is manager/admin-only (its ACL has no agent line): the menu is
-  # already absent with the whole Settings section, so probe the direct action URL too.
+  # 8.3 The Team Roles wizard is manager/admin-only (its ACL has no agent line). Its menu item
+  # is asserted absent above; probe the direct action URL too, since the Settings section that
+  # used to hide it wholesale is now open to this role.
   - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_reclamation_user_roles_wizard"
   - assert_visible: error_dialog

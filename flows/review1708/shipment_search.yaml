@@ -1,0 +1,25 @@
+# Review 17.08.2026 item 2 - Search Shipment 1C is reachable. Shared by the agent and
+# manager scenarios, which are separate files so each runs against its own session only.
+#
+# The model ACL was never the blocker - one_c_shipment_search_user_access already grants
+# base.group_user full access. The menu was: demo_api_one_c.menu_shipment_search shipped
+# with groups="base.group_system". The action probe is kept anyway so a future ACL
+# narrowing fails here instead of in production.
+#
+# menu_shipment_search has no parent, so it is a ROOT app menu: it renders in the apps
+# dropdown, not in the Reclamations top bar. Odoo 19 stamps data-menu-xmlid on those app
+# anchors (web/.../navbar/navbar.xml:95).
+id: review1708.shipment_search
+name: "1C Shipment Search is visible in the apps menu and opens"
+steps:
+  - click: ".o_navbar_apps_menu button"
+  - type: assert_visible
+    target: "[data-menu-xmlid='demo_api_one_c.menu_shipment_search']"
+    timeout: 5000
+
+  # action_shipment_search is view_mode=form (one_c.shipment.search is a search form, not a list).
+  - goto: "{{env.origin}}/odoo/action-demo_api_one_c.action_shipment_search"
+  - wait_for: ".o_form_view"
+  - type: assert_not_visible
+    target: ".o_error_dialog"
+    timeout: 2500

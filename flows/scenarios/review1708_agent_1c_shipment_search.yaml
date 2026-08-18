@@ -1,0 +1,9 @@
+# Review 17.08.2026 item 2, VRR Agent half. Run as role_agent.
+# The manager half is review1708_manager_1c_shipment_search - separate file so a single
+# launch never carries another role's expectations into this session.
+id: review1708_agent_1c_shipment_search
+name: "Review 17.08 - Agent reaches 1C Shipment Search"
+tags: [DEMO-76-review-17-08]
+steps:
+  - use: access.open_app
+  - use: review1708.shipment_search
