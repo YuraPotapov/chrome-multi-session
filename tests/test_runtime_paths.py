@@ -14,16 +14,82 @@ import runtime_paths as rp
 
 @pytest.fixture
 def frozen(monkeypatch, tmp_path):
-    """Pretend to be an installed build with $HOME under tmp_path."""
+    """Pretend to be an installed build with the home directory under tmp_path."""
     bundle = tmp_path / "opt" / "_internal"
     bundle.mkdir(parents=True)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(rp, "FROZEN", True)
     monkeypatch.setattr("sys._MEIPASS", str(bundle), raising=False)
+    # Every variable expanduser("~") consults, on either platform: $HOME is not
+    # one of them on Windows, where setting it alone leaves these tests writing
+    # a users.json into the real %USERPROFILE%\ChromeMultiSession.
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOMEDRIVE", os.path.splitdrive(str(home))[0])
+    monkeypatch.setenv("HOMEPATH", os.path.splitdrive(str(home))[1])
     monkeypatch.delenv(rp.HOME_ENV, raising=False)
+    assert os.path.expanduser("~") == str(home)   # the redirection actually took
     return bundle, home
+
+
+# --------------------------------------------------- the installer's choice
+
+def _install(tmp_path, monkeypatch, text):
+    """A frozen build at <install>/core/, with cms.ini beside it."""
+    install = tmp_path / "install"
+    core = install / "core"
+    core.mkdir(parents=True)
+    (install / "cms.ini").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(rp, "FROZEN", True)
+    monkeypatch.setattr(sys, "executable", str(core / "chrome-multi-session-core.exe"))
+    return install
+
+
+def test_the_folder_chosen_at_install_time_wins_over_the_default(tmp_path, monkeypatch):
+    # The whole point of the wizard page: reports and sessions go where the
+    # person said, not into a home directory they never picked.
+    monkeypatch.delenv(rp.HOME_ENV, raising=False)
+    chosen = tmp_path / "D" / "Projects" / "CMS"
+    _install(tmp_path, monkeypatch, "[Paths]\ndata_dir=%s\n" % chosen)
+    assert rp.user_data_root() == str(chosen)
+    assert rp.reports_dir() == os.path.join(str(chosen), "reports")
+
+
+def test_cms_home_still_beats_the_installed_choice(tmp_path, monkeypatch):
+    # A test run, or a second copy against a scratch directory, must never be
+    # able to reach the real one.
+    _install(tmp_path, monkeypatch,
+             "[Paths]\ndata_dir=%s\n" % (tmp_path / "chosen"))
+    monkeypatch.setenv(rp.HOME_ENV, str(tmp_path / "scratch"))
+    assert rp.user_data_root() == str(tmp_path / "scratch")
+
+
+def test_an_ini_without_the_key_is_simply_not_an_answer(tmp_path, monkeypatch):
+    monkeypatch.delenv(rp.HOME_ENV, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    _install(tmp_path, monkeypatch, "[Paths]\n; nothing useful here\n")
+    assert rp.user_data_root() == os.path.join(str(tmp_path / "home"),
+                                               rp.USER_DIR_NAME)
+
+
+def test_a_missing_ini_leaves_the_default_alone(tmp_path, monkeypatch):
+    monkeypatch.delenv(rp.HOME_ENV, raising=False)
+    monkeypatch.setattr(rp, "FROZEN", True)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "install" / "core" / "core.exe"))
+    assert rp.configured_data_root() == ""
+
+
+def test_a_checkout_ignores_any_cms_ini(tmp_path, monkeypatch):
+    # Not frozen: the checkout is its own data root and nothing beside a
+    # developer's python.exe gets to redirect it.
+    monkeypatch.delenv(rp.HOME_ENV, raising=False)
+    _install(tmp_path, monkeypatch,
+             "[Paths]\ndata_dir=%s\n" % (tmp_path / "chosen"))
+    monkeypatch.setattr(rp, "FROZEN", False)
+    assert rp.configured_data_root() == ""
+    assert rp.user_data_root() == rp.app_root()
 
 
 # ------------------------------------------------------------------ checkout
@@ -99,7 +165,11 @@ def test_first_run_creates_the_directories_and_seeds_the_config(frozen):
     config = os.path.join(root, "users.json")
     assert open(config, encoding="utf-8").read() == '{"users": []}'
     # It grows real passwords, so it is never world-readable, not even briefly.
-    assert oct(os.stat(config).st_mode & 0o777) == "0o600"
+    # Only where mode bits are the mechanism: Windows has none that os.chmod can
+    # set (it toggles the read-only flag and reports 0o666), and access there is
+    # governed by the ACL the file inherits from the user's own profile.
+    if os.name != "nt":
+        assert oct(os.stat(config).st_mode & 0o777) == "0o600"
 
 
 def test_first_run_never_overwrites_existing_user_data(frozen):

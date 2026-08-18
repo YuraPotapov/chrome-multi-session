@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 
 import pytest
 
@@ -190,7 +191,10 @@ def test_adhoc_session_prefix_unknown_origin_uses_the_netloc():
 
 
 def test_session_dir_for_flattens_url_separators():
-    assert sl.session_dir_for("", DEV, "role_agent") == "https:_app-dev.example.com_-role_agent"
+    # ":" survives everywhere NTFS is not the filesystem; see the next case.
+    expected = ("https__app-dev.example.com_-role_agent" if os.name == "nt"
+                else "https:_app-dev.example.com_-role_agent")
+    assert sl.session_dir_for("", DEV, "role_agent") == expected
 
 
 def test_session_dir_for_user_session_overrides_the_env():
@@ -198,8 +202,12 @@ def test_session_dir_for_user_session_overrides_the_env():
 
 
 def test_session_dir_for_sanitizes_the_login():
-    assert sl.session_dir_for("", LOCAL, "Test.User@example.com") == (
-        "localhost:8069-Test.User_example.com")
+    # The env keeps its ":" on POSIX and loses it on Windows, where NTFS has no
+    # such folder name. Deliberately platform-conditional: sanitizing everywhere
+    # would rename every profile an existing Linux install already has.
+    expected = ("localhost_8069-Test.User_example.com" if os.name == "nt"
+                else "localhost:8069-Test.User_example.com")
+    assert sl.session_dir_for("", LOCAL, "Test.User@example.com") == expected
 
 
 def test_session_dir_for_without_env_is_the_bare_login():
@@ -759,9 +767,12 @@ def test_install_local_extension_copies_and_rewrites(tmp_path):
         fh.write("// noop")
     profile = tmp_path / "profile"
     profile.mkdir()
-    ext_id = sl.install_local_extension(str(profile), src, "http://localhost:8069",
-                                        ".my_helper_key")
-    planted = profile / "Default" / "Extensions" / ext_id / "2.1_0"
+    # The planted directory comes back, because that is what Chrome is asked to
+    # load over CDP on Windows (see load_extensions_over_cdp).
+    planted = pathlib.Path(sl.install_local_extension(
+        str(profile), src, "http://localhost:8069", ".my_helper_key"))
+    assert planted.parent.parent == profile / "Default" / "Extensions"
+    assert planted.name == "2.1_0"
     assert (planted / "c.js").exists(), "extension files were not copied"
 
     written = json.loads((planted / "manifest.json").read_text(encoding="utf-8"))
@@ -781,11 +792,60 @@ def test_install_local_extension_refreshes_an_edited_source(tmp_path):
     open(marker, "w", encoding="utf-8").write("v1")
     profile = tmp_path / "profile"
     profile.mkdir()
-    ext_id = sl.install_local_extension(str(profile), src, "http://x", ".k")
-    open(marker, "w", encoding="utf-8").write("v2")
     sl.install_local_extension(str(profile), src, "http://x", ".k")
-    planted = profile / "Default" / "Extensions" / ext_id / "1.0_0" / "c.js"
+    open(marker, "w", encoding="utf-8").write("v2")
+    where = sl.install_local_extension(str(profile), src, "http://x", ".k")
+    planted = pathlib.Path(where) / "c.js"
     assert planted.read_text(encoding="utf-8") == "v2"
+
+
+# ------------------------------------------------- installing over CDP (Windows)
+
+def _unmask(frame):
+    """The payload of a client frame, which is always masked."""
+    length = frame[1] & 0x7F
+    offset = 2
+    if length == 126:
+        length = int.from_bytes(frame[2:4], "big")
+        offset = 4
+    elif length == 127:
+        length = int.from_bytes(frame[2:10], "big")
+        offset = 10
+    mask, body = frame[offset:offset + 4], frame[offset + 4:]
+    return bytes(b ^ mask[i % 4] for i, b in enumerate(body))[:length]
+
+
+def test_a_websocket_frame_is_masked_and_says_what_it_carries():
+    frame = sl._ws_frame('{"id": 1}')
+    assert frame[0] == 0x81            # FIN + text
+    assert frame[1] & 0x80             # a client frame must be masked
+    assert _unmask(frame) == b'{"id": 1}'
+
+
+def test_frame_lengths_switch_at_the_two_boundaries():
+    # 126 and 65536 are where the length grows a 16- and a 64-bit field; getting
+    # either wrong desynchronises the stream rather than failing outright.
+    for size in (125, 126, 65535, 65536):
+        payload = "x" * size
+        frame = sl._ws_frame(payload)
+        assert _unmask(frame) == payload.encode("ascii"), size
+
+
+def test_nothing_to_install_never_opens_a_connection(monkeypatch):
+    # Guards the common case: no extensions selected means no CDP at all.
+    def _explode(*args, **kwargs):
+        raise AssertionError("must not connect when there is nothing to load")
+    monkeypatch.setattr(sl, "devtools_endpoint", _explode)
+    assert sl.load_extensions_over_cdp("/profile", []) == []
+    sl._install_extensions_for("/profile", [])       # must not raise
+
+
+def test_a_browser_that_never_answers_is_a_warning_not_a_failure(monkeypatch):
+    # A window with no extensions is still a window; the launch goes on.
+    def _no_port(profile, timeout=20):
+        raise OSError("Chrome never reported a debug port")
+    monkeypatch.setattr(sl, "devtools_endpoint", _no_port)
+    sl._install_extensions_for("/profile", ["/somewhere"])   # must not raise
 
 
 # ------------------------------------------------------- auto-login extension
@@ -1045,17 +1105,75 @@ def test_find_chrome_returns_none_when_there_is_nothing(monkeypatch):
     assert sl.find_chrome() is None
 
 
+def test_the_windows_version_is_read_off_the_file_not_asked_for(monkeypatch):
+    # Windows Chrome ignores --version: it starts the browser instead of printing
+    # one. Running it to find out what is installed opened a window per candidate,
+    # every time anything called --describe.
+    monkeypatch.setattr(sl.os, "name", "nt")
+    monkeypatch.setattr(sl, "_windows_file_version",
+                        lambda path: ("Google Chrome 151.0.7922.138", ""))
+    monkeypatch.setattr(sl.subprocess, "run", _never_run)
+    assert sl._chrome_version_string(r"C:\chrome.exe") == "Google Chrome 151.0.7922.138"
+    assert sl._chrome_prodversion(r"C:\chrome.exe") == "151.0"
+
+
+def test_an_unreadable_resource_falls_back_to_the_install_layout(monkeypatch):
+    # Chrome unpacks each release into Application\<version>\ beside chrome.exe,
+    # so the number survives even where the version resource cannot be read -
+    # which is what happened inside the frozen build.
+    monkeypatch.setattr(sl.os, "name", "nt")
+    monkeypatch.setattr(sl, "_windows_file_version",
+                        lambda path: ("", "version.dll would not load"))
+    monkeypatch.setattr(sl.os, "listdir",
+                        lambda where: ["151.0.7922.138", "150.0.7000.1", "SetupMetrics"])
+    monkeypatch.setattr(sl.subprocess, "run", _never_run)
+    assert sl._chrome_version_string(r"C:\chrome.exe") == "Google Chrome 151.0.7922.138"
+
+
+def test_a_file_without_a_version_resource_is_silent_not_fatal(monkeypatch):
+    monkeypatch.setattr(sl.os, "name", "nt")
+    monkeypatch.setattr(sl, "_windows_file_version",
+                        lambda path: (_ for _ in ()).throw(OSError("no resource")))
+    monkeypatch.setattr(sl, "_windows_chrome_version_from_layout", lambda path: "")
+    monkeypatch.setattr(sl.subprocess, "run", _never_run)
+    assert sl._chrome_version_string(r"C:\chrome.exe") == ""
+
+
+def _never_run(*args, **kwargs):
+    raise AssertionError("the browser must not be executed to read its version")
+
+
+def test_the_same_browser_is_never_probed_twice(monkeypatch):
+    # On Windows the App Paths key and %PROGRAMFILES% name one file between them.
+    where = os.path.join(os.sep, "opt", "chrome")
+    monkeypatch.setattr(sl, "_chrome_candidate_paths",
+                        lambda: iter([where, where + os.sep + "." + os.sep, where]))
+    assert list(sl._chrome_candidates()) == [where]
+
+
 def test_describe_chrome_flags_a_browser_that_will_not_run(monkeypatch):
+    monkeypatch.setattr(sl.os, "name", "posix")
     monkeypatch.setattr(sl, "find_chrome", lambda: "/usr/bin/chromium-browser")
-    monkeypatch.setattr(sl, "_chrome_version_string", lambda path: "")
+    monkeypatch.setattr(sl, "_chrome_version", lambda path: ("", "it printed no version"))
     chrome = sl.describe_chrome()
     assert chrome["path"] == "/usr/bin/chromium-browser"
     assert "does not run" in chrome["message"]
 
 
+def test_a_silent_browser_on_windows_is_not_blamed_on_snap(monkeypatch):
+    monkeypatch.setattr(sl.os, "name", "nt")
+    monkeypatch.setattr(sl, "find_chrome", lambda: r"C:\chrome.exe")
+    monkeypatch.setattr(sl, "_chrome_version",
+                        lambda path: ("", "version.dll would not load"))
+    message = sl.describe_chrome()["message"]
+    assert "snap" not in message
+    # The reason travels with it: "does not say what it is" sends nobody anywhere.
+    assert "version.dll would not load" in message
+
+
 def test_describe_chrome_is_quiet_about_a_working_browser(monkeypatch):
     monkeypatch.setattr(sl, "find_chrome", lambda: "/usr/bin/google-chrome")
-    monkeypatch.setattr(sl, "_chrome_version_string", lambda path: "Google Chrome 151")
+    monkeypatch.setattr(sl, "_chrome_version", lambda path: ("Google Chrome 151", ""))
     assert sl.describe_chrome() == {"path": "/usr/bin/google-chrome",
                                     "version": "Google Chrome 151", "message": ""}
 
@@ -1272,6 +1390,9 @@ class _StuckProc:
         self.killed = True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="no process groups: os.getpgid, os.killpg "
+                                            "and SIGKILL do not exist on Windows - the "
+                                            "shape that runs there is the next case")
 def test_a_hung_window_is_group_killed_on_posix(monkeypatch):
     calls = []
     monkeypatch.setattr(sl.os, "getpgid", lambda pid: pid)
@@ -1298,6 +1419,7 @@ def test_a_hung_window_does_not_crash_the_teardown_without_killpg(monkeypatch):
     assert proc.killed
 
 
+@pytest.mark.skipif(os.name == "nt", reason="os.getpgid/killpg do not exist on Windows")
 def test_a_refused_group_kill_still_kills_the_browser(monkeypatch):
     monkeypatch.setattr(sl.os, "getpgid", lambda pid: pid)
     def _refuse(pgid, sig):

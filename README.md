@@ -387,6 +387,18 @@ python3 session_launcher.py --env=dev --url=https://dev.example.com/orders/12
   planted into the profile directly (Chrome 137+ blocks `--load-extension`). A fetch
   failure warns and the launch continues without that extension.
 
+  **On Windows the install goes over CDP.** Planting the files and registering them
+  in the profile's `Preferences` is not enough there: `extensions.settings` is a
+  protected preference, Chrome checks every entry against an HMAC it wrote itself,
+  and an entry added from outside is stripped on the first launch - silently, with
+  the files still on disk. So Windows opens a loopback debug port for **every**
+  launch (not just `--run-tests`) and asks Chrome to load the planted directories
+  with `Extensions.loadUnpacked`, the same call Playwright and Puppeteer use, then
+  reloads the tab so the auto-login content script runs on it. A window whose
+  extensions cannot be installed still opens; the log says so, and auto-login is
+  what is lost. Note the port is unauthenticated and local: any process on that
+  machine can drive those signed-in browsers.
+
   Replaces `--odoo-debug` / `--no-odoo-debug`, which still work with a deprecation
   notice. Note the default changed: the Odoo Debug extension used to be installed
   unless you opted out, and now nothing is installed unless you ask.

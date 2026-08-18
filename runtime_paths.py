@@ -36,6 +36,12 @@ USER_DIR_NAME = "ChromeMultiSession"
 #: installation, a shared data directory, or a test run.
 HOME_ENV = "CMS_HOME"
 
+#: Written by the installer beside the program, naming the directory the user
+#: chose for their own files. It is the installer's only way to tell the app
+#: something, and the app's only way to honour a choice made before it first ran.
+INSTALL_CONFIG_NAME = "cms.ini"
+INSTALL_CONFIG_KEY = "data_dir"
+
 
 def app_root():
     """The directory holding the resources that ship with the app."""
@@ -44,15 +50,68 @@ def app_root():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def install_config_path():
+    """The installer's cms.ini, or "" when there is none to read.
+
+    Looked for beside the installation rather than beside the executable,
+    because the two bundles sit in <install>/core/ and <install>/gui/ and share
+    one answer - and then beside the executable too, for a flat layout.
+    """
+    if not FROZEN:
+        return ""
+    executable_dir = os.path.dirname(os.path.abspath(sys.executable))
+    for directory in (os.path.dirname(executable_dir), executable_dir):
+        candidate = os.path.join(directory, INSTALL_CONFIG_NAME)
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def configured_data_root():
+    """The directory the installer was told to use, or "".
+
+    Parsed by hand rather than with configparser: this module is imported on
+    every launch, promises stdlib-only and cheap, and the file it reads is two
+    lines written by our own installer. A malformed or unreadable one is not an
+    error - it just does not answer, and the default below applies.
+    """
+    path = install_config_path()
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8-sig") as handle:
+            lines = handle.read().splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith((";", "#", "[")):
+            continue
+        key, separator, value = line.partition("=")
+        if separator and key.strip().lower() == INSTALL_CONFIG_KEY:
+            value = value.strip().strip('"')
+            if value:
+                return os.path.abspath(os.path.expanduser(os.path.expandvars(value)))
+    return ""
+
+
 def user_data_root():
     """The directory holding everything the user owns.
 
-    $CMS_HOME wins; otherwise an installed build uses ~/ChromeMultiSession and a
-    source checkout uses the checkout itself, which is what it has always done.
+    $CMS_HOME wins, then the directory chosen at install time, then the default:
+    an installed build uses ~/ChromeMultiSession and a source checkout uses the
+    checkout itself, which is what it has always done.
+
+    The environment variable stays on top of the installed choice on purpose -
+    it is what runs a second copy against a scratch directory without
+    reinstalling, and a test must never be able to touch the real one.
     """
     override = os.environ.get(HOME_ENV, "").strip()
     if override:
         return os.path.abspath(os.path.expanduser(override))
+    chosen = configured_data_root()
+    if chosen:
+        return chosen
     if FROZEN:
         return os.path.join(os.path.expanduser("~"), USER_DIR_NAME)
     return app_root()

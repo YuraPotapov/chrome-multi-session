@@ -872,7 +872,22 @@ def _windows_chrome_paths():
 
 
 def _chrome_candidates():
-    """Everything that might be a Chrome, best first."""
+    """Everything that might be a Chrome, best first, each one only once.
+
+    The same installation is usually reachable by several routes - the App Paths
+    key and %PROGRAMFILES% name one file between them - and every candidate gets
+    probed, so a duplicate is a probe nobody needs.
+    """
+    seen = set()
+    for path in _chrome_candidate_paths():
+        key = os.path.normcase(os.path.abspath(path))
+        if key not in seen:
+            seen.add(key)
+            yield path
+
+
+def _chrome_candidate_paths():
+    """The raw candidate list, before duplicates are dropped."""
     for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
                  "chrome"):
         path = shutil.which(name)
@@ -945,24 +960,151 @@ def describe_chrome():
     path = find_chrome()
     if not path:
         return {"path": "", "version": "", "message": chrome_missing_message()}
-    version_line = _chrome_version_string(path)
+    version_line, problem = _chrome_version(path)
     if not version_line:
+        # Windows reads the version off the file, so a blank answer there means a
+        # file without a readable version, not a shim that redirects to a snap -
+        # and telling a Windows user about snapd helps nobody. Either way the
+        # reason is named: "does not say what it is" sends nobody anywhere.
+        why = ("%s exists but does not say what it is: %s." % (path, problem)
+               if os.name == "nt" else
+               "%s exists but does not run - it is most likely Ubuntu's snap "
+               "placeholder rather than a browser." % path)
         return {"path": path, "version": "",
-                "message": "%s exists but does not run - it is most likely Ubuntu's "
-                           "snap placeholder rather than a browser.\n\n%s"
-                           % (path, chrome_missing_message())}
+                "message": "%s\n\n%s" % (why, chrome_missing_message())}
     return {"path": path, "version": version_line, "message": ""}
+
+
+def _windows_file_version(path):
+    """(banner, problem) for a .exe: its version resource, or why there is none.
+
+    Reads the file rather than running it. Nothing is started, nothing is
+    waited for, and the answer is the same number the browser would print.
+
+    Every failure comes back as a *reason* rather than a bare "", because the
+    two are not the same thing and only one of them is worth showing a user:
+    "this file has no version resource" is information, "the call failed" is a
+    bug in this function.
+    """
+    # Spelled with plain ctypes types rather than ctypes.wintypes: the import
+    # here is inside a function, so PyInstaller's analyser never sees it and the
+    # submodule does not have to be in the bundle for this to work.
+    import ctypes
+    LPCWSTR = ctypes.c_wchar_p
+    DWORD, UINT, WORD = ctypes.c_uint32, ctypes.c_uint, ctypes.c_uint16
+    # By absolute path, and that is not fussiness. PyInstaller hooks ctypes and
+    # redirects a bare library name to a file of that name inside the bundle if
+    # one is there - and the bundle contains VERSION, the build's own version
+    # stamp. Windows paths being case-insensitive, "version" matched it, and
+    # every frozen build loaded a 7-byte text file instead of the system DLL.
+    system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    try:
+        version_dll = ctypes.WinDLL(os.path.join(system32, "version.dll"),
+                                    use_last_error=True)
+    except OSError as exc:
+        return "", "version.dll would not load (%s)" % exc
+    version_dll.GetFileVersionInfoSizeW.argtypes = [LPCWSTR, ctypes.POINTER(DWORD)]
+    version_dll.GetFileVersionInfoW.argtypes = [LPCWSTR, DWORD, DWORD, ctypes.c_void_p]
+    version_dll.VerQueryValueW.argtypes = [ctypes.c_void_p, LPCWSTR,
+                                           ctypes.POINTER(ctypes.c_void_p),
+                                           ctypes.POINTER(UINT)]
+    size = version_dll.GetFileVersionInfoSizeW(path, None)
+    if not size:
+        return "", "no version resource (GetFileVersionInfoSize said %d, error %d)" % (
+            size, ctypes.get_last_error())
+    block = ctypes.create_string_buffer(size)
+    if not version_dll.GetFileVersionInfoW(path, 0, size, block):
+        return "", "GetFileVersionInfo failed (error %d)" % ctypes.get_last_error()
+
+    def query(sub_block):
+        """One value out of the resource, as text, or ""."""
+        pointer, length = ctypes.c_void_p(), UINT()
+        if not version_dll.VerQueryValueW(block, sub_block,
+                                          ctypes.byref(pointer), ctypes.byref(length)):
+            return ""
+        return ctypes.wstring_at(pointer, length.value).strip("\x00").strip()
+
+    # The strings live under the file's own language/codepage, which has to be
+    # read out of the translation table first - "040904b0" is common but not a
+    # given, and guessing it is how this returns "" on a perfectly good exe.
+    pointer, length = ctypes.c_void_p(), UINT()
+    if not version_dll.VerQueryValueW(block, "\\VarFileInfo\\Translation",
+                                      ctypes.byref(pointer), ctypes.byref(length)):
+        return "", "the version resource carries no translation table"
+    language, codepage = ctypes.cast(
+        pointer, ctypes.POINTER(WORD * 2)).contents
+    prefix = "\\StringFileInfo\\%04x%04x\\" % (language, codepage)
+    number = query(prefix + "ProductVersion") or query(prefix + "FileVersion")
+    if not number:
+        return "", "the version resource names no version (%s)" % prefix.strip("\\")
+    return ("%s %s" % (query(prefix + "ProductName") or "Chrome", number)).strip(), ""
+
+
+def _windows_chrome_version_from_layout(path):
+    """Chrome's version taken from the folder it installs beside its .exe.
+
+    Chrome unpacks each release into ``Application\\<version>\\`` next to
+    chrome.exe, so the number is readable with nothing but a directory listing.
+    A second opinion for when the version resource cannot be read - which is
+    every browser that is not Chrome, and any Chrome whose resource is
+    unreadable for reasons this program cannot do anything about.
+    """
+    try:
+        beside = os.listdir(os.path.dirname(path) or ".")
+    except OSError:
+        return ""
+    versions = sorted(
+        (name for name in beside if re.match(r"^\d+\.\d+\.\d+\.\d+$", name)),
+        key=lambda name: [int(part) for part in name.split(".")])
+    return "Google Chrome %s" % versions[-1] if versions else ""
 
 
 def _chrome_version_string(chrome):
     """Chrome's own version banner, or "" when it will not say."""
+    return _chrome_version(chrome)[0]
+
+
+def _chrome_version(chrome):
+    """(banner, problem): the browser's version, or why it could not be had.
+
+    The problem travels with the answer so describe_chrome can say something
+    true about a browser it cannot identify, instead of one guess for every
+    cause.
+    """
+    if os.name == "nt":
+        # Windows Chrome does not implement --version. The switch is ignored and
+        # the browser starts instead: the call never answers, it opens a window.
+        # Anything that wants to know what is installed would open one every time
+        # it asked - and --describe asks twice, once per candidate.
+        try:
+            banner, problem = _windows_file_version(chrome)
+        except Exception as exc:     # a version resource is optional, not a promise
+            banner, problem = "", "%s: %s" % (type(exc).__name__, exc)
+        if banner:
+            return banner, ""
+        # The resource could not be read; Chrome still names its version in the
+        # folder beside the executable, and that is enough to answer with.
+        from_layout = _windows_chrome_version_from_layout(chrome)
+        if from_layout:
+            log.debug("Read %s from the install layout: %s", chrome, problem)
+            return from_layout, ""
+        log.debug("Could not read the version of %s: %s", chrome, problem)
+        return "", problem
     try:
         out = subprocess.run([chrome, "--version"], stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, text=True, timeout=10,
                              env=runtime_paths.clean_subprocess_env()).stdout
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return (out or "").strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "", "it would not run (%s)" % exc
+    out = (out or "").strip()
+    return out, "" if out else "it printed no version"
+
+
+#: Windows cannot register an extension by writing the profile's preferences -
+#: Chrome's tamper protection strips the entry - so the install goes over CDP
+#: instead, which needs a debug port on every launch rather than only under
+#: --run-tests. The port is loopback-only and Chrome picks it (port 0).
+EXTENSIONS_NEED_CDP = os.name == "nt"
 
 
 # Chrome/webkit timestamps are microseconds since 1601-01-01.
@@ -1451,7 +1593,206 @@ def install_autologin_extension(profile, origin, login, password):
         "manifest": json.load(open(os.path.join(version_dir, "manifest.json"), encoding="utf-8")),
     }
     _merge_extension_pref(profile, ext_id, entry)
-    return ext_id
+    return version_dir
+
+
+# -- loading extensions the way Chrome still allows ---------------------------
+# Planting an entry in the profile's Preferences (above) is how this has always
+# worked, and on Windows it no longer does: extensions.settings is a protected
+# preference, every entry is checked against an HMAC in Secure Preferences, and
+# one written from outside has none - so Chrome strips it on the first launch.
+# The files stay on disk and nothing is installed. --load-extension is refused
+# too (Chrome 137+), including with DisableLoadExtensionCommandLineSwitch.
+#
+# What Chrome does still allow is CDP: Extensions.loadUnpacked, the call
+# Playwright and Puppeteer use. It needs a debug port, so on Windows one is
+# opened for every launch - see open_window.
+#
+# Deliberately hand-rolled rather than through playwright: a plain launch must
+# not pay for the engine's dependencies (see the module docstring), and this is
+# two frames on a loopback socket.
+
+
+def _ws_frame(payload):
+    """One masked text frame, which is the only kind a client may send."""
+    data = payload.encode("utf-8")
+    header = bytearray([0x81])          # FIN + text opcode
+    mask = os.urandom(4)
+    length = len(data)
+    if length < 126:
+        header.append(0x80 | length)
+    elif length < (1 << 16):
+        header.append(0x80 | 126)
+        header += length.to_bytes(2, "big")
+    else:
+        header.append(0x80 | 127)
+        header += length.to_bytes(8, "big")
+    header += mask
+    return bytes(header) + bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+
+
+class _WebSocket:
+    """The smallest websocket client that can carry CDP: text frames, no TLS."""
+
+    def __init__(self, url, timeout=15):
+        import socket
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+        self._sock = socket.create_connection(
+            (parts.hostname, parts.port or 80), timeout=timeout)
+        self._sock.settimeout(timeout)
+        self._buffer = b""
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        path = parts.path + ("?" + parts.query if parts.query else "")
+        request = ("GET %s HTTP/1.1\r\n"
+                   "Host: %s:%s\r\n"
+                   "Upgrade: websocket\r\n"
+                   "Connection: Upgrade\r\n"
+                   "Sec-WebSocket-Key: %s\r\n"
+                   "Sec-WebSocket-Version: 13\r\n\r\n"
+                   % (path, parts.hostname, parts.port or 80, key))
+        self._sock.sendall(request.encode("ascii"))
+        while b"\r\n\r\n" not in self._buffer:
+            chunk = self._sock.recv(4096)
+            if not chunk:
+                raise OSError("the debug port closed during the handshake")
+            self._buffer += chunk
+        head, _, rest = self._buffer.partition(b"\r\n\r\n")
+        if b"101" not in head.split(b"\r\n")[0]:
+            raise OSError("the debug port refused the upgrade: %s"
+                          % head.split(b"\r\n")[0].decode("latin-1"))
+        self._buffer = rest
+        self._next_id = 0
+
+    def _recv_exactly(self, count):
+        while len(self._buffer) < count:
+            chunk = self._sock.recv(65536)
+            if not chunk:
+                raise OSError("the debug port closed")
+            self._buffer += chunk
+        head, self._buffer = self._buffer[:count], self._buffer[count:]
+        return head
+
+    def _recv_frame(self):
+        """One frame's (opcode, payload); server frames are never masked."""
+        first, second = self._recv_exactly(2)
+        length = second & 0x7F
+        if length == 126:
+            length = int.from_bytes(self._recv_exactly(2), "big")
+        elif length == 127:
+            length = int.from_bytes(self._recv_exactly(8), "big")
+        if second & 0x80:                       # a server must not mask, but read it
+            mask = self._recv_exactly(4)
+            body = self._recv_exactly(length)
+            body = bytes(b ^ mask[i % 4] for i, b in enumerate(body))
+        else:
+            body = self._recv_exactly(length)
+        return first & 0x0F, body
+
+    def call(self, method, params=None, timeout=30, session_id=None):
+        """One CDP command, waiting past the events that arrive meanwhile.
+
+        ``session_id`` addresses an attached target (flat mode), where it is a
+        field of the message itself rather than one of the command's params.
+        """
+        self._next_id += 1
+        message_id = self._next_id
+        message = {"id": message_id, "method": method, "params": params or {}}
+        if session_id:
+            message["sessionId"] = session_id
+        self._sock.sendall(_ws_frame(json.dumps(message)))
+        deadline = time.time() + timeout
+        payload = b""
+        while time.time() < deadline:
+            opcode, body = self._recv_frame()
+            if opcode == 0x8:                   # close
+                raise OSError("the debug port closed during %s" % method)
+            if opcode == 0x9:                   # ping; nothing here needs a pong
+                continue
+            payload = payload + body if opcode == 0x0 else body
+            try:
+                message = json.loads(payload)
+            except ValueError:
+                continue                        # a fragment; wait for the rest
+            payload = b""
+            if message.get("id") != message_id:
+                continue                        # an event, or another command
+            if "error" in message:
+                raise OSError("%s: %s" % (method, message["error"].get("message")))
+            return message.get("result", {})
+        raise OSError("%s did not answer in %ds" % (method, timeout))
+
+    def close(self):
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
+def devtools_endpoint(profile, timeout=20):
+    """The browser's ws:// endpoint, once Chrome has written its port.
+
+    Chrome writes DevToolsActivePort only after the browser is up, so waiting
+    for it is also how long a window takes to become addressable at all.
+    """
+    from urllib.request import urlopen
+    port_file = os.path.join(profile, "DevToolsActivePort")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with open(port_file, encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+            if lines and lines[0].strip():
+                port = int(lines[0].strip())
+                url = "http://127.0.0.1:%d/json/version" % port
+                with urlopen(url, timeout=5) as answer:
+                    return json.loads(answer.read().decode("utf-8"))["webSocketDebuggerUrl"]
+        except (OSError, ValueError, KeyError):
+            pass
+        time.sleep(0.2)
+    raise OSError("Chrome never reported a debug port for %s"
+                  % os.path.basename(profile))
+
+
+def load_extensions_over_cdp(profile, directories, timeout=20):
+    """Load already-planted extension directories into a running Chrome.
+
+    Returns the ids Chrome accepted. Every failure is survivable and logged:
+    an extension that will not load must never stop a login.
+    """
+    if not directories:
+        return []
+    connection = _WebSocket(devtools_endpoint(profile, timeout=timeout))
+    loaded = []
+    try:
+        for directory in directories:
+            try:
+                result = connection.call("Extensions.loadUnpacked", {"path": directory})
+            except OSError as exc:
+                log.warning("Chrome would not load %s: %s",
+                            os.path.basename(directory), exc)
+                continue
+            if result.get("id"):
+                loaded.append(result["id"])
+        if loaded:
+            # The tab is already sitting on the login form, and a content script
+            # only runs on a document loaded after its extension. Without this
+            # the auto-login extension arrives one navigation too late.
+            _reload_first_page(connection)
+    finally:
+        connection.close()
+    return loaded
+
+
+def _reload_first_page(connection):
+    """Reload the window's single tab, over the browser-level connection."""
+    for target in connection.call("Target.getTargets").get("targetInfos", []):
+        if target.get("type") != "page":
+            continue
+        session = connection.call("Target.attachToTarget",
+                                  {"targetId": target["targetId"], "flatten": True})
+        connection.call("Page.reload", session_id=session.get("sessionId"))
+        return
 
 
 # Chrome Web Store extensions that can be installed into every profile, by name.
@@ -1618,17 +1959,13 @@ def resolve_extension(entry, extensions_dir=None):
 
 
 def _chrome_prodversion(chrome):
-    """Best-effort Chrome major.minor for the CRX update query; falls back high."""
-    try:
-        out = subprocess.run([chrome, "--version"], stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, text=True, timeout=10,
-                             env=runtime_paths.clean_subprocess_env()).stdout
-        match = re.search(r"(\d+\.\d+)", out or "")
-        if match:
-            return match.group(1)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return "150.0"
+    """Best-effort Chrome major.minor for the CRX update query; falls back high.
+
+    Through the same banner as everything else, so that asking for it cannot
+    open a browser window on Windows (see _chrome_version_string).
+    """
+    match = re.search(r"(\d+\.\d+)", _chrome_version_string(chrome) or "")
+    return match.group(1) if match else "150.0"
 
 
 def download_crx(dest_path, ext_id, prodversion):
@@ -1700,7 +2037,7 @@ def install_crx_extension(profile, crx_path, origin, key_file_name):
         zf.extractall(version_dir)
 
     _register_extension(profile, ext_id, version_dir, version, manifest, key_b64, origin)
-    return ext_id
+    return version_dir
 
 
 def _register_extension(profile, ext_id, version_dir, version, manifest, key_b64, origin):
@@ -1765,7 +2102,7 @@ def install_local_extension(profile, src_dir, origin, key_file_name):
         shutil.rmtree(version_dir, ignore_errors=True)
     shutil.copytree(src_dir, version_dir)
     _register_extension(profile, ext_id, version_dir, version, manifest, key_b64, origin)
-    return ext_id
+    return version_dir
 
 
 def read_commands(windows_by_session):
@@ -1877,7 +2214,8 @@ class WindowSource:
     """
 
     def __init__(self, chrome, url, spawn_kwargs, procs, stagger_s=0.4,
-                 by_session=None, bind_lifetime=True):
+                 by_session=None, bind_lifetime=True, extension_dirs=None):
+        self._extension_dirs = extension_dirs or {}
         self._chrome = chrome
         self._url = url
         self._spawn_kwargs = spawn_kwargs
@@ -1899,6 +2237,8 @@ class WindowSource:
                                bind_lifetime=self._bind_lifetime)
             self._procs.append((cls, proc))
             self._names[proc] = cls
+            if EXTENSIONS_NEED_CDP:
+                _install_extensions_for(profile, self._extension_dirs.get(profile))
             if self._by_session is not None:
                 self._by_session[os.path.basename(profile)] = proc
             time.sleep(self._stagger_s)
@@ -1912,6 +2252,25 @@ class WindowSource:
         closed any other way loses it.
         """
         close_all([(self._names.get(proc, "session"), proc)])
+
+
+def _install_extensions_for(profile, directories):
+    """Ask a just-opened Chrome to load this profile's extensions.
+
+    Windows only, and never fatal: a window without its extensions is a window
+    the user still has, and the auto-login they lose is one they can do by hand.
+    """
+    if not directories:
+        return
+    try:
+        loaded = load_extensions_over_cdp(profile, directories)
+    except OSError as exc:
+        log.warning("Could not install extensions into %s: %s. The window is "
+                    "open, but auto-login will not run in it.",
+                    os.path.basename(profile), exc)
+        return
+    log.info("Installed %d extension(s) into %s.", len(loaded),
+             os.path.basename(profile))
 
 
 def force_kill(proc):
@@ -2592,6 +2951,9 @@ def main():
     procs = []
     sessions = []  # (cls, proc, profile, login, origin, tests) per window, for --run-tests
     windows_by_session = {}  # session name -> Popen, for "stop just this one"
+    # profile -> planted extension directories, for the Windows CDP install
+    # (see load_extensions_over_cdp).
+    extension_dirs = {}
     # Staged launching: open each window inside the runner's slot instead of all of
     # them here, so --jobs caps resident browsers and the load governor has a lever
     # that returns memory. Only when the windows are going to be closed anyway -
@@ -2609,18 +2971,22 @@ def main():
         clear_previous_tabs(profile)  # always start with one tab, keep the login
         # Install the auto-login extension into the profile (must run after
         # set_profile_name, which writes the Preferences file this merges into).
+        planted = []      # the directories Chrome is asked to load on Windows
         try:
-            install_autologin_extension(profile, origin, login, password)
+            planted.append(install_autologin_extension(profile, origin, login, password))
         except Exception as exc:  # a broken extension must not block the launch
             log.warning("Skipping auto-login extension for %s: %s", login, exc)
         for ext_name, ext_kind, ext_path in ready:
             try:
                 if ext_kind == "local":
-                    install_local_extension(profile, ext_path, origin, ".%s_key" % ext_name)
+                    planted.append(install_local_extension(
+                        profile, ext_path, origin, ".%s_key" % ext_name))
                 else:
-                    install_crx_extension(profile, ext_path, origin, ".%s_key" % ext_name)
+                    planted.append(install_crx_extension(
+                        profile, ext_path, origin, ".%s_key" % ext_name))
             except Exception as exc:  # optional extra; never block the launch
                 log.warning("Skipping %s extension for %s: %s", ext_name, login, exc)
+        extension_dirs[profile] = [d for d in planted if d]
         try:
             # store this user's single credential in the profile's password manager
             seed_password(chrome, profile, origin, login, password)
@@ -2631,10 +2997,14 @@ def main():
             # slot for it. proc is None until then.
             sessions.append((cls, None, profile, login, origin, user_tests))
             continue
+        wanted = extension_dirs.get(profile) or []
         proc = open_window(chrome, profile, cls, login, url,
-                           bool(run_tests or recorder), spawn_kwargs,
-                           bind_lifetime=not detach)
+                           bool(run_tests or recorder)
+                           or bool(EXTENSIONS_NEED_CDP and wanted),
+                           spawn_kwargs, bind_lifetime=not detach)
         procs.append((cls, proc))
+        if EXTENSIONS_NEED_CDP and wanted:
+            _install_extensions_for(profile, wanted)
         # Keyed the way the engine and the event stream name a session, so a
         # "stop this one" command can be addressed to what the user is looking at.
         windows_by_session[os.path.basename(profile)] = proc
@@ -2699,7 +3069,8 @@ def main():
                                jobs=len(sessions) if jobs == "all" else jobs,   # "auto" passes through
                                windows=WindowSource(chrome, url, spawn_kwargs, procs,
                                                     by_session=windows_by_session,
-                                                    bind_lifetime=not detach)
+                                                    bind_lifetime=not detach,
+                                                    extension_dirs=extension_dirs)
                                        if staged else None)
         except KeyboardInterrupt:
             stopped = True
