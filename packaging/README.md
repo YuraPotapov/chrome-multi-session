@@ -4,6 +4,8 @@ Builds an installable Chrome Multi Session for someone who has no Python, no pip
 no git and no interest in any of them. They get one file, install it, and find the
 app in their launcher.
 
+### Linux (.deb)
+
 ```
 ./packaging/build_deb.sh              # -> installers/linux/<version>/
 ./packaging/build_deb.sh --keep-venv  # reuse the build venv; much faster
@@ -11,6 +13,27 @@ app in their launcher.
 
 Needed on the **build** machine: `python3` with `venv`, `dpkg-deb`, `fakeroot`.
 Needed on the **target** machine: nothing but Ubuntu 22.04 and Google Chrome.
+
+### Windows (setup .exe)
+
+```powershell
+.\packaging\build_exe.ps1               # -> installers\windows\<version>\
+.\packaging\build_exe.ps1 -KeepVenv     # reuse the build venv; much faster
+.\packaging\build_exe.ps1 -NoInstaller  # freeze only, skip Inno Setup
+```
+
+Needed on the **build** machine: Python 3.10+ on PATH, and [Inno Setup
+6](https://jrsoftware.org/isdl.php) for the installer step.
+Needed on the **target** machine: Windows 10+ and Google Chrome.
+
+**This has to run on Windows.** PyInstaller does not cross-compile - there is no
+way to produce the `.exe` from the Linux checkout, so it wants a Windows machine,
+a VM, or a `windows-latest` CI runner.
+
+The installer offers a per-user install when it is not elevated, because a locked
+down QA machine is a common place to want this and needing an administrator is a
+reason not to bother. It refuses nothing if Chrome is missing - it says so, at
+install time, where that is still actionable.
 
 ## What comes out
 

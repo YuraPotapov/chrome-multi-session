@@ -1,0 +1,112 @@
+; Inno Setup script for Chrome Multi Session.
+;
+; Not run by hand - packaging\build_exe.ps1 passes the version and the repo root:
+;   ISCC.exe /DAppVersion=0.8.1 /DRepoRoot=C:\src\cms /Oinstallers\windows\0.8.1 installer.iss
+;
+; The Windows counterpart of packaging/linux/control.in and the .desktop file:
+; where the .deb drops two bundles under /opt and wires up /usr/bin wrappers and
+; a menu entry, this drops the same two bundles under Program Files and wires up
+; Start-menu shortcuts and an optional PATH entry.
+
+#ifndef AppVersion
+  #error Pass /DAppVersion=<version> (build_exe.ps1 does this)
+#endif
+#ifndef RepoRoot
+  #error Pass /DRepoRoot=<path to the checkout> (build_exe.ps1 does this)
+#endif
+
+#define AppName      "Chrome Multi Session"
+#define AppPublisher "Yurii Potapov"
+#define AppExeName   "chrome-multi-session-gui.exe"
+#define CoreExeName  "chrome-multi-session-core.exe"
+
+[Setup]
+AppId={{7C1F5B84-3E2A-4D6C-9A21-5E0B7D4C8F13}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppPublisher={#AppPublisher}
+DefaultDirName={autopf}\Chrome Multi Session
+DefaultGroupName={#AppName}
+OutputBaseFilename=chrome-multi-session-{#AppVersion}-setup
+SetupIconFile={#RepoRoot}\build\icons\icon.ico
+UninstallDisplayIcon={app}\gui\{#AppExeName}
+Compression=lzma2/max
+SolidCompression=yes
+WizardStyle=modern
+; The bundles are 64-bit; without this they would land in Program Files (x86).
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+; Per-machine when elevated, per-user when not: a QA machine is often locked
+; down, and needing an administrator to try the tool is a reason not to try it.
+PrivilegesRequiredOverridesAllowed=dialog
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; \
+    GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "addtopath"; Description: "Add the command-line tool to PATH"; \
+    GroupDescription: "Command line"; Flags: unchecked
+
+[Files]
+; Both PyInstaller onedir bundles, whole. The GUI finds the core next to it at
+; runtime (cms_gui.core.frozen_core), which is why the layout under {app} has to
+; match what the .deb puts under /opt/chrome-multi-session.
+Source: "{#RepoRoot}\build\dist\core\*"; DestDir: "{app}\core"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#RepoRoot}\build\dist\gui\*";  DestDir: "{app}\gui"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#RepoRoot}\build\VERSION";     DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{group}\{#AppName}";       Filename: "{app}\gui\{#AppExeName}"
+Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\gui\{#AppExeName}"; \
+    Tasks: desktopicon
+
+[Registry]
+; Opt-in, and on the user's own PATH rather than the machine's, so it works
+; without an administrator and uninstalls cleanly.
+Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
+    ValueData: "{olddata};{app}\core"; Tasks: addtopath; \
+    Check: NeedsAddPath('{app}\core')
+
+[Run]
+Filename: "{app}\gui\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; \
+    Flags: nowait postinstall skipifsilent
+
+[Code]
+// True when this directory is not already on the user's PATH. Without the
+// check, repeated installs append the same entry until PATH stops working.
+function NeedsAddPath(Param: string): Boolean;
+var
+  Existing: string;
+begin
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', Existing) then
+  begin
+    Result := True;
+    exit;
+  end;
+  Result := Pos(';' + Uppercase(ExpandConstant(Param)) + ';',
+                ';' + Uppercase(Existing) + ';') = 0;
+end;
+
+// Chrome is the one thing this cannot ship and cannot work without. Said at
+// install time, where it is actionable, rather than at first launch.
+function InitializeSetup(): Boolean;
+var
+  Dummy: string;
+begin
+  Result := True;
+  if RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe', '', Dummy) then
+    exit;
+  if RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe', '', Dummy) then
+    exit;
+  if MsgBox('Google Chrome was not found on this computer.' + #13#10#13#10 +
+            'Chrome Multi Session drives Chrome; it does not include one. ' +
+            'Install it from https://www.google.com/chrome/ and it will be ' +
+            'found automatically.' + #13#10#13#10 + 'Continue anyway?',
+            mbConfirmation, MB_YESNO) = IDNO then
+    Result := False;
+end;

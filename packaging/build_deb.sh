@@ -90,25 +90,7 @@ chmod +x "$NODE"
 say "Checking the frozen core"
 CMS_HOME="$BUILD/smoke" "$CORE_BIN" --version
 CMS_HOME="$BUILD/smoke" "$CORE_BIN" --describe > "$BUILD/describe.json"
-python3 - "$BUILD/describe.json" "$VERSION" <<'PY'
-import json, sys
-payload = json.load(open(sys.argv[1], encoding="utf-8"))
-problems = []
-if payload.get("version") != sys.argv[2]:
-    problems.append("version is %r, expected %r" % (payload.get("version"), sys.argv[2]))
-if not payload.get("scenarios"):
-    problems.append("no scenarios: the flows tree did not make it into the bundle "
-                    "(or pyyaml is missing)")
-if not payload.get("extensions"):
-    problems.append("no extensions: the extensions tree did not make it into the bundle")
-for warning in payload.get("warnings", []):
-    if "unavailable" in warning:
-        problems.append(warning)
-sys.exit("frozen core is not healthy:\n  " + "\n  ".join(problems)) if problems else None
-print("  %d scenarios, %d extensions, chrome: %s"
-      % (len(payload["scenarios"]), len(payload["extensions"]),
-         payload.get("chrome", {}).get("path") or "not found"))
-PY
+python3 "$ROOT/packaging/check_frozen.py" "$BUILD/describe.json" "$VERSION"
 
 # -- 5. icons -----------------------------------------------------------------
 say "Rendering icons"

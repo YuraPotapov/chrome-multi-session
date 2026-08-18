@@ -5,6 +5,7 @@ are written the same way: each case pins one of the two shapes.
 """
 
 import os
+import sys
 
 import pytest
 
@@ -172,3 +173,27 @@ def test_the_assets_the_gui_reads_at_runtime_exist():
     assert os.path.isdir(assets)
     # At least one splash the loader will accept, or there is nothing to bundle.
     assert any(name.startswith("splash.") for name in os.listdir(assets))
+
+
+def test_the_frozen_health_check_names_what_is_wrong():
+    """Both builds call this; it is the one place that judges a bundle."""
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "packaging"))
+    import check_frozen
+
+    healthy = {"version": "1.2.3", "scenarios": [{"id": "a"}],
+               "extensions": [{"name": "x"}], "warnings": []}
+    assert check_frozen.problems(healthy, "1.2.3") == []
+
+    # The two failures only the person who installs the package would see.
+    assert any("did not make it into the bundle" in p for p in
+               check_frozen.problems(dict(healthy, scenarios=[]), "1.2.3"))
+    assert any("no extensions" in p for p in
+               check_frozen.problems(dict(healthy, extensions=[]), "1.2.3"))
+    # A bundle stamped with the wrong version is a build that used a stale tree.
+    assert any("expected '9.9.9'" in p for p in
+               check_frozen.problems(healthy, "9.9.9"))
+    # And anything the core itself called unavailable.
+    assert check_frozen.problems(
+        dict(healthy, warnings=["playwright unavailable"]), "1.2.3") == \
+        ["playwright unavailable"]
