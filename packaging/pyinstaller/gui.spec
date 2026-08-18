@@ -39,11 +39,20 @@ excludes = [
     "tkinter", "pytest",
 ]
 
+# Anything the GUI opens by path rather than by import. PyInstaller follows
+# imports and nothing else, so a file read at runtime is simply absent from the
+# bundle - which is how 0.8.0 shipped without its splash: the app looked for the
+# artwork, found nothing, and started straight into the main window. The target
+# is "cms_gui/assets" so it lands beside the package, where app._splash_file
+# looks for it (dirname(__file__) + "/assets") in the bundle exactly as it does
+# in a checkout.
+datas = [(os.path.join(GUI, "cms_gui", "assets"), os.path.join("cms_gui", "assets"))]
+
 analysis = Analysis(
     [os.path.join(SPECPATH, "gui_entry.py")],
     pathex=[GUI],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],

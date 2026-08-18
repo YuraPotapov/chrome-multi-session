@@ -141,3 +141,34 @@ def test_clean_env_leaves_a_checkout_alone(monkeypatch):
     monkeypatch.setattr(rp, "FROZEN", False)
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib/mine")
     assert rp.clean_subprocess_env()["LD_LIBRARY_PATH"] == "/usr/lib/mine"
+
+
+# ------------------------------------------------------- what the bundle ships
+
+def _gui_spec():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "packaging", "pyinstaller", "gui.spec"),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_the_gui_bundle_ships_its_assets():
+    """PyInstaller follows imports and nothing else.
+
+    A file the app opens by path is simply absent from the bundle unless the
+    spec names it - which is how 0.8.0 first shipped with no splash: the app
+    looked for the artwork, found nothing, and started straight into the main
+    window. Nothing in the app's own tests could catch that, because in a
+    checkout the file is right there.
+    """
+    spec = _gui_spec()
+    assert "datas=datas" in spec, "the spec must pass its datas to Analysis"
+    assert '"cms_gui", "assets"' in spec, "assets/ must be bundled"
+
+
+def test_the_assets_the_gui_reads_at_runtime_exist():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    assets = os.path.join(root, "gui", "cms_gui", "assets")
+    assert os.path.isdir(assets)
+    # At least one splash the loader will accept, or there is nothing to bundle.
+    assert any(name.startswith("splash.") for name in os.listdir(assets))
