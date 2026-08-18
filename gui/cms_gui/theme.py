@@ -28,8 +28,6 @@ ACCENT_RAMP = {100: "#eef6ff", 200: "#d6ebff", 300: "#b5d9fd", 400: "#94bce3",
                500: "#749dc4", 600: "#597ea3", 700: "#416180", 800: "#2c455d",
                900: "#1d2d3d"}
 
-# color-mix(in srgb, #1d1f20 16%, transparent) over the page background, which is
-# what the browser actually paints. Qt has no color-mix, so it is resolved once.
 DIVIDER = "#cfcfd0"
 DIVIDER_STRONG = "#a8a8ab"
 
@@ -37,8 +35,40 @@ DIVIDER_STRONG = "#a8a8ab"
 OK = ACCENT_RAMP[700]
 WARN = "#a8712a"
 BAD = "#a33a2e"
-# The wash behind a red mark - a failure tag, an unsaved-changes button.
 BAD_TINT = "#f7e7e5"
+
+def set_dark_mode(enabled: bool):
+    global BG, SURFACE, TEXT, ACCENT, NEUTRAL, ACCENT_RAMP, DIVIDER, DIVIDER_STRONG, OK, WARN, BAD, BAD_TINT
+    
+    if enabled:
+        BG = "#1a1b1e"
+        SURFACE = "#25262b"
+        TEXT = "#c1c2c5"
+        DIVIDER = "#373a40"
+        DIVIDER_STRONG = "#5c5f66"
+        
+        # Invert neutral ramp for dark mode
+        NEUTRAL = {
+            100: "#2b2b2d", 200: "#424244", 300: "#5d5d60", 400: "#7a7a7d",
+            500: "#98989b", 600: "#b7b7ba", 700: "#d4d4d7", 800: "#e7e7ea",
+            900: "#f5f5f8"
+        }
+        
+        BAD_TINT = "#4a2522" # Darker wash behind red marks
+    else:
+        BG = "#f2f2f3"
+        SURFACE = "#e9e9ea"
+        TEXT = "#1d1f20"
+        DIVIDER = "#cfcfd0"
+        DIVIDER_STRONG = "#a8a8ab"
+        
+        NEUTRAL = {
+            100: "#f5f5f8", 200: "#e7e7ea", 300: "#d4d4d7", 400: "#b7b7ba",
+            500: "#98989b", 600: "#7a7a7d", 700: "#5d5d60", 800: "#424244",
+            900: "#2b2b2d"
+        }
+        
+        BAD_TINT = "#f7e7e5"
 
 # --- type -------------------------------------------------------------------
 # The design asks for Barlow / Barlow Condensed / JetBrains Mono. They are web
@@ -130,6 +160,8 @@ _GLYPH_CANDIDATES = {
     "disclosure_closed": ("▸", "►", ">"),
     "minus": ("−", "–", "-"),
     "plus": ("+",),
+    "check": ("✓", "√", "v"),
+    "more": ("⋮", "︙", ":"),
 }
 _glyph_cache = {}
 
@@ -198,6 +230,11 @@ QLabel[role="kicker"] {{
 QLabel[role="lede"] {{ font-size: 13px; color: {n700}; }}
 QLabel[role="mono"] {{ font-family: {mono}; font-size: 12px; color: {n700}; }}
 QLabel[role="muted"] {{ color: {n600}; }}
+QLabel[role="hint"] {{ font-size: 11px; color: {n600}; }}
+QLabel[role="summary"] {{ font-size: 12px; color: {n800}; }}
+QLabel[role="error"] {{ font-size: 12px; color: {bad}; }}
+QLabel[role="error-bold"] {{ font-size: 11px; color: {bad}; font-weight: bold; }}
+QLabel[role="preview"] {{ font-family: {mono}; font-size: 11px; color: {n600}; }}
 
 /* --- buttons ------------------------------------------------------------- */
 QPushButton {{
@@ -248,7 +285,6 @@ QToolButton:pressed {{ background: {n300}; }}
 QToolButton:disabled {{ color: {n500}; border-color: {n300}; }}
 QToolButton[variant="primary"] {{
     background: {accent}; color: {bg}; border-color: {accent};
-    padding-right: 22px;      /* room for the arrow, which is drawn over it */
 }}
 QToolButton[variant="primary"]:hover {{ background: {a600}; border-color: {a600}; }}
 QToolButton[variant="primary"]:pressed {{ background: {a700}; border-color: {a700}; }}
@@ -259,10 +295,23 @@ QToolButton[variant="primary"]:disabled {{
    text colour, so it sits on the accent fill correctly - putting a caret in the
    label instead leaves it left of the divider with an empty strip beside it. */
 QToolButton::menu-button {{
-    border: none; border-left: 1px solid rgba(255,255,255,0.35);
+    border: none; border-left: 1px solid {divider};
     width: 18px;
 }}
+/* On the accent fill the hairline has to be light, or it reads as a gap. */
+QToolButton[variant="primary"]::menu-button {{
+    border-left: 1px solid rgba(255,255,255,0.35);
+}}
 QToolButton::menu-arrow {{ width: 8px; height: 8px; }}
+/* Room for the arrow half, which is drawn OVER the button rather than beside
+   it. Keyed on carrying a menu, not on being the primary one: any tool button
+   with a menu needs it, and without it the label sits under the arrow. */
+QToolButton[hasmenu="true"] {{ padding-right: 24px; }}
+/* The overflow button, whose whole label IS the menu hint. Qt would draw its
+   own arrow under the glyph - a second mark saying what the first already says
+   - so the indicator is taken away and the padding closed up around it. */
+QToolButton[menuglyph="true"] {{ padding: 5px 9px; }}
+QToolButton[menuglyph="true"]::menu-indicator {{ image: none; width: 0; height: 0; }}
 
 /* Set on Save while the controls no longer match the saved configuration they
    came from. Last of the button rules on purpose: an attribute selector and a
@@ -295,7 +344,7 @@ QComboBox::down-arrow {{
     border-top: 5px solid {n600}; width: 0; height: 0; margin-right: 6px;
 }}
 QComboBox QAbstractItemView {{
-    background: {bg}; border: 1px solid {divider};
+    background: {bg}; border: 1px solid {divider}; color: {text};
     selection-background-color: {a200}; selection-color: {a900};
     outline: none;
 }}

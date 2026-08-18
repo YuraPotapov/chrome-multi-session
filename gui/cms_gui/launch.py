@@ -58,7 +58,7 @@ REPORT_LABELS = {
 DEFAULTS = {
     "environment": "",                                  # "" = every environment
     "users": {"mode": USERS_ALL, "logins": []},
-    "sessions": {"jobs": 1, "all_at_once": False,
+    "sessions": {"jobs": 1, "all_at_once": False, "auto_jobs": False,
                  "keep_open": True, "detach": False},
     "extensions": {"mode": EXT_ALL, "names": []},
     "scenarios": {"mode": SCENARIOS_NONE, "selected": []},
@@ -108,7 +108,9 @@ def to_command_state(config, inventory=None):
         "--detach": bool(sessions["detach"]),
 
         "--run-tests": _run_tests(config["scenarios"]),
-        "--jobs": "all" if sessions["all_at_once"] else str(int(sessions["jobs"] or 1)),
+        "--jobs": ("auto" if sessions["auto_jobs"] else
+                   "all" if sessions["all_at_once"] else
+                   str(int(sessions["jobs"] or 1))),
         "--execution-overlay": _overlay(config["overlay"], inventory),
         "--flows-dir": advanced["flows_dir"],
         "--reports-dir": advanced["reports_dir"],
@@ -221,7 +223,7 @@ def validate(config, inventory=None):
                         "\"Results only\".")
 
     jobs = config["sessions"]
-    if not config["sessions"]["all_at_once"] and int(jobs["jobs"] or 1) < 1:
+    if not (jobs["all_at_once"] or jobs["auto_jobs"]) and int(jobs["jobs"] or 1) < 1:
         problems.append("Run at least one session at a time.")
 
     if inventory:
@@ -261,10 +263,35 @@ def notes(config, inventory=None):
         if ignored:
             result.append("Nothing is scripted, so %s will not apply."
                           % _join(ignored))
+    if (config["sessions"]["auto_jobs"] and config["sessions"]["keep_open"]
+            and config["scenarios"]["mode"] != SCENARIOS_NONE):
+        # Auto still rations the driving here - sessions stand aside between
+        # scenarios - which frees processor time. It cannot free memory, because
+        # every window was opened up front and stays open to be inspected.
+        result.append("Windows stay open, so \"Auto\" can free processor time but "
+                      "not memory: it pauses sessions between scenarios rather "
+                      "than closing anything. Untick \"Leave the windows open\" "
+                      "to let it free both.")
     if config["sessions"]["detach"] and config["scenarios"]["mode"] != SCENARIOS_NONE:
         result.append("Detaching leaves the windows running after the launcher "
                       "exits; the run still finishes first.")
     return result
+
+
+def selected_logins(config, inventory=None):
+    """The logins this configuration would actually launch, in order.
+
+    Empty when it cannot be known - no inventory yet, with "All accounts"
+    chosen - so a caller must treat empty as "cannot say", not as "none".
+    Recording asks this because it has to end up with exactly one.
+    """
+    config = merged(config)
+    users = config["users"]
+    if users["mode"] == USERS_PICK:
+        return list(users["logins"])
+    if inventory is None:
+        return []
+    return list(_available_logins(config, inventory))
 
 
 def _available_logins(config, inventory):
@@ -315,9 +342,10 @@ def scenarios_label(config):
 def sessions_label(config):
     config = merged(config)
     sessions = config["sessions"]
-    at_once = "all at once" if sessions["all_at_once"] else (
-        "one at a time" if int(sessions["jobs"] or 1) == 1
-        else "%d at a time" % int(sessions["jobs"]))
+    at_once = ("as many as the machine allows" if sessions["auto_jobs"] else
+               "all at once" if sessions["all_at_once"] else
+               "one at a time" if int(sessions["jobs"] or 1) == 1
+               else "%d at a time" % int(sessions["jobs"]))
     after = "windows stay open" if sessions["keep_open"] else "windows close after"
     return "%s, %s" % (at_once, after)
 

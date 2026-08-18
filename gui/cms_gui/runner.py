@@ -10,6 +10,7 @@ Everything is signal-driven on the Qt event loop; nothing here ever blocks, so a
 launcher that hangs leaves the GUI perfectly responsive (and stoppable).
 """
 
+import collections
 import json
 import os
 import re
@@ -97,6 +98,19 @@ class LauncherProcess(QObject):
         except (ProcessLookupError, PermissionError, OSError):
             self._proc.terminate()
 
+    def send_command(self, **command):
+        """Write one JSON command line to the launcher's stdin (--control=-).
+
+        The inbound half of the event stream. Returns False when there is no
+        launcher to tell, so a caller acting on a stale menu is a no-op rather
+        than an error.
+        """
+        if not self.is_running():
+            return False
+        line = json.dumps(command) + "\n"
+        self._proc.write(line.encode("utf-8"))
+        return True
+
     def kill(self):
         if self.is_running():
             self._proc.kill()
@@ -104,29 +118,37 @@ class LauncherProcess(QObject):
     # -- output ---------------------------------------------------------------
     def _read_stdout(self):
         data = bytes(self._proc.readAllStandardOutput()).decode("utf-8", "replace")
+        if not data:
+            return
         self._out_buffer += data
         # Only whole lines are events; a partial one waits for the rest.
-        while "\n" in self._out_buffer:
-            line, self._out_buffer = self._out_buffer.split("\n", 1)
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except ValueError:
-                # Not an event: the core printed something else on stdout.
-                self.log.emit({"ts": "", "level": "", "session": "", "text": line})
-                continue
-            if isinstance(payload, dict):
-                self.event.emit(payload)
+        if "\n" in self._out_buffer:
+            lines = self._out_buffer.split("\n")
+            self._out_buffer = lines.pop()
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except ValueError:
+                    # Not an event: the core printed something else on stdout.
+                    self.log.emit({"ts": "", "level": "", "session": "", "text": line})
+                    continue
+                if isinstance(payload, dict):
+                    self.event.emit(payload)
 
     def _read_stderr(self):
         data = bytes(self._proc.readAllStandardError()).decode("utf-8", "replace")
+        if not data:
+            return
         self._err_buffer += data
-        while "\n" in self._err_buffer:
-            line, self._err_buffer = self._err_buffer.split("\n", 1)
-            if line.strip():
-                self.log.emit(parse_log_line(line.rstrip()))
+        if "\n" in self._err_buffer:
+            lines = self._err_buffer.split("\n")
+            self._err_buffer = lines.pop()
+            for line in lines:
+                if line.strip():
+                    self.log.emit(parse_log_line(line.rstrip()))
 
     def _flush(self):
         for buffer, emit in ((self._out_buffer, None), (self._err_buffer, self.log)):
@@ -175,6 +197,12 @@ class RunState(QObject):
         self.summary = None
         self.exit_code = None
         self.started = False
+        # The scenarios are finished, whether or not the launcher has exited:
+        # without --close-after it stays up holding the windows open.
+        self.flows_finished = False
+        # Only --jobs=auto reports one: with a fixed number there is nothing to
+        # watch, because nothing moves it.
+        self.workers = None       # {"limit", "ceiling", "unit", "why"}
         self.changed.emit()
 
     # -- ingestion ------------------------------------------------------------
@@ -184,7 +212,15 @@ class RunState(QObject):
                                    "state": "launching", "pid": None,
                                    "scenarios": [], "tree": None, "steps": {},
                                    "current": None, "done": 0, "total": 0,
-                                   "scenario": "", "flows": []}
+                                   "scenario": "", "flows": [],
+                                   # Every scenario this session has reached, in
+                                   # the order it reached them. The fields above
+                                   # are the CURRENT one; without this the rest
+                                   # are gone the moment the next flow starts,
+                                   # which is why the Run page could only ever
+                                   # show the last scenario while the in-page
+                                   # overlay showed the whole list.
+                                   "runs": collections.OrderedDict()}
             self.order.append(name)
         return self.sessions[name]
 
@@ -206,6 +242,18 @@ class RunState(QObject):
                                 event.get("login"))
         session["pid"] = event.get("pid")
         session["state"] = "launched"
+
+    def _on_governor_limit(self, event, _name):
+        """How many sessions may run right now, and why it last changed.
+
+        Kept apart from the launch page's own number: that one is what the user
+        asked for and is theirs to change, this one is what is in force for this
+        run and nobody typed it.
+        """
+        self.workers = {"limit": event.get("limit"),
+                        "ceiling": event.get("ceiling"),
+                        "unit": event.get("unit") or "sessions",
+                        "why": event.get("why") or ""}
 
     def _on_windows_ready(self, _event, _name):
         for session in self.sessions.values():
@@ -234,6 +282,12 @@ class RunState(QObject):
         session["done"] = 0
         session["steps"] = {}
         session["current"] = None
+        # Its own record, kept for the rest of the run. The step handlers below
+        # write through to it, so the finished scenarios keep their marks.
+        session["runs"][session["scenario"]] = {
+            "scenario": session["scenario"], "tree": session["tree"],
+            "steps": session["steps"], "total": session["total"],
+            "done": 0, "status": "running"}
 
     def _on_step_start(self, event, name):
         session = self._session(name)
@@ -250,6 +304,9 @@ class RunState(QObject):
         if status == "pass":
             session["done"] += 1
         session["current"] = None
+        run = session["runs"].get(session.get("scenario"))
+        if run is not None:
+            run["done"] = session["done"]
 
     def _on_step_retry(self, event, name):
         session = self._session(name)
@@ -263,7 +320,34 @@ class RunState(QObject):
                                  "status": status,
                                  "passed": event.get("passed"),
                                  "total": event.get("total")})
-        session["state"] = "passed" if status == "pass" else "failed"
+        run = session["runs"].get(session.get("scenario"))
+        if run is not None:
+            run["status"] = status
+            run["done"] = event.get("passed", run["done"])
+            run["total"] = event.get("total", run["total"])
+        # The WORST outcome so far, not the latest one. A session whose first
+        # scenario failed and whose last one passed has not passed, and saying
+        # PASS beside a tree with a red mark in it is worse than saying nothing.
+        # Read from the per-scenario records rather than from session["state"]:
+        # that one is set back to "running" by every flow.start, so it cannot
+        # remember a failure across scenarios.
+        failed = any(run.get("status") not in ("pass", "running")
+                     for run in session["runs"].values())
+        session["state"] = "failed" if failed else "passed"
+
+    def _on_session_stopping(self, event, name):
+        self.mark_stopping(name or event.get("session"))
+
+    def mark_stopping(self, name):
+        """Show a window as going down as soon as it is asked to.
+
+        Called straight from the Stop menu as well as from the event: the core
+        has to finish the step it is in before it can answer, and a menu entry
+        that looks like it did nothing invites a second click.
+        """
+        if name in self.sessions:
+            self.sessions[name]["state"] = "stopping"
+            self.changed.emit()
 
     def _on_run_dir(self, event, _name):
         self.run_dir = event.get("dir", "")
@@ -275,6 +359,16 @@ class RunState(QObject):
 
     def _on_run_summary(self, event, _name):
         self.summary = event
+
+    def _on_run_finished(self, event, _name):
+        """The scenarios are done - which is NOT the launcher being done.
+
+        Without --close-after the launcher stays up holding the windows open for
+        inspection, so waiting for the process to exit left the Run page saying
+        RUNNING with a ticking clock long after the last step.
+        """
+        self.flows_finished = True
+        self.exit_code = event.get("exit_code")
 
     def _on_window_exited(self, event, _name):
         for session in self.sessions.values():

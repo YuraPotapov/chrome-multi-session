@@ -83,18 +83,52 @@ class SessionPanel(widgets.BlueprintPanel):
         self._render_tree(session)
 
     def _render_tree(self, session):
+        """Every scenario this window has run, not only the one running now.
+
+        The in-page overlay has always shown the whole planned list with each
+        outcome; this page showed the current scenario alone, because the state
+        it read was overwritten at every flow.start. Reading the per-scenario
+        records instead puts the same picture here - and the ones still to come
+        are listed too, so the shape of the run is visible from the start.
+        """
         while self.steps_layout.count():
             item = self.steps_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        tree = session.get("tree")
-        if not tree:
+
+        runs = session.get("runs") or {}
+        if not runs and not session.get("scenarios"):
             hint = QLabel("waiting for the first scenario…")
             hint.setStyleSheet("color: %s; font-size: 12px;" % theme.NEUTRAL[600])
             self.steps_layout.addWidget(hint)
             return
-        for node, depth in _walk(tree):
-            self.steps_layout.addWidget(_step_row(node, depth, session))
+
+        for scenario, run in runs.items():
+            self.steps_layout.addWidget(_scenario_header(scenario, run))
+            for node, depth in _walk(run.get("tree") or {}):
+                if depth == 0:
+                    continue        # the header above already names the flow
+                self.steps_layout.addWidget(_step_row(node, depth, run))
+        for scenario in session.get("scenarios") or []:
+            if scenario not in runs:
+                self.steps_layout.addWidget(
+                    _scenario_header(scenario, {"status": "pending"}))
+
+
+def _scenario_header(scenario, run):
+    """One scenario's own line: its mark, its id, and how far it got."""
+    status = run.get("status", "pending")
+    mark = {"pass": "pass", "fail": "fail", "error": "fail",
+            "running": "running"}.get(status, "pending")
+    counts = ""
+    if run.get("total"):
+        counts = "   %s/%s" % (run.get("done", 0), run["total"])
+    label = QLabel("%s  %s%s" % (theme.glyph(mark), scenario, counts))
+    colour = {"pass": theme.OK, "fail": theme.BAD, "error": theme.BAD,
+              "running": theme.ACCENT}.get(status, theme.NEUTRAL[500])
+    label.setStyleSheet("font-family: %s; font-size: 12px; font-weight: 600; "
+                        "color: %s; padding-top: 6px;" % (theme.MONO_CSS, colour))
+    return label
 
 
 def _walk(node, depth=0):
@@ -180,10 +214,16 @@ class RunPage(QWidget):
             "14px 18px;" % (theme.ACCENT_RAMP[900], theme.NEUTRAL[100], theme.MONO_CSS))
         column.addWidget(self.summary)
 
-        run_state.changed.connect(self.refresh)
+        self._refresh_pending = False
+        run_state.changed.connect(self._schedule_refresh)
         self._timer = QTimer(self)
         self._timer.setInterval(500)
         self._timer.timeout.connect(self._tick)
+
+    def _schedule_refresh(self):
+        if not self._refresh_pending:
+            self._refresh_pending = True
+            QTimer.singleShot(0, self.refresh)
 
     # -- lifecycle ------------------------------------------------------------
     def run_started(self, meta=""):
@@ -203,6 +243,11 @@ class RunPage(QWidget):
         self._timer.start()
 
     def run_finished(self, code):
+        """Settle the header. Called when the SCENARIOS end, not the process.
+
+        Idempotent: run.finished lands first, and the launcher exiting later
+        calls this again with the same answer.
+        """
         self._timer.stop()
         self.tag.set("FINISHED (%d)" % code, "accent" if code == 0 else "bad")
         summary = self.run_state.summary
@@ -222,6 +267,7 @@ class RunPage(QWidget):
 
     # -- rendering ------------------------------------------------------------
     def refresh(self):
+        self._refresh_pending = False
         sessions = self.run_state.ordered()
         if sessions:
             self.placeholder.setVisible(False)

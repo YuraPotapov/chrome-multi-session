@@ -423,7 +423,7 @@
   var Recorder = {
     _shadow: null, _card: null, _body: null, _titleEl: null, _hi: null,
     _armBtn: null, _hintEl: null, _menu: null,
-    _armed: false, _running: false, _collapsed: false,
+    _armed: false, _running: false, _collapsed: false, _busy: false,
     _queue: [],            // events waiting for Python to drain
     _state: { steps: [], scenario: "", status: "idle" },
     _selectors: {}, _grammar: {},
@@ -485,6 +485,9 @@
     render: function (state) {
       try {
         this._state = state || this._state;
+        // Python repaints only after the step has been performed and written
+        // down, so this is the acknowledgement the hold was waiting for.
+        this._setBusy(false);
         if (this._running) { this.ensure(); this.paint(); }
       } catch (e) { /* never throw into the page */ }
     },
@@ -623,9 +626,10 @@
       this._armBtn.textContent = this._armed ? "Pick an element… (Esc)"
                                              : "Capture Step  (F2)";
       this._armBtn.className = this._armed ? "action armed" : "action";
-      this._hintEl.textContent = this._armed
-        ? "Hover to outline, click to pick. Menus stay open while capturing."
-        : (state.status === "busy" ? "Working…"
+      this._hintEl.textContent = this._busy
+        ? "Performing the step…"
+        : (this._armed
+           ? "Hover to outline, click to pick. Menus stay open while capturing."
            : "Nothing is recorded until you press Capture Step. Press F2 instead "
              + "to keep a dropdown open.");
 
@@ -1197,7 +1201,28 @@
       // Disarm first: performing the step may navigate, and an armed recorder
       // would then eat the first click on the next page.
       this.disarm();
+      // Say that the step is in flight. It is performed a poll later, by
+      // Playwright, and there is deliberately no attempt to hold the page shut
+      // in the meantime: the recorder cannot tell its own click from a person's
+      // - both are trusted input - so blocking one blocks the other, and the
+      // step never lands. Saying so is the honest half of that.
+      this._setBusy(true);
       this._push({ kind: "step", step: step });
+    },
+
+    _setBusy: function (busy) {
+      if (busy === this._busy) return;
+      this._busy = busy;
+      if (busy) {
+        // Cleared by Python's next repaint; this only covers the case where it
+        // never comes, so the panel does not sit saying "performing" for ever.
+        var self = this;
+        this._busyTimer = setTimeout(function () { self._setBusy(false); }, 5000);
+      } else if (this._busyTimer) {
+        clearTimeout(this._busyTimer);
+        this._busyTimer = null;
+      }
+      this.paint();
     }
   };
 

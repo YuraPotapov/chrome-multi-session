@@ -414,8 +414,14 @@ class Inventory:
         }
 
     def summary(self):
-        """One line for the toolbar: what this inventory contains."""
+        """One line for the toolbar: what this inventory contains.
+
+        Plain words, not the flag that fetched them: the toolbar is read by
+        someone deciding what to launch, and "--describe" answers a question
+        they did not ask. The Command page and the Tools menu still name the
+        flag, because that is where the flags are the subject.
+        """
         if not self.payload:
-            return "no core inventory"
-        return "--describe · %d envs · %d users · %d scenarios" % (
+            return "nothing read yet"
+        return "%d environments · %d accounts · %d scenarios" % (
             len(self.envs), len(self.users), len(self.scenarios))

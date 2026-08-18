@@ -58,7 +58,15 @@ class Settings:
 
     @page.setter
     def page(self, value):
-        self._qs.setValue("window/page", value)
+        self._qs.setValue("window/page", value or "launch")
+
+    @property
+    def dark_mode(self):
+        return self._qs.value("window/dark_mode", False, type=bool)
+
+    @dark_mode.setter
+    def dark_mode(self, value):
+        self._qs.setValue("window/dark_mode", bool(value))
 
     @property
     def developer_mode(self):
@@ -68,6 +76,24 @@ class Settings:
     @developer_mode.setter
     def developer_mode(self, value):
         self._qs.setValue("window/developer_mode", bool(value))
+
+    @property
+    def always_on_top(self):
+        """Whether the window stays above others - including a run's Chrome windows."""
+        return self._qs.value("window/always_on_top", False, bool)
+
+    @always_on_top.setter
+    def always_on_top(self, value):
+        self._qs.setValue("window/always_on_top", bool(value))
+
+    @property
+    def launch_summary_expanded(self):
+        """Whether the Launch page's footer shows its summary, notes and preview."""
+        return self._qs.value("launch/summary_expanded", True, bool)
+
+    @launch_summary_expanded.setter
+    def launch_summary_expanded(self, value):
+        self._qs.setValue("launch/summary_expanded", bool(value))
 
     @property
     def run_source(self):
@@ -165,3 +191,15 @@ class Settings:
 
     def save_presets(self, presets):
         self._qs.setValue("command/presets", json.dumps(presets))
+
+    def desktop_links(self):
+        """Saved custom desktop links for configurations: {config_name: {path, name, icon}}."""
+        raw = self._qs.value("launch/desktop_links", "", str)
+        try:
+            value = json.loads(raw) if raw else {}
+        except ValueError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def save_desktop_links(self, links):
+        self._qs.setValue("launch/desktop_links", json.dumps(links))

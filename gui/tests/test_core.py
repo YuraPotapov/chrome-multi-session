@@ -116,3 +116,25 @@ def test_inventory_reports_a_chrome_that_is_present_but_cannot_run():
 def test_inventory_never_warns_about_a_core_that_was_not_asked():
     # An older core has no "chrome" key; that is "cannot tell", not "missing".
     assert not core_mod.Inventory({"users": []}).chrome_problem()
+
+
+def test_the_toolbar_summary_is_plain_words_not_a_flag_name():
+    from cms_gui import core as core_mod
+
+    inv = core_mod.Inventory({
+        "envs": [{"alias": "localhost", "value": "localhost:8069"}],
+        "users": [{"env": "localhost:8069", "login": "admin", "class": "Admin"}],
+        "scenarios": [{"id": "smoke"}, {"id": "login"}],
+        "extensions": [], "tags": [],
+    })
+    line = inv.summary()
+    # The toolbar is read by someone deciding what to launch; "--describe"
+    # answers a question they did not ask.
+    assert "--describe" not in line
+    assert "1 environments" in line and "1 accounts" in line and "2 scenarios" in line
+
+
+def test_an_unread_inventory_says_so_without_jargon():
+    from cms_gui import core as core_mod
+
+    assert core_mod.Inventory().summary() == "nothing read yet"

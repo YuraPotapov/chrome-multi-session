@@ -11,7 +11,7 @@ import os
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                               QFileDialog, QGridLayout, QHBoxLayout, QLabel,
+                               QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
@@ -117,9 +117,8 @@ class CommandPage(QWidget):
         outer.addWidget(scroll, 1)
 
         # --- preview strip (the design's footer bar) -------------------------
-        footer = QWidget()
-        widgets.scoped_style(footer, "background: %s; border-top: 1px solid %s;"
-                             % (theme.NEUTRAL[100], theme.DIVIDER))
+        footer = QFrame()
+        footer.setProperty("role", "footer")
         strip = QHBoxLayout(footer)
         strip.setContentsMargins(24, 10, 24, 10)
         strip.setSpacing(14)
@@ -127,8 +126,7 @@ class CommandPage(QWidget):
         self.preview = QLabel("")
         self.preview.setWordWrap(True)
         self.preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.preview.setStyleSheet("font-family: %s; font-size: 12px; color: %s;"
-                                   % (theme.MONO_CSS, theme.ACCENT_RAMP[800]))
+        self.preview.setProperty("role", "preview")
         strip.addWidget(self.preview, 1)
         self.copy_button = QPushButton(theme.labelled("copy", "Copy"))
         self.copy_button.clicked.connect(self.copy_command)

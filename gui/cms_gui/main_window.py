@@ -11,17 +11,20 @@ acts on, and the place that records the result. Both concerns live here rather
 than in either page, so neither page has to know the other exists.
 """
 
+import logging
 import os
 import platform
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
-from PySide6.QtWidgets import (QDialog, QFrame, QLabel, QMainWindow, QMenu,
+from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QInputDialog, QLabel,
+                               QMainWindow, QMenu,
                                QMessageBox, QPushButton, QStackedWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
 from . import (commands, core as core_mod, history as history_mod, icon,
-               launch as launch_mod, theme, widgets)
+               launch as launch_mod, load as load_mod, theme, widgets)
+from .loader import LoaderThread
 from . import version as gui_version
 from .runner import LauncherProcess, RunState
 from .settings import Settings
@@ -63,15 +66,42 @@ RAIL_SLACK = 18
 # rail on account of that.
 HEADING_TRIM = 10
 
+# How long to wait for the launcher to stop when the window is closed on top of a
+# live run. The launcher SIGTERMs every window and gives Chrome up to 15 s each to
+# flush its cookies, so anything shorter risks closing on a login mid-write.
+CLOSE_WAIT_MS = 20000
+
+# The splash. READY is how long "Ready!" stays up once the pages are populated -
+# long enough to read rather than a flicker. MAX is the hard stop: --describe is
+# a subprocess that can hang (a busy machine, a core that never answers), and a
+# splash with no window behind it is an app that looks dead. It always goes.
+SPLASH_READY_MS = 800
+SPLASH_MAX_MS = 15000
+
 
 def _run_label(text):
     """RUN. The menu's arrow is drawn by Qt in the button's own arrow half."""
     return theme.labelled("run", text)
 
 
+def _close_warning(windows):
+    """What the close-during-a-run warning says, for ``windows`` open windows.
+
+    Its own function so the wording can be tested without standing up a dialog.
+    """
+    closes = (" and closes %d window%s" % (windows, "" if windows == 1 else "s")
+              if windows else "")
+    return ("Closing stops the run first%s, so each window shuts down gracefully "
+            "and keeps its login. This can take a few seconds." % closes)
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, splash=None, auto_launch=None, headless=False):
         super().__init__()
+        self.splash = splash
+        self._auto_launch = auto_launch
+        self._headless = headless
+        self._closing = False
         self.setWindowTitle("chrome-multi-session — GUI")
         self.setWindowIcon(icon.app_icon())
         self.resize(1380, 880)
@@ -94,10 +124,32 @@ class MainWindow(QMainWindow):
         self._connect_process()
 
         self.set_developer_mode(self.settings.developer_mode)
+        if self.settings.always_on_top:
+            self.set_always_on_top(True)
         self.show_page(self.settings.page)
+        
+        # Two labels rather than one string: the machine is read on a timer, the
+        # worker count arrives on the event stream, and neither should have to
+        # wait for the other's cadence to show what it knows.
+        self.workers_label = QLabel("")
+        self.workers_label.setStyleSheet("padding: 0 10px;")
+        self.statusBar().addPermanentWidget(self.workers_label)
+        self.run_state.changed.connect(self._update_workers)
+        self.metrics_label = QLabel("")
+        self.metrics_label.setStyleSheet("padding: 0 10px;")
+        self.statusBar().addPermanentWidget(self.metrics_label)
+
+        self.loader_thread = None
+        self._load = load_mod.Sampler()
+        self._metrics_timer = QTimer(self)
+        self._metrics_timer.timeout.connect(self._update_metrics)
+        self._metrics_timer.start(2000)
+        
         # Ask the core what exists as soon as the window is up, so the pages are
         # populated before the user reaches them.
-        QTimer.singleShot(80, self.refresh_inventory)
+        QTimer.singleShot(500 if self.splash else 80, self.refresh_inventory)
+        if self.splash:
+            QTimer.singleShot(SPLASH_MAX_MS, self._finish_splash)
 
     # -- construction ---------------------------------------------------------
     def _build_menu(self):
@@ -138,6 +190,17 @@ class MainWindow(QMainWindow):
         self.developer_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
         self.developer_action.toggled.connect(self.set_developer_mode)
         view_menu.addAction(self.developer_action)
+        
+        self.always_on_top_action = QAction("Always on Top", self)
+        self.always_on_top_action.setCheckable(True)
+        self.always_on_top_action.toggled.connect(self.set_always_on_top)
+        view_menu.addAction(self.always_on_top_action)
+        
+        self.dark_mode_action = QAction("&Dark mode", self)
+        self.dark_mode_action.setCheckable(True)
+        self.dark_mode_action.setChecked(self.settings.dark_mode)
+        self.dark_mode_action.toggled.connect(self.set_dark_mode)
+        view_menu.addAction(self.dark_mode_action)
 
         tools_menu = menu.addMenu("&Tools")
         refresh_action = QAction("Refresh --describe", self)
@@ -179,6 +242,7 @@ class MainWindow(QMainWindow):
         self.run_button.setProperty("variant", "primary")
         self.run_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.run_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.run_button.setProperty("hasmenu", "true")   # reserves the arrow's half
         self.run_button.clicked.connect(self.start_run)
         self.run_menu = QMenu(self.run_button)
         # One entry, because there is only one thing to want: record. Whether
@@ -191,12 +255,24 @@ class MainWindow(QMainWindow):
         self.record_action.triggered.connect(self.start_recording)
         self.run_menu.addAction(self.record_action)
         self.run_button.setMenu(self.run_menu)
-        self.stop_button = QPushButton(theme.labelled("stop", "Stop"))
+        # Stop mirrors RUN: the button is the whole run, the arrow is the one
+        # window you are actually looking at. Same shape, because "stop" reads as
+        # one idea with a narrower version of itself inside it.
+        self.stop_button = QToolButton()
+        self.stop_button.setText(theme.labelled("stop", "Stop"))
+        self.stop_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.stop_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.stop_button.setProperty("hasmenu", "true")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_run)
+        self.stop_menu = QMenu(self.stop_button)
+        # Filled from the live run: which windows exist is not knowable until one
+        # is running, and stale entries would offer to stop what is already gone.
+        self.stop_menu.aboutToShow.connect(self._fill_stop_menu)
+        self.stop_button.setMenu(self.stop_menu)
         self.copy_button = QPushButton(theme.labelled("copy", "Copy command"))
         self.copy_button.clicked.connect(lambda: self.command.copy_command())
-        self.refresh_button = QPushButton(theme.labelled("refresh", "Refresh describe"))
+        self.refresh_button = QPushButton(theme.labelled("refresh", "Refresh"))
         self.refresh_button.clicked.connect(self.refresh_inventory)
         self.describe_label = widgets.mono("")
         # A checkable button rather than a menu item alone: which mode you are in
@@ -348,6 +424,106 @@ class MainWindow(QMainWindow):
             self.settings.run_source = key
             self._update_run_label()
 
+    def set_always_on_top(self, enabled):
+        enabled = bool(enabled)
+        self.settings.always_on_top = enabled
+        self.always_on_top_action.blockSignals(True)
+        self.always_on_top_action.setChecked(enabled)
+        self.always_on_top_action.blockSignals(False)
+        was_visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, enabled)
+        # Changing a flag on a mapped window makes Qt destroy and re-create it,
+        # so it has to be shown again or it simply disappears - but ONLY if it
+        # was on screen to begin with. At startup this runs while the splash is
+        # still up and the pages are empty; showing here put a half-built window
+        # on screen and left the data arriving a second or two later.
+        if was_visible:
+            self.show()
+            if enabled:
+                self.raise_()
+                self.activateWindow()
+
+    def _finish_splash(self):
+        """Take the splash down and show the window. Safe to call twice.
+
+        Reached three ways: the load finishing, the load failing, and the hard
+        timeout armed at startup - whichever comes first wins, and the rest are
+        no-ops.
+        """
+        if not self.splash:
+            return
+        if not self._headless:
+            self.show()
+        self.splash.finish(self)
+        self.splash = None
+
+    def _keep_on_top(self):
+        """Restack above a window that has just mapped, if asked to stay on top.
+
+        A run opens seven browsers, each mapping and raising itself. The window
+        manager honours the always-on-top state, but re-asserting costs nothing
+        and covers the window that maps in the same instant the flag is applied.
+
+        raise_() only, never activateWindow(): the auto-login extension is typing
+        into one of those browsers, and taking keyboard focus off it mid-login is
+        how a launch loses its password.
+        """
+        if self.always_on_top_action.isChecked():
+            self.raise_()
+
+    def _update_workers(self):
+        """Show the number of sessions in force right now, and what last set it.
+
+        Shown for every parallel run, not only the governed ones: "how many are
+        running" is a fair question whether or not the answer can change, and it
+        is the launch page's number confirmed rather than repeated - that one is
+        what was asked for, this one is what the run is doing.
+        """
+        workers = self.run_state.workers
+        if not workers or not self.process.is_running():
+            self.workers_label.clear()
+            self.workers_label.setToolTip("")
+            return
+        limit, ceiling = workers["limit"], workers["ceiling"]
+        held_back = limit is not None and ceiling is not None and limit < ceiling
+        self.workers_label.setText(
+            "<span style='color: %s'>%s %s of %s</span>"
+            % (theme.WARN if held_back else theme.NEUTRAL[600],
+               theme.glyph("run"), limit, ceiling))
+        self.workers_label.setToolTip(
+            "%s %s running at once, out of %s.\nLast change: %s"
+            % (limit, workers["unit"], ceiling, workers["why"] or "none yet"))
+
+    def _update_metrics(self):
+        load = self._load.read()
+        used = load.used_percent
+        if not load.readable:
+            self.metrics_label.clear()
+            self._metrics_timer.stop()   # this platform will not start answering
+            return
+        # Red for stall, not for a busy CPU: a saturated machine driving windows
+        # is the tool working. Only memory pressure threatens the run.
+        strained = (load.mem_stall is not None and load.mem_stall > 10) or \
+                   (used is not None and used > 90)
+        colour = theme.BAD if strained else theme.NEUTRAL[600]
+        self.metrics_label.setText(
+            "<span style='color: %s'>CPU %s &nbsp;RAM %s</span>"
+            % (colour,
+               "--" if load.cpu_percent is None else "%.0f%%" % load.cpu_percent,
+               "--" if used is None else "%.0f%%" % used))
+
+    def set_dark_mode(self, enabled):
+        from PySide6.QtWidgets import QApplication
+        enabled = bool(enabled)
+        self.settings.dark_mode = enabled
+        
+        self.dark_mode_action.blockSignals(True)
+        self.dark_mode_action.setChecked(enabled)
+        self.dark_mode_action.blockSignals(False)
+        
+        theme.set_dark_mode(enabled)
+        QApplication.instance().setStyleSheet(theme.stylesheet())
+
     def set_developer_mode(self, enabled):
         enabled = bool(enabled)
         self.settings.developer_mode = enabled
@@ -394,37 +570,91 @@ class MainWindow(QMainWindow):
 
     # -- core -----------------------------------------------------------------
     def refresh_inventory(self):
+        # The first refresh is a delayed singleShot, so a window closed inside
+        # that delay would otherwise start a describe on its way out - a thread
+        # nobody is left to wait for, and widgets nobody is left to fill in.
+        if self._closing:
+            return
+        if self.loader_thread and self.loader_thread.isRunning():
+            return
+
         self.command.set_core(self.core)
         self.launch.set_core(self.core)
         # Scenarios reads and writes files through the core too, not just runs it.
         self.scenarios.set_core(self.core)
-        if not self.core.is_configured():
-            self.describe_label.setText("core not configured")
-            self._update_status()
-            return
-        self.describe_label.setText("reading --describe …")
-        try:
-            payload = self.core.describe()
-        except core_mod.CoreError as exc:
-            self.describe_label.setText("--describe failed")
-            self.status_right.setText("describe failed")
+        
+        def _splash_msg(text):
+            """Progress, for the splash only.
+
+            Deliberately not the top bar's describe label: stage names like
+            "Parsing inventory..." are this window talking to itself, and one
+            left showing after a slow load reads as a state the app is stuck in.
+            That label says one quiet thing while loading, then the summary.
+            """
+            if self.splash:
+                # One line; the splash draws it into its own status strip, so
+                # neither the padding nor the colour belongs here any more.
+                self.splash.showMessage("%s  \u00B7  %s" % (gui_version(), text))
+                self.splash.repaint()
+                QApplication.processEvents()
+
+        def _on_error(exc):
+            self.describe_label.setText("could not read the configuration")
+            self.status_right.setText("check Settings -> Core script")
+            self._finish_splash()
+            if self._headless:
+                logging.error("Cannot read the core: %s", exc)
+                QApplication.quit()
+                return
             QMessageBox.warning(self, "Cannot read the core",
                                 "%s\n\nCheck Settings -> Core script / Interpreter."
                                 % exc)
-            return
-        self.inventory = core_mod.Inventory(payload)
-        self.environments.set_inventory(self.inventory)
-        self.command.set_inventory(self.inventory)
-        self.launch.set_inventory(self.inventory)
-        self.scenarios.set_inventory(self.inventory)
-        self.credentials.load(self.inventory.config_path or self.core.config_path)
-        self.describe_label.setText(self.inventory.summary())
-        self.rail_note.setText("core %s\nPySide6 %s" % (self.inventory.version,
-                                                        _pyside_version()))
-        if self.inventory.warnings:
-            self.status_right.setText(self.inventory.warnings[0][:90])
-        self._update_status()
-        self._warn_about_chrome()
+                                
+        def _on_finished(inventory):
+            self.inventory = inventory
+            
+            _splash_msg("Populating environments...")
+            self.environments.set_inventory(self.inventory)
+            
+            _splash_msg("Populating commands...")
+            self.command.set_inventory(self.inventory)
+            
+            _splash_msg("Populating launchers...")
+            self.launch.set_inventory(self.inventory)
+            
+            _splash_msg("Populating scenarios...")
+            self.scenarios.set_inventory(self.inventory)
+            
+            _splash_msg("Loading credentials...")
+            self.credentials.load(self.inventory.config_path or self.core.config_path)
+            
+            _splash_msg("Finalizing UI...")
+            self.describe_label.setText(self.inventory.summary())
+            self.rail_note.setText("core %s\nPySide6 %s" % (self.inventory.version,
+                                                            _pyside_version()))
+            if self.inventory.warnings:
+                self.status_right.setText(self.inventory.warnings[0][:90])
+            self._update_status()
+            self._warn_about_chrome()
+            
+            if self.splash:
+                _splash_msg("Ready!")
+                QTimer.singleShot(SPLASH_READY_MS, self._finish_splash)
+            else:
+                self._finish_splash()
+                
+            if self._auto_launch:
+                self.show_page("launch")
+                self.launch._reload_configs(select=self._auto_launch)
+                QTimer.singleShot(100, self.launch.run_requested.emit)
+                self._auto_launch = None
+                
+        self.describe_label.setText("reading the configuration …")
+        self.loader_thread = LoaderThread(self.core, self)
+        self.loader_thread.progress.connect(_splash_msg)
+        self.loader_thread.error.connect(_on_error)
+        self.loader_thread.finished_inventory.connect(_on_finished)
+        self.loader_thread.start()
 
     def _warn_about_chrome(self):
         """Say so, once, when the core cannot find a browser to launch.
@@ -530,12 +760,38 @@ class MainWindow(QMainWindow):
         show the recorder, and that nothing is run afterwards - the launcher
         stays up for as long as you are recording.
         """
+        login = self.ask_recording_account()
+        if login == "cancel":
+            return
         choice, scenario = self.ask_recording_target()
         if choice == "cancel":
             return
-        self.start_run(recorder=scenario or True)
+        self.start_run(recorder=scenario or True, only_login=login or None)
 
-    def start_run(self, source=None, recorder=False):
+    def ask_recording_account(self):
+        """Which single account to record: a login, "" (leave as configured), or "cancel".
+
+        Recording is a one-window activity - you can only be clicking in one of
+        them - and the core refuses more than one outright. Asking here turns
+        that refusal into a choice, at the moment the choice is obvious.
+        """
+        source, page = self._run_page(None)
+        if source != "launch" or getattr(page, "inventory", None) is None:
+            return ""       # the Command page states its own accounts; let the core judge
+        logins = launch_mod.selected_logins(page.state(), page.inventory)
+        if len(logins) <= 1:
+            return ""
+        # A list, not a row of buttons: eleven accounts is a normal number here.
+        chosen, ok = QInputDialog.getItem(
+            self, "Record",
+            "Recording opens one window, and %d accounts are selected.\n"
+            "Which one do you want to record?" % len(logins),
+            logins, 0, False)
+        if not ok or not chosen:
+            return "cancel"
+        return chosen
+
+    def start_run(self, source=None, recorder=False, only_login=None):
         if self.process.is_running():
             return
         if not self.core.is_configured():
@@ -546,6 +802,10 @@ class MainWindow(QMainWindow):
         if source == "launch":
             problems = page.problem_list()
             if problems:
+                if self._headless:
+                    logging.error("Cannot launch, problems: %s", problems)
+                    QApplication.quit()
+                    return
                 QMessageBox.information(self, "Launch Sessions",
                                         "Fix this first:\n\n- %s"
                                         % "\n- ".join(problems))
@@ -553,12 +813,21 @@ class MainWindow(QMainWindow):
         args = page.argv()
         if recorder:
             args = commands.for_recording(args)
+            if only_login:
+                # Replace rather than add: the configuration's own account list is
+                # what made this ambiguous, and the core takes one --filter-users.
+                args = [a for a in args if not a.startswith("--filter-users=")]
+                args.insert(0, "--filter-users=%s" % only_login)
             # Ahead of --events, which build_argv always puts last.
             args.insert(0, "--recorder" if recorder is True
                         else "--recorder=%s" % recorder)
         try:
             argv = self.core.argv(*args)
         except core_mod.CoreError as exc:
+            if self._headless:
+                logging.error("CoreError: %s", exc)
+                QApplication.quit()
+                return
             QMessageBox.warning(self, "Run", str(exc))
             return
         self.run_state.reset()
@@ -602,9 +871,58 @@ class MainWindow(QMainWindow):
             "argv": list(argv), "display_command": display,
             "summary": commands.preview(state, self.core), "command_state": state}
 
+    def _fill_stop_menu(self):
+        """One entry per window still running, plus everything.
+
+        Rebuilt each time it opens rather than kept in step with the run: a menu
+        that is only correct while it is on screen only has to be correct then.
+        """
+        self.stop_menu.clear()
+        live = [s for s in self.run_state.ordered()
+                if s["state"] in ("launching", "launched", "attached", "running")]
+        for session in live:
+            label = session["name"]
+            if session.get("scenario"):
+                label += "  (%s)" % session["scenario"]
+            action = QAction(label, self)
+            action.setToolTip("Stop this window and close it. The others carry on.")
+            action.triggered.connect(
+                lambda _checked=False, name=session["name"]: self.stop_session(name))
+            self.stop_menu.addAction(action)
+        if not live:
+            nothing = QAction("No windows running", self)
+            nothing.setEnabled(False)
+            self.stop_menu.addAction(nothing)
+            return
+        self.stop_menu.addSeparator()
+        everything = QAction("Stop everything", self)
+        everything.triggered.connect(self.stop_run)
+        self.stop_menu.addAction(everything)
+
+    def stop_session(self, name):
+        """Stop ONE window: it closes, the rest of the run carries on."""
+        if not self.process.is_running():
+            return
+        if not self.process.send_command(command="stop-session", session=name):
+            return
+        self.run_state.mark_stopping(name)
+        self.status_right.setText("stopping %s — the others carry on" % name)
+
     def stop_run(self):
         if not self.process.is_running():
             return
+
+        window_count = len(self.run_state.sessions)
+        msg = "Are you sure you want to stop the current run?"
+        if window_count > 0:
+            msg += f"\nThis will close {window_count} window{'s' if window_count != 1 else ''}."
+            
+        reply = QMessageBox.question(self, "Confirm Stop", msg,
+                                     QMessageBox.Yes | QMessageBox.No,
+                                     QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+            
         self._stopping = True
         self.status_right.setText("stopping — the launcher closes its windows first")
         self.process.stop()
@@ -616,6 +934,17 @@ class MainWindow(QMainWindow):
 
     def _on_event(self, event):
         self.run_state.handle(event)
+        kind = event.get("kind")
+        if kind == "window.launched":
+            self._keep_on_top()
+        elif kind == "run.finished":
+            # Settle the Run page now. The launcher may well still be up - with
+            # the windows kept open it is - so Stop stays enabled and the run is
+            # not marked over; only the page stops pretending steps are running.
+            self.run.run_finished(event.get("exit_code") or 0)
+            if self.process.is_running():
+                self.status_right.setText(
+                    "scenarios finished — windows open, Stop closes them")
         # A recording is scenario work, not run work, so it is shown where
         # scenarios live rather than in the run view.
         if str(event.get("kind", "")).startswith("recorder."):
@@ -629,10 +958,16 @@ class MainWindow(QMainWindow):
             self.artifacts.set_run_dir(self.run_state.run_dir)
         self._close_entry(history_mod.status_for(code, stopped=self._stopping),
                           exit_code=code)
+        if self._headless:
+            QApplication.quit()
 
     def _on_failed(self, message):
         self._set_running(False)
         self._close_entry(history_mod.ERROR, summary_suffix=message)
+        if self._headless:
+            logging.error("Run failed: %s", message)
+            QApplication.quit()
+            return
         QMessageBox.warning(self, "Run", message)
 
     def _close_entry(self, status, exit_code=None, summary_suffix=""):
@@ -666,6 +1001,7 @@ class MainWindow(QMainWindow):
         self.command.set_running(running)
         self.launch.set_running(running)
         self.status_state.setText("state: running" if running else "state: idle")
+        self._update_workers()   # the count is a live fact; it goes when the run does
         if running:
             self.status_right.setText("events: stdout · logs: stderr")
 
@@ -762,19 +1098,50 @@ class MainWindow(QMainWindow):
             return parts[1]
         return banner or "not detected"
 
+    def _confirm_close_during_run(self):
+        """Ask before closing on top of a live run. True means go ahead.
+
+        A warning rather than a question, and the buttons say what they do:
+        "Yes" and "No" leave it open which one closes without stopping, and that
+        is the one outcome nobody wants - the launcher would be killed with its
+        windows still up and their logins unflushed.
+        """
+        windows = len(self.run_state.sessions)
+        box = QMessageBox(self)
+        box.setWindowTitle("A run is in progress")
+        box.setIcon(QMessageBox.Warning)
+        box.setText("Autotests are still running.")
+        box.setInformativeText(_close_warning(windows))
+        stop = box.addButton("Stop all and close", QMessageBox.AcceptRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(stop)
+        box.exec()
+        return box.clickedButton() is stop
+
     def closeEvent(self, event):
         if self.process.is_running():
-            answer = QMessageBox.question(
-                self, "A run is in progress",
-                "The launcher is still running. Stop it and close?\n\n"
-                "Stopping lets it shut the Chrome windows down gracefully.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
+            if not self._confirm_close_during_run():
                 event.ignore()
                 return
-            self.process.stop()
-            self.process._proc.waitForFinished(8000)
+            self.status_right.setText("stopping the run before closing…")
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                self.process.stop()
+                # Long enough for the launcher's own graceful teardown: it
+                # SIGTERMs every window and gives Chrome up to 15 s each to flush
+                # its cookies. Cutting that short is what loses a login.
+                self.process._proc.waitForFinished(CLOSE_WAIT_MS)
+            finally:
+                QApplication.restoreOverrideCursor()
+        self._closing = True
+        self._metrics_timer.stop()
         self.settings.save_geometry(self.saveGeometry())
+        # A QThread whose QObject is destroyed while it is still running takes the
+        # process down with it, which turns closing the window mid-describe into a
+        # crash on the way out. --describe is a subprocess we cannot cancel, so
+        # wait for it rather than pretend it can be stopped.
+        if self.loader_thread is not None and self.loader_thread.isRunning():
+            self.loader_thread.wait(5000)
         super().closeEvent(event)
 
 

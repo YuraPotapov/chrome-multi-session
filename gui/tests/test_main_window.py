@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cms_gui import history as history_mod, launch, main_window as main_window_mod
+from cms_gui.settings import Settings
 
 
 @pytest.fixture
@@ -485,3 +486,211 @@ def test_cancelling_records_nothing(window, monkeypatch):
     monkeypatch.setattr(window, "start_run", lambda **kw: started.append(kw))
     window.start_recording()
     assert started == []
+
+
+def test_the_stop_menu_offers_each_running_window(window):
+    window.run_state.handle({"kind": "window.launched", "session": "dev-agent", "pid": 1})
+    window.run_state.handle({"kind": "window.launched", "session": "dev-manager", "pid": 2})
+    window._fill_stop_menu()
+    labels = [a.text() for a in window.stop_menu.actions() if a.isEnabled()]
+    assert any(l.startswith("dev-agent") for l in labels)
+    assert any(l.startswith("dev-manager") for l in labels)
+    assert "Stop everything" in labels
+
+
+def test_a_finished_window_is_not_offered_for_stopping(window):
+    window.run_state.handle({"kind": "window.launched", "session": "done", "pid": 1})
+    window.run_state.sessions["done"]["state"] = "passed"
+    window._fill_stop_menu()
+    labels = [a.text() for a in window.stop_menu.actions()]
+    assert not any(l.startswith("done") for l in labels)
+    assert "No windows running" in labels
+
+
+def test_stopping_one_window_with_no_launcher_is_a_no_op(window):
+    window.run_state.handle({"kind": "window.launched", "session": "a", "pid": 1})
+    window.stop_session("a")     # nothing is running; must not raise
+    assert window.run_state.sessions["a"]["state"] == "launched"
+
+
+def test_recording_one_account_asks_nothing(window):
+    window.show_page("launch")
+    window.launch.inventory = _StubInventory(["only_one"])
+    window.launch.users_mode.set_current("Choose accounts", notify=False)
+    window.launch.users_list.set_checked(["only_one"])
+    # One account is not a choice, so no dialog: "" means "leave as configured".
+    assert window.ask_recording_account() == ""
+
+
+class _StubInventory:
+    def __init__(self, logins):
+        self._logins = logins
+
+    def logins(self, env=None):
+        return list(self._logins)
+
+    def env_value(self, alias):
+        return alias
+
+
+def test_a_chosen_account_replaces_the_configurations_own_filter(window, monkeypatch):
+    # The account list is what made the recording ambiguous, so the answer has to
+    # replace it rather than be added alongside it - the core takes one.
+    sent = {}
+    monkeypatch.setattr(window.process, "start",
+                        lambda argv, working_dir=None: sent.update(argv=argv) or True)
+    monkeypatch.setattr(window.core, "is_configured", lambda: True)
+    monkeypatch.setattr(window.core, "argv", lambda *a: list(a))
+    monkeypatch.setattr(window.launch, "argv",
+                        lambda: ["--filter-users=a,b,c", "--events=-"])
+    monkeypatch.setattr(window.launch, "problem_list", lambda: [])
+    window._run_source = "launch"
+    window.start_run(source="launch", recorder=True, only_login="b")
+    argv = sent.get("argv", [])
+    assert "--filter-users=b" in argv
+    assert "--filter-users=a,b,c" not in argv
+    assert "--recorder" in argv
+
+
+def test_closing_with_no_run_asks_nothing(window, monkeypatch):
+    asked = []
+    monkeypatch.setattr(window, "_confirm_close_during_run",
+                        lambda: asked.append(True) or True)
+    monkeypatch.setattr(window.process, "is_running", lambda: False)
+    window.close()
+    assert asked == []          # nothing is at risk, so nothing to warn about
+
+
+def test_closing_during_a_run_is_refused_when_cancelled(window, monkeypatch):
+    stopped = []
+    monkeypatch.setattr(window.process, "is_running", lambda: True)
+    monkeypatch.setattr(window.process, "stop", lambda: stopped.append(True))
+    monkeypatch.setattr(window, "_confirm_close_during_run", lambda: False)
+    from PySide6.QtGui import QCloseEvent
+    event = QCloseEvent()
+    window.closeEvent(event)
+    assert not event.isAccepted()      # the window stays open
+    assert stopped == []               # and the run is left alone
+
+
+def test_closing_during_a_run_stops_it_first(window, monkeypatch):
+    order = []
+    monkeypatch.setattr(window.process, "is_running", lambda: True)
+    monkeypatch.setattr(window.process, "stop", lambda: order.append("stop"))
+    monkeypatch.setattr(window.process, "_proc",
+                        type("P", (), {"waitForFinished":
+                                       lambda self, ms: order.append("wait %d" % ms)})())
+    monkeypatch.setattr(window, "_confirm_close_during_run", lambda: True)
+    from PySide6.QtGui import QCloseEvent
+    window.closeEvent(QCloseEvent())
+    # Stopped, then waited on: closing while the launcher is still shutting the
+    # windows down is what loses a login.
+    assert order == ["stop", "wait %d" % main_window_mod.CLOSE_WAIT_MS]
+
+
+def test_the_close_warning_counts_the_windows_that_will_go():
+    assert "closes 2 windows" in main_window_mod._close_warning(2)
+    assert "closes 1 window" in main_window_mod._close_warning(1)
+    # No windows reported yet: say what closing does without inventing a count.
+    assert "closes" not in main_window_mod._close_warning(0)
+
+
+def test_a_toolbar_button_with_a_menu_reserves_room_for_its_arrow(window):
+    # The arrow half is drawn OVER the button, not beside it. Stop became a
+    # QToolButton with a menu and kept the plain padding, so its label sat
+    # underneath the arrow.
+    for button in (window.run_button, window.stop_button):
+        assert button.property("hasmenu") == "true"
+        assert button.menu() is not None
+
+
+class _FakeSplash:
+    def __init__(self):
+        self.finished_for = None
+
+    def finish(self, window):
+        self.finished_for = window
+
+    def showMessage(self, *a, **k):
+        pass
+
+    def repaint(self):
+        pass
+
+
+def test_the_splash_never_outlives_a_core_that_never_answers(window):
+    # --describe is a subprocess that can hang. Without a hard stop the splash
+    # would sit there with no window behind it, which looks like a dead app.
+    splash = _FakeSplash()
+    window.splash = splash
+    window._finish_splash()
+    assert splash.finished_for is window
+    assert window.splash is None
+
+
+def test_finishing_the_splash_twice_is_harmless(window):
+    # Three things race to close it - the load finishing, the load failing, and
+    # the timeout. Whichever wins, the others must be no-ops.
+    window.splash = _FakeSplash()
+    window._finish_splash()
+    window._finish_splash()
+    assert window.splash is None
+
+
+def test_the_ready_pause_is_long_enough_to_read():
+    # 300ms was a flicker: the word appeared and the window took over.
+    assert main_window_mod.SPLASH_READY_MS >= 500
+    assert main_window_mod.SPLASH_MAX_MS > main_window_mod.SPLASH_READY_MS
+
+
+def test_the_splash_artwork_is_found_in_assets():
+    from cms_gui import app as app_mod
+
+    path = app_mod._splash_file()
+    assert path and os.path.isfile(path)
+    assert os.path.basename(path) in app_mod.SPLASH_NAMES
+
+
+def test_replacing_the_splash_is_a_file_copy_not_a_code_change(tmp_path, monkeypatch):
+    # Any of the accepted names works, tried in order, so dropping a new image
+    # into assets/ is all it takes.
+    from cms_gui import app as app_mod
+
+    monkeypatch.setattr(app_mod.os.path, "dirname", lambda _p: str(tmp_path))
+    (tmp_path / "assets").mkdir()
+    assert app_mod._splash_file() is None          # none present yet
+    (tmp_path / "assets" / "splash.png").write_bytes(b"x")
+    assert os.path.basename(app_mod._splash_file()) == "splash.png"
+    (tmp_path / "assets" / "splash.jpg").write_bytes(b"x")
+    assert os.path.basename(app_mod._splash_file()) == "splash.jpg"   # first wins
+
+
+def test_always_on_top_does_not_show_the_window_early(qapp):
+    """Restoring the setting must not put a half-built window on screen.
+
+    set_always_on_top has to re-show the window because changing a flag makes Qt
+    re-create it - but at startup it runs while the splash is still up and the
+    pages are empty, so the window appeared first and the data arrived a second
+    or two later.
+    """
+    settings = Settings()
+    previous = settings.always_on_top
+    settings.always_on_top = True
+    try:
+        win = main_window_mod.MainWindow(splash=_FakeSplash())
+        try:
+            assert win.always_on_top_action.isChecked()   # the setting was applied
+            assert not win.isVisible()                    # ... without showing it
+        finally:
+            win.close()
+    finally:
+        settings.always_on_top = previous
+
+
+def test_toggling_always_on_top_on_a_visible_window_keeps_it_visible(window):
+    # The other half: once it IS on screen, the re-create must not lose it.
+    window.show()
+    window.set_always_on_top(True)
+    assert window.isVisible()
+    window.set_always_on_top(False)
+    assert window.isVisible()

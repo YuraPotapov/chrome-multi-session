@@ -140,3 +140,114 @@ def test_an_unknown_event_kind_is_ignored(qapp):
     state = RunState()
     _feed(state, {"kind": "something.new", "session": "s", "detail": 1})
     assert state.ordered() == []
+
+
+def test_the_worker_count_in_force_comes_off_the_event_stream(qapp):
+    state = RunState()
+    assert state.workers is None            # a fixed number reports nothing
+    _feed(state, {"kind": "governor.limit", "limit": 7, "ceiling": 7,
+                  "unit": "sessions", "why": "starting at one per core"})
+    assert state.workers["limit"] == 7
+    _feed(state, {"kind": "governor.limit", "limit": 6, "ceiling": 7,
+                  "unit": "sessions", "why": "cpu at 96%"})
+    # The number in force AND why it moved: a count that drops with no reason
+    # given is the thing that made the old throttle look broken.
+    assert (state.workers["limit"], state.workers["why"]) == (6, "cpu at 96%")
+
+
+def test_a_new_run_forgets_the_last_run_s_worker_count(qapp):
+    state = RunState()
+    _feed(state, {"kind": "governor.limit", "limit": 3, "ceiling": 7})
+    state.reset()
+    assert state.workers is None
+
+
+def test_a_session_asked_to_stop_says_so_before_the_core_answers(qapp):
+    state = RunState()
+    _feed(state, {"kind": "window.launched", "session": "dev-agent", "pid": 1})
+    state.mark_stopping("dev-agent")
+    # The core has to finish the step it is in before it can reply, and a menu
+    # entry that looks like it did nothing invites a second click.
+    assert state.sessions["dev-agent"]["state"] == "stopping"
+
+
+def test_the_core_announcing_a_stop_marks_that_session_only(qapp):
+    state = RunState()
+    _feed(state,
+          {"kind": "window.launched", "session": "a", "pid": 1},
+          {"kind": "window.launched", "session": "b", "pid": 2},
+          {"kind": "session.stopping", "session": "a"})
+    assert state.sessions["a"]["state"] == "stopping"
+    assert state.sessions["b"]["state"] == "launched"
+
+
+def _flow(state, name, scenario, labels, status="pass"):
+    tree = {"kind": "flow", "label": scenario,
+            "children": [{"kind": "step", "step_index": i, "label": l}
+                         for i, l in enumerate(labels)]}
+    _feed(state, {"kind": "flow.start", "session": name, "scenario": scenario,
+                  "tree": tree, "steps": len(labels)})
+    for i, _l in enumerate(labels):
+        _feed(state, {"kind": "step.start", "session": name, "index": i},
+              {"kind": "step.end", "session": name, "index": i, "status": "pass"})
+    _feed(state, {"kind": "flow.end", "session": name, "status": status,
+                  "passed": len(labels), "total": len(labels)})
+
+
+def test_every_scenario_a_session_runs_is_kept(qapp):
+    # The Run page could only ever show the last scenario, because flow.start
+    # overwrote the tree and the steps. The in-page overlay always showed the
+    # whole list; this is the state that lets the page match it.
+    state = RunState()
+    _feed(state, {"kind": "window.launched", "session": "s", "pid": 1},
+          {"kind": "session.start", "session": "s",
+           "scenarios": ["access_agent", "multicompany_agent"]})
+    _flow(state, "s", "access_agent", ["click a", "click b"])
+    _flow(state, "s", "multicompany_agent", ["click c"], status="fail")
+    runs = state.sessions["s"]["runs"]
+    assert list(runs) == ["access_agent", "multicompany_agent"]   # in run order
+    assert runs["access_agent"]["status"] == "pass"
+    assert runs["multicompany_agent"]["status"] == "fail"
+    # And the earlier scenario kept its own steps rather than the later one's.
+    assert len(runs["access_agent"]["tree"]["children"]) == 2
+    assert len(runs["multicompany_agent"]["tree"]["children"]) == 1
+
+
+def test_a_finished_scenario_keeps_its_step_marks(qapp):
+    state = RunState()
+    _feed(state, {"kind": "window.launched", "session": "s", "pid": 1})
+    _flow(state, "s", "first", ["a", "b"])
+    _flow(state, "s", "second", ["c"])
+    first = state.sessions["s"]["runs"]["first"]
+    assert [first["steps"][i]["status"] for i in (0, 1)] == ["pass", "pass"]
+    assert first["done"] == 2 and first["total"] == 2
+
+
+def test_a_session_that_failed_once_does_not_report_pass(qapp):
+    # The tag said PASS beside a tree with a red mark in it, because flow.end
+    # took the latest outcome instead of the worst one.
+    state = RunState()
+    _feed(state, {"kind": "window.launched", "session": "s", "pid": 1})
+    _flow(state, "s", "first", ["a"], status="fail")
+    _flow(state, "s", "second", ["b"], status="pass")
+    assert state.sessions["s"]["state"] == "failed"
+
+
+def test_a_session_where_everything_passed_reports_pass(qapp):
+    state = RunState()
+    _feed(state, {"kind": "window.launched", "session": "s", "pid": 1})
+    _flow(state, "s", "first", ["a"])
+    _flow(state, "s", "second", ["b"])
+    assert state.sessions["s"]["state"] == "passed"
+
+
+def test_the_scenarios_finishing_is_not_the_launcher_finishing(qapp):
+    # Without --close-after the launcher stays up holding the windows open, so
+    # the page waited for a process exit that was minutes away and kept saying
+    # RUNNING with a ticking clock.
+    state = RunState()
+    assert state.flows_finished is False
+    _feed(state, {"kind": "run.finished", "exit_code": 1})
+    assert state.flows_finished is True and state.exit_code == 1
+    state.reset()
+    assert state.flows_finished is False

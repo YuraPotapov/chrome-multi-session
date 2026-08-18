@@ -15,13 +15,14 @@ where a power user who does know what a flows directory is can still set one.
 import json
 import os
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog,
-                               QGridLayout, QHBoxLayout, QInputDialog, QLabel,
-                               QLineEdit, QMessageBox, QPushButton, QRadioButton,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog,
+                               QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
+                               QLineEdit, QMenu, QMessageBox, QPushButton, QRadioButton,
+                               QScrollArea, QToolButton, QVBoxLayout, QWidget)
 
-from .. import launch, store, theme, widgets
+from .. import launch, load as load_mod, store, theme, widgets
 
 SCENARIO_MODES = [
     (launch.SCENARIOS_NONE, "Just open the windows",
@@ -37,6 +38,71 @@ SCENARIO_MODES = [
 UNSAVED = "(unsaved)"
 ALL_ENVIRONMENTS = "All environments"
 
+class DesktopLinkDialog(QDialog):
+    def __init__(self, parent, default_name, default_path, default_icon):
+        super().__init__(parent)
+        self.setWindowTitle("Configure Desktop Link")
+        self.resize(int(parent.width() * 0.5), self.height())
+        layout = QVBoxLayout(self)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+
+        grid.addWidget(QLabel("Name:"), 0, 0)
+        self.name_edit = QLineEdit(default_name)
+        grid.addWidget(self.name_edit, 0, 1)
+
+        grid.addWidget(QLabel("Folder:"), 1, 0)
+        path_layout = QHBoxLayout()
+        path_layout.setContentsMargins(0, 0, 0, 0)
+        self.path_edit = QLineEdit(default_path)
+        path_layout.addWidget(self.path_edit)
+        browse_btn = QPushButton(theme.glyph("browse"))
+        browse_btn.setFixedWidth(38)
+        browse_btn.clicked.connect(self._browse)
+        path_layout.addWidget(browse_btn)
+        grid.addLayout(path_layout, 1, 1)
+
+        grid.addWidget(QLabel("Icon:"), 2, 0)
+        icon_layout = QHBoxLayout()
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        self.icon_edit = QLineEdit(default_icon)
+        icon_layout.addWidget(self.icon_edit)
+        browse_icon_btn = QPushButton(theme.glyph("browse"))
+        browse_icon_btn.setFixedWidth(38)
+        browse_icon_btn.clicked.connect(self._browse_icon)
+        icon_layout.addWidget(browse_icon_btn)
+        grid.addLayout(icon_layout, 2, 1)
+
+        layout.addLayout(grid)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        save = QPushButton("Save")
+        save.setProperty("variant", "primary")
+        save.clicked.connect(self.accept)
+        btns.addWidget(save)
+        layout.addLayout(btns)
+
+    def _browse(self):
+        start = self.path_edit.text() or os.path.expanduser("~/Desktop")
+        chosen = QFileDialog.getExistingDirectory(self, "Choose folder", start)
+        if chosen:
+            self.path_edit.setText(chosen)
+            
+    def _browse_icon(self):
+        start = self.icon_edit.text()
+        if not start or not os.path.exists(os.path.dirname(start)):
+            start = os.path.expanduser("~")
+        chosen, _ = QFileDialog.getOpenFileName(
+            self, "Choose icon file", start, "Images (*.png *.svg *.ico *.xpm);;All Files (*)"
+        )
+        if chosen:
+            self.icon_edit.setText(chosen)
+
 
 class LaunchSessionsPage(QWidget):
     """The user-facing launcher: sections, a plain-words summary, and RUN."""
@@ -49,7 +115,11 @@ class LaunchSessionsPage(QWidget):
         self.settings = settings
         self.inventory = None
         self.core = None
-        self._building = False
+        # True until _restore() has put the saved state back. Building the
+        # controls fires their signals - a checkbox set to its default, a fold
+        # restored from settings - and letting those reach _changed() would save
+        # the empty default page over the state that is about to be restored.
+        self._building = True
         # The saved configuration as it was when it was opened, so an edit made
         # since can be told from the file on disk. None while nothing is opened.
         self._baseline = None
@@ -58,12 +128,18 @@ class LaunchSessionsPage(QWidget):
         self._configs = store.NamedConfigs(
             os.path.join(store.app_data_dir(), "configs.json"))
 
+        self._load = load_mod.Sampler()
+        self._metric_timer = QTimer(self)
+        self._metric_timer.timeout.connect(self._update_metrics)
+        self._metric_timer.start(2000)
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        self.scrollArea = QScrollArea()
+        self.scrollArea.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.scrollArea.setWidgetResizable(True)
         body = QWidget()
         column = QVBoxLayout(body)
         column.setContentsMargins(24, 20, 24, 20)
@@ -93,11 +169,16 @@ class LaunchSessionsPage(QWidget):
         column.addSpacing(16)
         column.addWidget(self._advanced_panel())
         column.addStretch(1)
-        scroll.setWidget(body)
-        outer.addWidget(scroll, 1)
+        self.scrollArea.setWidget(body)
+        outer.addWidget(self.scrollArea, 1)
 
         outer.addWidget(self._footer())
         self._restore()
+
+    def _on_advanced_toggled(self, expanded):
+        if expanded:
+            QTimer.singleShot(10, lambda: self.scrollArea.verticalScrollBar().setValue(
+                self.scrollArea.verticalScrollBar().maximum()))
 
     # -- construction ---------------------------------------------------------
     def _config_bar(self):
@@ -150,7 +231,7 @@ class LaunchSessionsPage(QWidget):
         none_button.setProperty("variant", "ghost")
         none_button.clicked.connect(lambda: self.users_list.set_all(False))
         self.users_hint = QLabel("Accounts come from the Credentials page.")
-        self.users_hint.setStyleSheet("font-size: 11px; color: %s;" % theme.NEUTRAL[600])
+        self.users_hint.setProperty("role", "hint")
         panel.layout().addWidget(widgets.row(all_button, none_button, None,
                                              self.users_hint))
         return panel
@@ -177,16 +258,58 @@ class LaunchSessionsPage(QWidget):
         self.jobs.valueChanged.connect(self._changed)
         self.jobs_all = QCheckBox("All at once")
         self.jobs_all.toggled.connect(self._jobs_all_toggled)
+        self.jobs_auto = QCheckBox("Auto")
+        self.jobs_auto.setToolTip(
+            "Start at one window per processor core and let the machine decide: "
+            "fewer while memory is under real pressure, back up again once it is "
+            "not. A number you type here is never changed for you.")
+        self.jobs_auto.toggled.connect(self._jobs_auto_toggled)
         panel.layout().addWidget(widgets.field(
             "How many sessions run at the same time",
-            widgets.row(self.jobs, self.jobs_all, None),
-            "One at a time is the calmest to watch; more is faster."))
+            widgets.row(self.jobs, self.jobs_all, self.jobs_auto, None),
+            "One at a time is the calmest to watch; more is faster. "
+            "\"Auto\" lets the machine raise and lower it as the run goes."))
         self.keep_open = QCheckBox("Leave the windows open when the run finishes")
         self.keep_open.setChecked(True)
         self.keep_open.toggled.connect(self._changed)
         panel.layout().addWidget(self.keep_open)
+        
+        self.metrics_warning = QLabel("System Load: CPU --% | RAM --%")
+        self.metrics_warning.setProperty("role", "hint")
+        self.metrics_warning.setWordWrap(True)
+        panel.layout().addWidget(self.metrics_warning)
+
         panel.layout().addStretch(1)
         return panel
+
+    def _update_metrics(self):
+        """Say what the machine is doing. Never touch the user's settings for them.
+
+        This deliberately does not adjust `jobs`: a number the user typed and
+        saved is theirs, and silently winding it down every two seconds the CPU
+        is busy edits a saved configuration behind their back - while the run is
+        under way, which is exactly when the CPU is busy. Capping windows to what
+        the machine can carry is the load governor's job, in the core, where it
+        can act on the real thing instead of on a spin box.
+        """
+        load = self._load.read()
+        if not load.readable:
+            self.metrics_warning.setText("System load is not readable on this platform.")
+            return
+        used = load.used_percent
+        strained = (load.mem_stall is not None and load.mem_stall > 10) or \
+                   (used is not None and used > 90)
+        if strained:
+            note = ("Memory is under pressure. More sessions than the machine can hold "
+                    "will be opened a few at a time.")
+        else:
+            note = "System load: CPU %s | RAM %s" % (
+                "--" if load.cpu_percent is None else "%.0f%%" % load.cpu_percent,
+                "--" if used is None else "%.0f%%" % used)
+        self.metrics_warning.setProperty("role", "error-bold" if strained else "hint")
+        self.metrics_warning.style().unpolish(self.metrics_warning)
+        self.metrics_warning.style().polish(self.metrics_warning)
+        self.metrics_warning.setText(note)
 
     def _scenarios_panel(self):
         panel = widgets.BlueprintPanel()
@@ -236,6 +359,7 @@ class LaunchSessionsPage(QWidget):
     def _advanced_panel(self):
         panel = widgets.BlueprintPanel()
         self.advanced = widgets.Disclosure("Advanced")
+        self.advanced.toggled.connect(self._on_advanced_toggled)
         panel.layout().addWidget(self.advanced)
         inner = self.advanced.body()
         inner.addWidget(widgets.lede(
@@ -291,9 +415,8 @@ class LaunchSessionsPage(QWidget):
         return panel
 
     def _footer(self):
-        footer = QWidget()
-        widgets.scoped_style(footer, "background: %s; border-top: 1px solid %s;"
-                             % (theme.NEUTRAL[100], theme.DIVIDER))
+        footer = QFrame()
+        footer.setProperty("role", "footer")
         column = QVBoxLayout(footer)
         column.setContentsMargins(24, 10, 24, 10)
         column.setSpacing(6)
@@ -301,40 +424,68 @@ class LaunchSessionsPage(QWidget):
         self.summary = QLabel("")
         self.summary.setWordWrap(True)
         self.summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.summary.setStyleSheet("font-size: 12px; color: %s;" % theme.NEUTRAL[800])
+        self.summary.setProperty("role", "summary")
         reset = QPushButton("Reset")
         reset.clicked.connect(self.reset)
         self.footer_save = save = QPushButton("Save")
         save.clicked.connect(self.save_configuration)
+        # Everything here is something you do to a configuration now and then -
+        # never mid-flow - so it folds into one unlabelled button rather than
+        # standing beside Save and RUN competing for the same glance.
+        self.more_button = QToolButton()
+        self.more_button.setText(theme.glyph("more"))
+        self.more_button.setPopupMode(QToolButton.InstantPopup)
+        self.more_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.more_button.setProperty("menuglyph", "true")
+        self.more_button.setToolTip("More options for this configuration")
+        self.more_menu = QMenu(self.more_button)
+        self.desktop_link = QAction("Desktop Link", self)
+        self.desktop_link.setCheckable(True)
+        self.desktop_link.setToolTip(
+            "Put a launcher for this configuration on the desktop.")
+        self.desktop_link.triggered.connect(self._toggle_desktop_link)
+        self.more_menu.addAction(self.desktop_link)
+        self.more_button.setMenu(self.more_menu)
         self.run_button = QPushButton(theme.labelled("run", "RUN"))
         self.run_button.setProperty("variant", "primary")
         self.run_button.clicked.connect(self.run_requested.emit)
         # Built by hand rather than with widgets.row: the summary is the long part
         # and has to take the leftover width, which needs a stretch factor on that
         # one widget instead of a spacer beside it.
+        # The footer grows with what it has to say - summary, notes, the command
+        # preview - and on a small screen it can take a third of the page. The
+        # buttons never fold away, so RUN is always one click from anywhere.
+        self.summary_toggle = QPushButton("")
+        self.summary_toggle.setProperty("variant", "ghost")
+        self.summary_toggle.setCheckable(True)
+        self.summary_toggle.setCursor(Qt.PointingHandCursor)
+        self.summary_toggle.toggled.connect(self._summary_toggled)
         strip = QHBoxLayout()
         strip.setContentsMargins(0, 0, 0, 0)
         strip.setSpacing(14)
-        strip.addWidget(widgets.kicker("summary"))
+        strip.addWidget(self.summary_toggle)
         strip.addWidget(self.summary, 1)
-        for button in (reset, save, self.run_button):
+        for button in (reset, save, self.more_button, self.run_button):
             strip.addWidget(button)
         column.addLayout(strip)
 
+        # Problems are never folded away: they are the reason RUN would refuse,
+        # and a refusal with its explanation hidden is the worst of both.
         self.problems = QLabel("")
         self.problems.setWordWrap(True)
-        self.problems.setStyleSheet("font-size: 12px; color: %s;" % theme.BAD)
+        self.problems.setProperty("role", "error")
         column.addWidget(self.problems)
         self.notes = QLabel("")
         self.notes.setWordWrap(True)
-        self.notes.setStyleSheet("font-size: 11px; color: %s;" % theme.NEUTRAL[600])
+        self.notes.setProperty("role", "hint")
         column.addWidget(self.notes)
         self.preview = QLabel("")
         self.preview.setWordWrap(True)
         self.preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.preview.setStyleSheet("font-family: %s; font-size: 11px; color: %s;"
-                                   % (theme.MONO_CSS, theme.ACCENT_RAMP[800]))
+        self.preview.setProperty("role", "preview")
         column.addWidget(self.preview)
+        self.summary_toggle.setChecked(self.settings.launch_summary_expanded)
+        self._summary_toggled(self.summary_toggle.isChecked())
         return footer
 
     # -- state ----------------------------------------------------------------
@@ -349,6 +500,7 @@ class LaunchSessionsPage(QWidget):
                       "logins": self.users_list.checked()},
             "sessions": {"jobs": self.jobs.value(),
                          "all_at_once": self.jobs_all.isChecked(),
+                         "auto_jobs": self.jobs_auto.isChecked(),
                          "keep_open": self.keep_open.isChecked(),
                          "detach": self.detach.isChecked()},
             "extensions": {"mode": self._ext_mode_value(),
@@ -385,6 +537,7 @@ class LaunchSessionsPage(QWidget):
             sessions = config["sessions"]
             self.jobs.setValue(max(1, int(sessions["jobs"] or 1)))
             self.jobs_all.setChecked(bool(sessions["all_at_once"]))
+            self.jobs_auto.setChecked(bool(sessions["auto_jobs"]))
             self.keep_open.setChecked(bool(sessions["keep_open"]))
             self.detach.setChecked(bool(sessions["detach"]))
 
@@ -455,20 +608,28 @@ class LaunchSessionsPage(QWidget):
         self.report_list.setEnabled(
             config["reports"]["level"] == launch.REPORTS_CUSTOM)
         self.overlay_list.setEnabled(config["overlay"]["enabled"])
-        self.jobs.setEnabled(not config["sessions"]["all_at_once"])
+        # Greyed out whenever the number is not the thing deciding: left editable
+        # under "Auto" it would read as a value in force, which it is not - the
+        # governor starts from the machine's core count, not from the box.
+        self.jobs.setEnabled(not (config["sessions"]["all_at_once"]
+                                  or config["sessions"]["auto_jobs"]))
 
         rows = launch.summarise(config, self.inventory)
         self.summary.setText("   ·   ".join("%s: %s" % (label, value)
                                             for label, value in rows))
         problems = launch.validate(config, self.inventory)
         self.problems.setText("   ".join(problems))
+        # Never gated by the fold: a problem is the reason RUN would refuse, and
+        # a refusal with its explanation folded away is the worst of both.
         self.problems.setVisible(bool(problems))
         notes = launch.notes(config, self.inventory)
         self.notes.setText("   ".join(notes))
-        self.notes.setVisible(bool(notes))
+        expanded = self.summary_toggle.isChecked()
+        self.notes.setVisible(bool(notes) and expanded)
         self.run_button.setEnabled(not problems and not self._running())
         self.preview.setText(launch.preview(config, self.inventory, self.core))
-        self.preview.setVisible(self._developer)
+        self.preview.setVisible(self._developer and expanded)
+        self.summary.setVisible(expanded)
 
         self._update_dirty(config)
         self.settings.save_launch_state(config)
@@ -507,7 +668,28 @@ class LaunchSessionsPage(QWidget):
         if checked:
             self._changed()
 
-    def _jobs_all_toggled(self, _checked):
+    def _summary_toggled(self, expanded):
+        """Fold the footer's prose away, leaving the buttons and any problem.
+
+        The visibility itself is settled in :meth:`_changed`, which already knows
+        which of these have anything to say - two writers would fight over it and
+        the next edit would quietly unfold what was just folded.
+        """
+        self.summary_toggle.setText(theme.labelled(
+            "disclosure_open" if expanded else "disclosure_closed", "SUMMARY"))
+        if self._building:
+            return          # _restore() settles the footer once, at the end
+        self.settings.launch_summary_expanded = expanded
+        self._changed()
+
+    def _jobs_all_toggled(self, checked):
+        if checked and not self._building:
+            self.jobs_auto.setChecked(False)   # a fixed all-at-once is not auto
+        self._changed()
+
+    def _jobs_auto_toggled(self, checked):
+        if checked and not self._building:
+            self.jobs_all.setChecked(False)
         self._changed()
 
     def _overlay_toggled(self, checked):
@@ -768,6 +950,14 @@ class LaunchSessionsPage(QWidget):
             # was built with.
             button.style().unpolish(button)
             button.style().polish(button)
+            
+        # A desktop link points at a saved configuration by name, so there has to
+        # be one, and it has to match what is on screen. A checkable menu entry
+        # draws its own tick, so whether a link exists needs no wording.
+        is_saved = not dirty and bool(name)
+        self.desktop_link.setEnabled(is_saved)
+        self.desktop_link.setChecked(
+            is_saved and os.path.exists(self._desktop_link_path(name)))
 
     # -- saved configurations -------------------------------------------------
     def _reload_configs(self, select=None):
@@ -830,12 +1020,108 @@ class LaunchSessionsPage(QWidget):
         new = (new or "").strip()
         if not ok or not new or new == old:
             return
+        
+        # Keep desktop link if it existed for the old name
+        old_path = self._desktop_link_path(old)
+        had_link = os.path.exists(old_path)
+        if had_link:
+            os.remove(old_path)
+            
+        links = self.settings.desktop_links()
+        if old in links:
+            links[new] = links.pop(old)
+            self.settings.save_desktop_links(links)
+
         self._configs.rename(old, self._configs.unique_name(new))
         self.settings.launch_config_name = new
         self._reload_configs(select=new)
         # The settings did not move, only the name they are filed under: an edit
         # that was unsaved before the rename is still unsaved after it.
         self._update_dirty()
+        
+        if had_link:
+            self.desktop_link.setChecked(True)
+            self._toggle_desktop_link()
+
+    def _desktop_link_path(self, name):
+        links = self.settings.desktop_links()
+        if name in links and "path" in links[name]:
+            return links[name]["path"]
+        safe_name = name.replace(" ", "_").replace("/", "_")
+        return os.path.expanduser(f"~/Desktop/CMS_{safe_name}.desktop")
+
+    def _toggle_desktop_link(self):
+        name = self._current_config_name()
+        if not name:
+            return
+            
+        links = self.settings.desktop_links()
+        current = links.get(name, {})
+            
+        if self.desktop_link.isChecked():
+            safe_name = name.replace(" ", "_").replace("/", "_")
+            default_path = os.path.expanduser("~/Desktop")
+            default_filename = f"CMS_{safe_name}.desktop"
+            
+            saved_dir = current.get("path")
+            if saved_dir and os.path.isdir(os.path.dirname(saved_dir)):
+                initial_path = os.path.dirname(saved_dir)
+            else:
+                initial_path = default_path
+                
+            dlg = DesktopLinkDialog(self, 
+                                    current.get("name", f"CMS: {name}"), 
+                                    initial_path, 
+                                    current.get("icon", "google-chrome"))
+            if dlg.exec() != QDialog.Accepted:
+                self.desktop_link.setChecked(False)
+                return
+                
+            custom_name = dlg.name_edit.text().strip() or f"CMS: {name}"
+            custom_dir = dlg.path_edit.text().strip() or default_path
+            custom_icon = dlg.icon_edit.text().strip() or "google-chrome"
+            
+            path = os.path.join(custom_dir, default_filename)
+            
+            import sys
+            bootstrap_py = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "bootstrap.py"))
+            content = f"""[Desktop Entry]
+Version=1.0
+Type=Application
+Name={custom_name}
+Exec={sys.executable} "{bootstrap_py}" --launch "{name}"
+Terminal=false
+Icon={custom_icon}
+"""
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.chmod(path, 0o755)
+            
+            import subprocess
+            import shutil
+            if shutil.which("gio"):
+                subprocess.run(["gio", "set", path, "metadata::trusted", "true"], capture_output=True)
+                
+            links[name] = {"path": path, "name": custom_name, "icon": custom_icon}
+            self.settings.save_desktop_links(links)
+            self._update_dirty()
+        else:
+            path = current.get("path")
+            if not path:
+                path = self._desktop_link_path(name)
+            if path and os.path.exists(path):
+                answer = QMessageBox.question(
+                    self, "Remove Desktop Link",
+                    "Are you sure you want to remove the desktop link?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if answer != QMessageBox.Yes:
+                    self.desktop_link.setChecked(True)
+                    return
+                os.remove(path)
+            if name in links:
+                del links[name]
+                self.settings.save_desktop_links(links)
+            self._update_dirty()
 
     def delete_configuration(self):
         name = self._current_config_name()
@@ -847,6 +1133,16 @@ class LaunchSessionsPage(QWidget):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if answer != QMessageBox.Yes:
             return
+            
+        path = self._desktop_link_path(name)
+        if os.path.exists(path):
+            os.remove(path)
+            
+        links = self.settings.desktop_links()
+        if name in links:
+            del links[name]
+            self.settings.save_desktop_links(links)
+            
         self._configs.remove(name)
         self.settings.launch_config_name = ""
         self._reload_configs(select=UNSAVED)

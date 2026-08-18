@@ -39,13 +39,13 @@ def _flag(argv, name):
 def test_the_default_configuration_asks_for_nothing_but_the_event_stream():
     # Every default is the core's own, so a fresh page runs the plainest possible
     # launch: open the windows, sign in, touch nothing else.
-    assert launch.argv(launch.DEFAULTS) == ["--events=-"]
+    assert launch.argv(launch.DEFAULTS) == ["--events=-", "--control=-"]
 
 
 def test_every_command_line_ends_with_the_event_stream():
     argv = launch.argv(_config(scenarios={"mode": launch.SCENARIOS_ALL,
                                           "selected": []}))
-    assert argv[-1] == "--events=-"
+    assert argv[-2:] == ["--events=-", "--control=-"]
 
 
 def test_a_partial_configuration_is_filled_in_from_the_defaults():
@@ -300,3 +300,73 @@ def test_a_history_line_names_the_four_things_that_identify_a_run():
                                 "selected": ["auth.login"]})
     line = launch.describe_line(config)
     assert "localhost:8069" in line and "admin" in line and "auth.login" in line
+
+
+def test_auto_hands_the_number_to_the_machine():
+    config = _config(scenarios={"mode": launch.SCENARIOS_ALL, "selected": []},
+                     sessions={"jobs": 4, "all_at_once": False, "auto_jobs": True,
+                               "keep_open": False, "detach": False})
+    # The typed 4 is not passed: under Auto the core starts from the core count
+    # and moves from there, and sending a number would look like a cap it must keep.
+    assert _flag(launch.argv(config), "--jobs") == "auto"
+
+
+def test_a_typed_number_is_passed_exactly_as_typed():
+    config = _config(scenarios={"mode": launch.SCENARIOS_ALL, "selected": []},
+                     sessions={"jobs": 6, "all_at_once": False, "auto_jobs": False,
+                               "keep_open": False, "detach": False})
+    assert _flag(launch.argv(config), "--jobs") == "6"
+
+
+def test_auto_says_so_in_the_summary():
+    config = _config(sessions={"jobs": 4, "all_at_once": False, "auto_jobs": True,
+                               "keep_open": False, "detach": False})
+    assert "as many as the machine allows" in launch.sessions_label(config)
+
+
+def test_auto_with_the_windows_kept_open_still_runs():
+    config = _config(scenarios={"mode": launch.SCENARIOS_ALL, "selected": []},
+                     sessions={"jobs": 4, "all_at_once": False, "auto_jobs": True,
+                               "keep_open": True, "detach": False})
+    # Auto adjusts by holding the next window back and closing each as it ends,
+    # so with every window kept open it has nothing to hand back. That is worth
+    # saying, but it is not a reason to refuse the run.
+    assert not any("Auto" in p for p in launch.validate(config))
+    assert any("Auto" in n for n in launch.notes(config))
+
+
+def test_auto_that_can_adjust_says_nothing():
+    config = _config(scenarios={"mode": launch.SCENARIOS_ALL, "selected": []},
+                     sessions={"jobs": 4, "all_at_once": False, "auto_jobs": True,
+                               "keep_open": False, "detach": False})
+    assert not any("Auto" in n for n in launch.validate(config) + launch.notes(config))
+
+
+# --------------------------------------------------- who a recording would open
+
+class _Inv:
+    def __init__(self, logins):
+        self._logins = logins
+
+    def logins(self, env=None):
+        return list(self._logins)
+
+    def env_value(self, alias):
+        return alias
+
+
+def test_chosen_accounts_are_the_ones_a_recording_must_choose_between():
+    config = _config(users={"mode": launch.USERS_PICK, "logins": ["a", "b", "c"]})
+    assert launch.selected_logins(config, _Inv(["a", "b", "c", "d"])) == ["a", "b", "c"]
+
+
+def test_all_accounts_resolves_through_the_inventory():
+    config = _config(users={"mode": launch.USERS_ALL, "logins": []})
+    assert launch.selected_logins(config, _Inv(["a", "b"])) == ["a", "b"]
+
+
+def test_without_an_inventory_all_accounts_is_unknowable_not_empty():
+    # The caller must read empty as "cannot say" and leave the choice to the core,
+    # not as "no accounts" and launch nothing.
+    config = _config(users={"mode": launch.USERS_ALL, "logins": []})
+    assert launch.selected_logins(config, None) == []

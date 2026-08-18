@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from cms_gui import theme
 from cms_gui.pages.launch import UNSAVED, LaunchSessionsPage
 from cms_gui.settings import Settings
 
@@ -226,3 +227,97 @@ def test_an_environment_the_config_no_longer_has_is_kept_and_flagged(qapp):
     finally:
         page.settings.launch_config_name = ""
         page.close()
+
+
+def test_auto_and_all_at_once_are_not_both_on(page):
+    page.jobs_all.setChecked(True)
+    page.jobs_auto.setChecked(True)
+    # They answer the same question two ways; the last one asked wins rather than
+    # leaving the page holding a contradiction it would have to resolve silently.
+    assert not page.jobs_all.isChecked()
+    page.jobs_all.setChecked(True)
+    assert not page.jobs_auto.isChecked()
+    page.jobs_all.setChecked(False)     # the page persists these; leave it as found
+
+
+def test_the_number_is_greyed_out_when_it_is_not_deciding(page):
+    page.jobs_all.setChecked(False)     # the page restores the last run's answers
+    page.jobs_auto.setChecked(False)
+    assert page.jobs.isEnabled()
+    page.jobs_auto.setChecked(True)
+    # Left editable it would read as a value in force, which it is not.
+    assert not page.jobs.isEnabled()
+    page.jobs_auto.setChecked(False)
+    assert page.jobs.isEnabled()
+
+
+def test_auto_survives_a_save_and_reload(page):
+    page.jobs_auto.setChecked(True)
+    page.keep_open.setChecked(False)
+    assert page.state()["sessions"]["auto_jobs"] is True
+
+
+def test_the_summary_folds_away_but_the_buttons_never_do(page):
+    page.summary_toggle.setChecked(True)
+    assert page.summary.isVisibleTo(page)
+    page.summary_toggle.setChecked(False)
+    assert not page.summary.isVisibleTo(page)
+    assert not page.notes.isVisibleTo(page)
+    assert not page.preview.isVisibleTo(page)
+    # RUN is always one click away, wherever the footer is folded to.
+    assert page.run_button.isVisibleTo(page)
+
+
+def test_folding_survives_the_next_edit(page):
+    # _changed() settles these labels on every edit; if the fold were a second
+    # writer, the next keystroke would quietly unfold what was just folded.
+    page.summary_toggle.setChecked(False)
+    page.jobs.setValue(page.jobs.value() + 1)
+    assert not page.summary.isVisibleTo(page)
+
+
+def test_a_problem_is_never_folded_away(page):
+    # It is the reason RUN would refuse; hiding the explanation is the worst of both.
+    page.summary_toggle.setChecked(False)
+    page.jobs_auto.setChecked(True)
+    page.keep_open.setChecked(True)
+    page.users_mode.set_current("Choose accounts", notify=False)
+    page.users_list.set_all(False)
+    page._changed()
+    assert page.problems.text()                     # something is wrong ...
+    assert page.problems.isVisibleTo(page)          # ... and it is on screen
+
+
+def test_the_fold_is_remembered(page):
+    page.summary_toggle.setChecked(False)
+    assert page.settings.launch_summary_expanded is False
+    page.summary_toggle.setChecked(True)
+    assert page.settings.launch_summary_expanded is True
+
+
+def test_desktop_link_moved_into_the_overflow_menu(page):
+    # Rare, per-configuration housekeeping: one unlabelled button, not a third
+    # thing competing with Save and RUN for the same glance.
+    assert page.more_button.text() == theme.glyph("more")
+    assert [a.text() for a in page.more_menu.actions()] == ["Desktop Link"]
+    assert page.desktop_link.isCheckable()
+    # The glyph IS the menu hint, so Qt must not draw its own arrow under it.
+    assert page.more_button.property("menuglyph") == "true"
+
+
+def test_the_overflow_entry_needs_a_saved_configuration(page):
+    page.config_combo.setCurrentText(UNSAVED)
+    page._mark_clean()
+    page._update_dirty()
+    # A desktop link points at a configuration by name; there has to be one.
+    assert not page.desktop_link.isEnabled()
+    _open_saved(page, "Nightly")
+    assert page.desktop_link.isEnabled()
+
+
+def test_an_edit_takes_the_overflow_entry_away_again(page):
+    _open_saved(page, "Nightly")
+    assert page.desktop_link.isEnabled()
+    page.jobs.setValue(page.jobs.value() + 1)
+    # What is on screen no longer matches the file the link would point at.
+    assert not page.desktop_link.isEnabled()

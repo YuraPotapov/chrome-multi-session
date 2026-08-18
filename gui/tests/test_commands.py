@@ -23,12 +23,13 @@ def test_every_flag_has_a_group_and_a_help_line():
 
 
 def test_empty_state_still_asks_for_the_event_stream():
-    # The GUI's entire live view is --events=-, so it is never optional.
-    assert commands.build_argv({}) == ["--events=-"]
+    # The GUI's entire live view is --events=-, and --control=- is the way back:
+    # stopping one window without touching the others. Neither is optional.
+    assert commands.build_argv({}) == ["--events=-", "--control=-"]
 
 
 def test_a_flag_left_at_its_default_is_not_passed():
-    assert commands.build_argv({"--log-level": "INFO"}) == ["--events=-"]
+    assert commands.build_argv({"--log-level": "INFO"}) == ["--events=-", "--control=-"]
     assert "--log-level=DEBUG" in commands.build_argv({"--log-level": "DEBUG"})
 
 
@@ -41,7 +42,7 @@ def test_flow_flags_are_dropped_without_run_tests():
     # The launcher exits on these; the GUI must not be able to build the line.
     state = {"--jobs": "4", "--close-after": True, "--execution-overlay": "all",
              "--report-level": "result", "--report-always": True}
-    assert commands.build_argv(state) == ["--events=-"]
+    assert commands.build_argv(state) == ["--events=-", "--control=-"]
 
 
 def test_flow_flags_survive_with_run_tests():
@@ -49,7 +50,8 @@ def test_flow_flags_survive_with_run_tests():
              "--execution-overlay": ["tree", "logs"]}
     args = commands.build_argv(state)
     assert args == ["--run-tests=smoke", "--jobs=4",
-                    "--execution-overlay=tree,logs", "--close-after", "--events=-"]
+                    "--execution-overlay=tree,logs", "--close-after",
+                    "--events=-", "--control=-"]
 
 
 def test_lists_are_joined_with_commas():

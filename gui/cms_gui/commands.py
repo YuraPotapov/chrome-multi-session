@@ -85,7 +85,7 @@ GROUPS = [GENERAL, FLOW, REPORTS]
 # Flags the GUI drives itself rather than exposing as form controls. The
 # --flow-* ones belong to the Scenarios page: they are how it reads and writes
 # scenario files, since the GUI has no YAML of its own.
-GUI_OWNED = ("--config", "--events", "--describe", "--init-users-json",
+GUI_OWNED = ("--config", "--events", "--control", "--describe", "--init-users-json",
              "--flow-show", "--flow-save", "--flow-delete", "--flow-import",
              "--selectors-show", "--selectors-save", "--from",
              # RUN ▾ -> "With Recorder" adds this; it is a mode, not a form field.
@@ -153,6 +153,8 @@ def build_argv(state, events=True):
     if events:
         # Always last, and always on: the GUI's whole live view is this stream.
         args.append("--events=-")
+        # And the way back: stopping one window without touching the others.
+        args.append("--control=-")
     return args
 
 
