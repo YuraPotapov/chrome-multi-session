@@ -14,7 +14,9 @@ because it also keeps a ``.bak`` and knows the shape of ``users.json``.
 
 import json
 import os
+import shutil
 import tempfile
+import time
 
 from PySide6.QtCore import QStandardPaths
 
@@ -55,20 +57,50 @@ class JsonStore:
     def __init__(self, path, default=None):
         self.path = path
         self._default = default if default is not None else {}
+        #: True when the file is there but could not be read. Kept because the
+        #: next save would otherwise write the empty default straight over it.
+        self.unreadable = False
 
     def load(self):
+        # utf-8-sig, not utf-8: a file written by a Windows shell carries a BOM
+        # (PowerShell 5.1 spells "utf8" that way), and json.load refuses one.
+        # That is not a hypothetical - it is how a full set of saved launch
+        # configurations read back as none at all.
+        self.unreadable = False
         try:
-            with open(self.path, encoding="utf-8") as handle:
+            with open(self.path, encoding="utf-8-sig") as handle:
                 value = json.load(handle)
-        except (OSError, ValueError):
+        except OSError:
+            return self._copy_default()          # absent: nothing to lose
+        except ValueError:
+            self.unreadable = True
             return self._copy_default()
         if type(value) is not type(self._default):
+            self.unreadable = True
             return self._copy_default()
         return value
+
+    def preserve_unreadable(self):
+        """Copy a file we could not parse aside, before anything overwrites it.
+
+        Losing what someone saved is worse than any error message, and an
+        unreadable file is still their data - it may be one stray byte from
+        being readable again.
+        """
+        if not self.unreadable:
+            return ""
+        backup = "%s.unreadable-%s" % (self.path, time.strftime("%Y%m%d-%H%M%S"))
+        try:
+            shutil.copy2(self.path, backup)
+        except OSError:
+            return ""
+        self.unreadable = False
+        return backup
 
     def save(self, value):
         """Replace the file's contents; returns True when it reached disk."""
         directory = os.path.dirname(self.path) or "."
+        self.preserve_unreadable()
         try:
             os.makedirs(directory, exist_ok=True)
             handle = tempfile.NamedTemporaryFile(
@@ -93,10 +125,18 @@ class NamedConfigs:
 
     def __init__(self, path):
         self._store = JsonStore(path, default={})
-        self._items = {k: v for k, v in self._store.load().items()
-                       if isinstance(v, dict)}
+        self._items = self._from_disk()
+
+    def _from_disk(self):
+        """What the file holds right now, entries that are documents only."""
+        return {k: v for k, v in self._store.load().items()
+                if isinstance(v, dict)}
 
     def names(self):
+        # Read afresh: a second window of this app is a second copy of this
+        # object, and the list should show what was saved, not what was on disk
+        # when this one started.
+        self._items = self._from_disk()
         return sorted(self._items, key=str.lower)
 
     def get(self, name):
@@ -104,17 +144,26 @@ class NamedConfigs:
         return json.loads(json.dumps(value)) if isinstance(value, dict) else None
 
     def put(self, name, document):
-        self._items[name] = document
-        self._store.save(self._items)
+        # Read, change, write - never write a snapshot taken at startup. Saving
+        # a stale one is how one window's save erased another's, and how a file
+        # that failed to parse once turned into an empty file for good.
+        items = self._from_disk()
+        items[name] = document
+        self._store.save(items)
+        self._items = items
 
     def remove(self, name):
-        if self._items.pop(name, None) is not None:
-            self._store.save(self._items)
+        items = self._from_disk()
+        if items.pop(name, None) is not None:
+            self._store.save(items)
+        self._items = items
 
     def rename(self, old, new):
-        if old in self._items and new and new != old:
-            self._items[new] = self._items.pop(old)
-            self._store.save(self._items)
+        items = self._from_disk()
+        if old in items and new and new != old:
+            items[new] = items.pop(old)
+            self._store.save(items)
+        self._items = items
 
     def unique_name(self, base):
         """``base``, or ``base (2)`` - the first form nothing else is using."""

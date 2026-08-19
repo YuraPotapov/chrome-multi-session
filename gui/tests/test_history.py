@@ -224,3 +224,53 @@ def test_a_corrupt_configuration_file_degrades_to_no_configurations(tmp_path):
     path = tmp_path / "configs.json"
     path.write_text("]]not json", encoding="utf-8")
     assert store.NamedConfigs(str(path)).names() == []
+
+
+# ------------------------------------------- keeping what someone saved
+
+def test_a_file_with_a_byte_order_mark_still_reads(tmp_path):
+    """Every configuration read back as none at all, from three bytes.
+
+    PowerShell's "utf8" writes a \ufeff, json.load refuses one, and the store
+    answered with its empty default - an empty picker over a full file.
+    """
+    path = tmp_path / "configs.json"
+    path.write_text('\ufeff{"Weekly": {"env": "dev"}}', encoding="utf-8")
+    assert store.NamedConfigs(str(path)).names() == ["Weekly"]
+
+
+def test_an_unreadable_file_is_kept_rather_than_overwritten(tmp_path):
+    # The file that cannot be parsed is still the user's data. Saving beside it
+    # must not be the moment it disappears.
+    path = tmp_path / "configs.json"
+    path.write_text('{"Weekly": {"env": "dev"', encoding="utf-8")   # truncated
+    configs = store.NamedConfigs(str(path))
+    assert configs.names() == []            # nothing readable, so nothing shown
+    configs.put("New", {"env": "stg"})
+    kept = list(tmp_path.glob("configs.json.unreadable-*"))
+    assert kept, "the unreadable file was overwritten without a copy"
+    assert "Weekly" in kept[0].read_text(encoding="utf-8")
+    assert store.NamedConfigs(str(path)).names() == ["New"]
+
+
+def test_a_save_does_not_erase_what_another_window_saved(tmp_path):
+    """Two windows are two copies of this object, each with its own snapshot.
+
+    The one that saves last used to write the list it read at startup, and the
+    other window's configuration was gone.
+    """
+    path = str(tmp_path / "configs.json")
+    first, second = store.NamedConfigs(path), store.NamedConfigs(path)
+    first.put("From the first window", {"env": "dev"})
+    second.put("From the second window", {"env": "stg"})
+    assert store.NamedConfigs(path).names() == [
+        "From the first window", "From the second window"]
+
+
+def test_a_delete_in_one_window_leaves_the_rest_alone(tmp_path):
+    path = str(tmp_path / "configs.json")
+    configs = store.NamedConfigs(path)
+    configs.put("Keep", {"env": "dev"})
+    configs.put("Drop", {"env": "stg"})
+    store.NamedConfigs(path).remove("Drop")
+    assert store.NamedConfigs(path).names() == ["Keep"]

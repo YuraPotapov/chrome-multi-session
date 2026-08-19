@@ -16,6 +16,15 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+### Fixed
+- **Saved Launch Sessions configurations could vanish.** The store read its file
+  as strict UTF-8, so a byte-order mark - which is what a Windows shell writes
+  when told "utf8" - made every configuration read back as none at all, and the
+  next save then wrote that empty default over the file. Reads now tolerate a
+  BOM; a file that still cannot be parsed is copied aside before anything
+  overwrites it; and saving is read-modify-write, so one window's save no longer
+  erases what another window saved.
+
 ## [0.8.2] - 2026-08-18
 
 First release built and run on Windows. Everything here is a Windows-only fault
