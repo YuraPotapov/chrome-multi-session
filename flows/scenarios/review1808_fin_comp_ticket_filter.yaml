@@ -1,0 +1,73 @@
+# Review 18.08.2026 - Compensation Finance builds a custom filter on the reclamation ticket.
+#
+# The reported bug: picking "Reclamation Ticket" in the Custom Filter dialog and opening the
+# value box raised the ACL dialog for reclamation.ticket. The value box is a record selector,
+# so clicking it runs name_search on the CO-MODEL (searchOnInputClick defaults true,
+# web/.../core/autocomplete/autocomplete.js:350) - and finance held no ticket ACL row at all.
+# Finance now has a read-only ticket ACL bounded by reclamation_ticket_finance_*_read_rule to
+# the tickets carrying a compensation/fine of its allowed types. This flow fails on the old
+# build at the first error-dialog assert and passes on the fixed one.
+#
+# DATA DEPENDENCY: at least one compensation the user can read - the same fixture guard as the
+# other fin_comp flows. Any such row implies its ticket is inside the new rule, so the
+# autocomplete must return at least one option; an empty dropdown means the ACL is there but
+# the rule is not matching, which is the regression worth catching. Read-only: applying a
+# search facet changes no data.
+#
+# The field is picked by TECHNICAL NAME (li[data-name=...],
+# web/.../model_field_selector_popover.xml:40) rather than through the popover's search box:
+# that box matches the translated label only, unless the session is in debug mode
+# (model_field_selector_popover.js:95).
+id: review1808_fin_comp_ticket_filter
+name: "Review 18.08 - Finance filters Compensations by Reclamation Ticket"
+tags: [DEMO-76-review-18-08]
+steps:
+  - use: access.open_app
+
+  - goto: "{{env.origin}}/odoo/action-demo_reclamation_management.action_compensation_finance"
+  - wait_for: list_view
+  # FIXTURE GUARD - an empty list would make every assertion below vacuous.
+  - type: assert_visible
+    target: ".o_data_row"
+    timeout: 10000
+
+  # Search dropdown -> Filters -> "Custom Filter..." (o_add_custom_filter,
+  # web/.../search/search_bar_menu/search_bar_menu.xml:60) opens the domain-selector dialog.
+  - click: searchview_dropdown_toggler
+  - click: ".o_add_custom_filter"
+  - wait_for: ".o_dialog .o_domain_selector"
+
+  # The dialog opens on a default condition; retarget it at the ticket m2o.
+  - click: ".o_dialog .o_tree_editor_condition .o_model_field_selector"
+  - wait_for: ".o_model_field_selector_popover"
+  - click: ".o_model_field_selector_popover_item[data-name='reclamation_ticket_id'] .o_model_field_selector_popover_item_name"
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 2500
+
+  # THE REPORTED CLICK: the value box now belongs to reclamation.ticket, so opening it fires
+  # name_search there - this is where the old build raised "no access to Reclamation Ticket".
+  - click: ".o_dialog .o_tree_editor_condition .o-autocomplete--input"
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 5000
+  # Options prove name_search returned rows, not merely that no dialog appeared.
+  - type: assert_visible
+    target: m2o_first_option
+    timeout: 5000
+
+  # Apply the filter: the list now searches through reclamation_ticket_id server-side.
+  - click: m2o_first_option
+  - click: ".o_dialog .modal-footer button.btn-primary"
+  - type: assert_not_visible
+    target: error_dialog
+    timeout: 5000
+  # The facet is the proof the filter was accepted rather than the dialog erroring out. The
+  # row count is deliberately NOT asserted: which compensations survive the filter depends on
+  # the ticket the autocomplete happened to offer first.
+  - type: assert_visible
+    target: ".o_searchview_facet"
+    timeout: 10000
+  - type: assert_visible
+    target: list_view
+    timeout: 5000
