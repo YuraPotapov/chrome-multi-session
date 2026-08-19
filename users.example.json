@@ -12,7 +12,9 @@
     "class": "Agent",
     "login": "agent",
     "password": "CHANGE-ME",
-    "run-tests": ["smoke_odoo"]
+    "run-tests": [
+      "smoke_odoo"
+    ]
   },
   {
     "_comment": "The same login can repeat under a different env - that is how one user set covers several environments, each with its own profile and its own scenarios. run-tests takes scenario ids or tag:NAME selectors, and --run-tests=config gives each window its own list.",
@@ -20,6 +22,15 @@
     "class": "Agent",
     "login": "agent",
     "password": "CHANGE-ME",
-    "run-tests": ["smoke_odoo", "tag:access"]
+    "run-tests": [
+      "smoke_odoo",
+      "tag:access"
+    ]
+  },
+  {
+    "env": "https://claim-dev.demo.tech/odoo",
+    "class": "Agent",
+    "login": "agent",
+    "password": "CHANGE-ME"
   }
 ]
