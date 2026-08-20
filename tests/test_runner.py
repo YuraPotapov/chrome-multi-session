@@ -985,3 +985,135 @@ def test_one_window_at_a_time_also_forgets_a_stopped_session(monkeypatch, tmp_pa
     runner.run_scenarios(_sessions(("a", None)), ["smoke"],
                          reports_dir=str(tmp_path), jobs=1)
     assert not runner._stopping("dev-agent")
+
+
+# ----------------------------------------------------- server logs in a report
+def test_a_scenarios_report_gets_the_lines_from_its_own_window(monkeypatch, tmp_path):
+    """The slice must start when the SCENARIO did, not when the window opened.
+
+    A window can be open for minutes before its third scenario runs. Handing that
+    scenario everything since the window opened would bury its own few lines under
+    the two flows before it - which is the failure this feature exists to avoid.
+    """
+    _plan(monkeypatch, 1)
+    monkeypatch.setattr(runner.artifacts, "scenario_dir", lambda *a: str(tmp_path))
+    asked = []
+
+    class _Hub:
+        def slice_for_session(self, session_name, start, end=None):
+            asked.append((session_name, start))
+            return {"app": ["a line"]}
+
+    captured = {}
+    real_reporter = runner.artifacts.Reporter
+
+    def spy(config, out_dir, adapter, server=None):
+        captured["server"] = server
+        return real_reporter(config, out_dir, adapter, server=server)
+
+    monkeypatch.setattr(runner.artifacts, "Reporter", spy)
+    ctx = runner.RunContext(user={"login": "agent", "class": "Agent"},
+                            env={"origin": "http://x", "url": "http://x"})
+    before = time.time()
+    runner._run_scenario(Recorder(), "s", "dev-agent", None, {}, ctx,
+                         str(tmp_path), server_logs=_Hub())
+    assert captured["server"] is not None
+    captured["server"]()                       # the reporter calls this at write time
+    (session_name, start), = asked
+    assert session_name == "dev-agent"
+    assert start >= before
+
+
+def test_without_the_flag_the_reporter_is_given_no_provider(monkeypatch, tmp_path):
+    _plan(monkeypatch, 1)
+    monkeypatch.setattr(runner.artifacts, "scenario_dir", lambda *a: str(tmp_path))
+    captured = {}
+    real_reporter = runner.artifacts.Reporter
+
+    def spy(config, out_dir, adapter, server=None):
+        captured["server"] = server
+        return real_reporter(config, out_dir, adapter, server=server)
+
+    monkeypatch.setattr(runner.artifacts, "Reporter", spy)
+    ctx = runner.RunContext(user={"login": "agent", "class": "Agent"},
+                            env={"origin": "http://x", "url": "http://x"})
+    runner._run_scenario(Recorder(), "s", "dev-agent", None, {}, ctx,
+                         str(tmp_path))
+    assert captured["server"] is None
+
+
+class _DrivableAdapter(Recorder):
+    """A Recorder the session driver can also attach to and let go of."""
+
+    def disconnect(self):
+        pass
+
+    def screenshot(self, path):
+        open(path, "w", encoding="utf-8").write("PNG")
+
+    def content(self):
+        return "<html/>"
+
+    def console_logs(self):
+        return []
+
+    def url(self):
+        return "http://x"
+
+
+def test_the_hub_reaches_the_report_through_run_scenarios(monkeypatch, tmp_path):
+    """The whole path, not the ends of it.
+
+    ``_run_scenario`` took a hub and used it, and ``run_scenarios`` took one - but
+    nothing carried it between them, so every real run wrote no server log at all
+    while both halves passed their own tests. This drives the public entry point.
+    """
+    monkeypatch.setattr(runner, "_attach", lambda profile, name: _DrivableAdapter())
+    monkeypatch.setattr(runner.loader, "load_selectors", lambda flows_dir: {})
+    monkeypatch.setattr(runner.artifacts, "new_run_dir", lambda d: str(tmp_path))
+    monkeypatch.setattr(runner, "_resolve_scenarios", lambda which, flows_dir: list(which))
+    monkeypatch.setattr(runner.compiler, "compile_plan",
+                        lambda *a, **k: ([Step("click", target=".b")], None))
+
+    asked = []
+
+    class _Hub:
+        def slice_for_session(self, session_name, start, end=None):
+            asked.append(session_name)
+            return {"app": ["a line the backend wrote"]}
+
+    session = ("Agent", None, str(tmp_path / "dev-agent"), "agent", "http://x", ())
+    runner.run_scenarios([session], ["smoke"], env={"origin": "http://x"},
+                         reports_dir=str(tmp_path),
+                         report=runner.artifacts.ReportConfig.from_cli(
+                             level="result"),
+                         server_logs=_Hub())
+    assert asked == ["dev-agent"]
+    written = os.path.join(str(tmp_path), "dev-agent", "smoke", "server_log-app.log")
+    assert os.path.exists(written)
+    assert "a line the backend wrote" in open(written, encoding="utf-8").read()
+
+
+def test_a_passing_scenario_still_gets_its_server_log(monkeypatch, tmp_path):
+    # Streaming a backend's log all run and then keeping none of it is not an
+    # answer either - "it passed" is not a reason to throw the record away.
+    monkeypatch.setattr(runner, "_attach", lambda profile, name: _DrivableAdapter())
+    monkeypatch.setattr(runner.loader, "load_selectors", lambda flows_dir: {})
+    monkeypatch.setattr(runner.artifacts, "new_run_dir", lambda d: str(tmp_path))
+    monkeypatch.setattr(runner, "_resolve_scenarios", lambda which, flows_dir: list(which))
+    monkeypatch.setattr(runner.compiler, "compile_plan",
+                        lambda *a, **k: ([Step("click", target=".b")], None))
+
+    class _Hub:
+        def slice_for_session(self, session_name, start, end=None):
+            return {"app": ["quiet but working"]}
+
+    session = ("Agent", None, str(tmp_path / "dev-agent"), "agent", "http://x", ())
+    code = runner.run_scenarios([session], ["smoke"], env={"origin": "http://x"},
+                                reports_dir=str(tmp_path),
+                                report=runner.artifacts.ReportConfig.from_cli(
+                                    level="result"),
+                                server_logs=_Hub())
+    assert code == 0                     # it passed...
+    assert os.path.exists(os.path.join(str(tmp_path), "dev-agent", "smoke",
+                                       "server_log-app.log"))   # ...and kept it

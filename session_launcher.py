@@ -93,6 +93,20 @@ def _emit(kind, **fields):
         _events.emit(kind, **fields)
 
 
+def _emit_server_lines(session, log_name, lines):
+    """Announce one batch of backend log lines belonging to one window.
+
+    Batched rather than one event per line: a busy backend writes faster than a
+    front-end can parse single JSON objects off a pipe, and the batch is what the
+    hub already collects. engine.serverlog caps a batch's size; the ring buffer it
+    keeps for the report artifact is not capped the same way, so a burst is trimmed
+    on screen and still lands whole on disk.
+    """
+    _emit("serverlog.lines", session=session, log=log_name,
+          lines=[{"ts": round(entry.ts, 3), "level": entry.level, "text": entry.text}
+                 for entry in lines])
+
+
 # Where things live. In a source checkout every one of these is the checkout
 # itself, so the project stays self-contained and movable; in an installed build
 # the read-only resources come out of the bundle and everything writable moves to
@@ -408,6 +422,130 @@ def environments_from_config(config_path, strict=True):
     return build_environments(values)
 
 
+def load_log_sources(path=None):
+    """The parsed logsources.json. Raises engine.serverlog.ServerLogError if broken.
+
+    Imported here rather than at module scope: a launch without --server-log must
+    not pay for the engine package, which is the same reason engine.events is
+    reached through the lazy global above.
+    """
+    from engine import serverlog
+    return serverlog.load_config(path or runtime_paths.logsources_path())
+
+
+def server_log_inventory(path=None):
+    """``[{name, env, connection, type, target, default}]`` for --describe.
+
+    Flattened one row per (log, environment) pair so a front-end can filter the
+    picker by the environment the user chose without knowing this file's shape. A
+    config that cannot be read is not an error here - the rest of the inventory is
+    still worth answering - so it comes back as an empty list plus the reason.
+    """
+    try:
+        config = load_log_sources(path)
+    except Exception as exc:   # noqa: BLE001 - reported as data, not raised
+        return [], "%s: %s" % (type(exc).__name__, exc)
+    rows = []
+    for source in config.logs:
+        for env in source.envs:
+            rows.append({"name": source.name, "env": env,
+                         "connection": source.connection.name,
+                         "type": source.type, "target": source.describe(),
+                         "default": source.default})
+    return rows, ""
+
+
+def format_server_logs(path=None):
+    """What --server-log=list prints: every configured log, by environment."""
+    path = path or runtime_paths.logsources_path()
+    try:
+        config = load_log_sources(path)
+    except Exception as exc:   # noqa: BLE001 - this IS the error report
+        return "Cannot read %s:\n  %s" % (path, exc)
+    if not config.logs:
+        return ("No server logs configured.\n"
+                "Copy logsources.example.json to %s and describe your connections "
+                "and log files there." % path)
+    lines = ["Server logs from %s:" % path]
+    for env in config.envs():
+        lines.append("")
+        lines.append("  %s" % env)
+        for source in config.for_env(env):
+            lines.append("    %-16s %s" % (source.name + (" *" if source.default else ""),
+                                           source.describe()))
+    lines.append("")
+    lines.append("  * streamed by a bare --server-log. Name the others to add them")
+    lines.append("    (--server-log=app,nginx), or --server-log=all for every one.")
+    return "\n".join(lines)
+
+
+def show_server_log(name, lines=None, path=None):
+    """Read one configured log and answer what it holds, as JSON.
+
+    Replaces the old "test this connection" probe, which could only say whether a
+    follow stayed alive. Showing the log answers that and the question behind it -
+    is this the right file, is anything in it, does it look the way the format
+    expects - and it answers instantly instead of watching for a few seconds.
+
+    ``lines`` is how many from the end, or None for as much as the byte budget in
+    engine.serverlog allows. Never raises: the failure IS the answer.
+    """
+    from engine import serverlog
+    try:
+        config = load_log_sources(path)
+    except Exception as exc:   # noqa: BLE001 - reported as data
+        return {"log": name, "ok": False, "error": str(exc), "lines": []}
+    matches = [s for s in config.logs if s.name == name]
+    if not matches:
+        return {"log": name, "ok": False, "lines": [],
+                "error": "no log named %r in %s"
+                         % (name, path or runtime_paths.logsources_path())}
+    source = matches[0]
+    try:
+        found, truncated = serverlog.read_lines(source, tail=lines)
+    except Exception as exc:   # noqa: BLE001 - catching this IS the point
+        return {"log": name, "target": source.describe(), "ok": False,
+                "error": str(exc), "lines": []}
+    return {"log": name, "target": source.describe(), "ok": True, "error": "",
+            "lines": found, "truncated": truncated,
+            # An empty log is not a broken one - say so rather than leaving a
+            # front-end to read "no lines" as a failure.
+            "empty": not found}
+
+
+def resolve_server_logs(env_values, requested, path=None):
+    """The logs this run streams. Never fatal - reports and returns [] instead.
+
+    A backend log is a diagnostic, and a diagnostic that stops ten windows from
+    opening is worse than no diagnostic at all. A name that does not resolve, a
+    logsources.json with a mistake in it, no config at all: each is worth saying
+    loudly once, and none of them is a reason for the launch not to happen. That
+    is the same promise engine.serverlog makes about an unreachable host, and the
+    same one --extensions already keeps about an extension that will not load.
+    """
+    from engine import serverlog
+    path = path or runtime_paths.logsources_path()
+    try:
+        config = load_log_sources(path)
+    except serverlog.ServerLogError as exc:
+        log.warning("--server-log: %s. Continuing without server logs.", exc)
+        return []
+    if not config.logs:
+        log.warning("--server-log: no logs configured in %s. Copy "
+                    "logsources.example.json there and describe your servers, or "
+                    "use the GUI's Log sources page; --server-log=list shows what "
+                    "is configured. Continuing without server logs.", path)
+        return []
+    # strict=False: a misspelled name is reported, and the logs that DID resolve
+    # are still streamed. Losing the other three because one was wrong would be a
+    # second surprise on top of the first.
+    try:
+        return serverlog.resolve(config, env_values, requested, strict=False)
+    except serverlog.ServerLogError as exc:
+        log.warning("--server-log: %s. Continuing without server logs.", exc)
+        return []
+
+
 def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
     """Everything a front-end needs to populate its pickers, as one dict.
 
@@ -484,6 +622,10 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
     except ImportError as exc:
         warnings.append("scenarios unavailable (%s); install the 'flows' extra." % exc)
 
+    log_sources, log_sources_error = server_log_inventory()
+    if log_sources_error:
+        warnings.append("server logs unavailable (%s)" % log_sources_error)
+
     extensions = []
     for name, path in sorted(local_extensions().items()):
         ok, reason = validate_local_extension(path)
@@ -511,6 +653,11 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
         "overlay_components": list(_OVERLAY_COMPONENTS),
         "report_artifacts": list(_REPORT_ARTIFACTS),
         "report_screen_modes": list(_REPORT_SCREEN_MODES),
+        # One row per (log, environment) pair, so a front-end can filter its
+        # --server-log picker by the environment chosen without parsing
+        # logsources.json itself. Empty when none are configured.
+        "log_sources_path": runtime_paths.logsources_path(),
+        "log_sources": log_sources,
         "tags": sorted({tag for s in scenarios for tag in s["tags"]}),
         "envs": envs,
         "users": users,
@@ -1127,6 +1274,17 @@ _OVERLAY_COMPONENTS = ("tree", "progress", "status", "logs", "highlight", "notif
 # so --describe can advertise the choices without importing the engine.
 _REPORT_ARTIFACTS = ("console", "dom", "result", "screen", "url")
 _REPORT_SCREEN_MODES = ("start", "each", "finish")
+
+# --server-log values that are words rather than log names. Deliberately the same
+# vocabulary as --extensions: "all", "none" and "list" already mean these things
+# here, and a second spelling for the same idea is a thing to remember for nothing.
+_SERVER_LOG_ALL = "all"
+_SERVER_LOG_NONE = "none"
+_SERVER_LOG_LIST = "list"
+# The bare flag spelled out. A front-end builds a command line from a form, and
+# "leave the value off entirely" is not something a {flag: value} mapping can
+# express - so the thing the bare flag means gets a name of its own.
+_SERVER_LOG_DEFAULT = "default"
 
 
 def _preexec_die_with_parent():
@@ -2214,8 +2372,16 @@ class WindowSource:
     """
 
     def __init__(self, chrome, url, spawn_kwargs, procs, stagger_s=0.4,
-                 by_session=None, bind_lifetime=True, extension_dirs=None):
+                 by_session=None, bind_lifetime=True, extension_dirs=None,
+                 log_hub=None, session_envs=None):
         self._extension_dirs = extension_dirs or {}
+        # Staged windows open here rather than in the launch loop, so this is where
+        # they have to be registered with the log hub - and the correlation window
+        # has to start now, not when the profile was prepared minutes ago. The
+        # session tuple carries the URL origin, not the config's env string that
+        # logsources.json is keyed by, hence the profile -> env map.
+        self._log_hub = log_hub
+        self._session_envs = session_envs or {}
         self._chrome = chrome
         self._url = url
         self._spawn_kwargs = spawn_kwargs
@@ -2241,6 +2407,9 @@ class WindowSource:
                 _install_extensions_for(profile, self._extension_dirs.get(profile))
             if self._by_session is not None:
                 self._by_session[os.path.basename(profile)] = proc
+            if self._log_hub is not None:
+                self._log_hub.add_session(os.path.basename(profile),
+                                          self._session_envs.get(profile, ""))
             time.sleep(self._stagger_s)
         return proc
 
@@ -2412,6 +2581,18 @@ Options:
                             attached, every step, artifacts written, run summary.
                             "-" is stdout - log records go to stderr, so the two
                             never mix; anything else is a file to append to.
+  --server-log=LIST         Stream the backend's own log next to the windows, each
+                            session shown only the lines written after its window
+                            opened. Which logs exist is described in
+                            logsources.json (connections + log files); LIST is
+                            comma-separated names, "all", "none", or "list" to
+                            print what is configured. The bare flag - spelled
+                            "default" when a value is needed - takes the logs
+                            marked "default" for the environment being launched.
+                            Works with or without --run-tests. Under --run-tests it
+                            also writes each scenario's own slice of every streamed
+                            log to reports/<run>/<session>/<scenario>/
+                            server_log-NAME.log - always, pass or fail.
   --version, -V             Print the version and exit.
   --help, -h                Show this help and exit.
 
@@ -2426,6 +2607,11 @@ Editing scenarios (answer with JSON on stdout, then exit):
   --flow-delete=ID          Delete a scenario. Refuses the ones that ship with
                             the application - duplicate those instead.
   --flow-import=FILE        Copy a scenario file in, validating it first.
+  --server-log-show=NAME    Read that configured log and answer JSON: its lines,
+                            or the error. The last 500 by default;
+                            --server-log-lines=N|all changes that. Also how you
+                            find out an ssh host or a container works, before a
+                            run depends on it.
   --selectors-show          The named-target map as JSON: every name, what it
                             resolves to, and whether it is yours or the app's.
   --selectors-save --from=F Replace your selectors.yaml from the JSON document
@@ -2470,9 +2656,10 @@ Flow execution (require --run-tests):
                             also means every window is launched up front.
 
 Reports (require --run-tests):
-  --report-level=LIST       What artifacts to generate: console,dom,result,
-                            screen,url (default: result on success, the full
-                            bundle on failure).
+  --report-level=LIST       What artifacts to generate from the browser:
+                            console,dom,result,screen,url (default: result on
+                            success, the full bundle on failure). Backend logs are
+                            not in here - --server-log decides those.
   --report-always           Produce a full report on success too, not only
                             on failure.
   --report-screen=LIST      When to capture screenshots: start,each,finish
@@ -2520,6 +2707,11 @@ def main():
     legacy_odoo_flag = None   # --odoo-debug / --no-odoo-debug, reported once after parsing
     events_target = None  # --events: "-" (stdout) or a file path; None = off
     control_stdin = False # --control=-: accept commands (stop one session) on stdin
+    server_log = None     # --server-log value: None = the logs marked "default",
+                          # "all"/"none", or a list of names. Meaningless unless:
+    server_log_given = False   # ...the flag was actually passed.
+    server_log_show = None     # --server-log-show=NAME: the log as JSON, then exit
+    server_log_lines = None    # --server-log-lines: how many from the end
     log_level = os.environ.get("OPEN_USERS_LOG_LEVEL", "INFO")
     bad_option = None     # unusable option we saw, reported once argv is fully parsed
     positional = []
@@ -2563,6 +2755,50 @@ def main():
                 ext = resolve_extension(name)
                 if ext.name not in [e.name for e in extensions]:
                     extensions.append(ext)
+        elif arg.startswith("--server-log-show="):
+            # Machine-facing, like --describe and the --flow-* commands: the GUI's
+            # Log sources page opens a log with it, which is also how somebody
+            # finds out that a connection works before a run depends on it.
+            server_log_show = arg.split("=", 1)[1].strip()
+        elif arg.startswith("--server-log-lines="):
+            value = arg.split("=", 1)[1].strip().lower()
+            if value in ("all", "full", "0"):
+                server_log_lines = 0          # 0 = everything the budget allows
+            else:
+                try:
+                    server_log_lines = max(1, int(value))
+                except ValueError:
+                    sys.exit("--server-log-lines: %r is not a number or \"all\"."
+                             % value)
+        elif arg == "--server-log" or arg.startswith("--server-log="):
+            # Stream the backend's own log alongside the windows. Values mirror
+            # --extensions: bare flag = the logs marked "default" for this
+            # environment, "all", "none", "list", or comma-separated names. Which
+            # logs exist is a property of logsources.json, so resolving the names
+            # waits until the environment is known (see resolve_server_logs).
+            # "=" tells the bare flag from an explicitly empty one: --server-log
+            # means "this environment's defaults", while --server-log= is a value
+            # the user meant to type and did not, and guessing at that is how a run
+            # ends up streaming something nobody asked for.
+            given_value = "=" in arg
+            value = arg.split("=", 1)[1].strip() if given_value else ""
+            server_log_given = True
+            if value == _SERVER_LOG_LIST:
+                print(format_server_logs())
+                sys.exit(0)
+            elif not given_value or value == _SERVER_LOG_DEFAULT:
+                server_log = None
+            elif value in (_SERVER_LOG_ALL, _SERVER_LOG_NONE):
+                server_log = value
+            else:
+                # Covers both "--server-log=" and a value that is only separators.
+                names = [n.strip() for n in value.split(",") if n.strip()]
+                if not names:
+                    sys.exit("--server-log=%s names no log. Omit the value for this "
+                             "environment's default logs, or name them, e.g. "
+                             "--server-log=app,nginx (--server-log=list shows them)."
+                             % value)
+                server_log = names
         elif arg == "--odoo-debug":
             # Deprecated: no extension is special-cased any more.
             legacy_odoo_flag = arg
@@ -2728,6 +2964,14 @@ def main():
         init_users_json(config_path)  # writes the starter config (if absent) and exits
     if flow_command:
         run_flow_command(flow_command, flow_source, flows_dir)
+    if server_log_show:
+        from engine import serverlog as _serverlog
+        wanted = (_serverlog.READ_TAIL_LINES if server_log_lines is None
+                  else (server_log_lines or None))
+        json.dump(show_server_log(server_log_show, lines=wanted), sys.stdout,
+                  indent=2, ensure_ascii=False, default=str)
+        print()
+        sys.exit(0)
     if describe_json:
         # Always valid JSON on stdout, even when it fails: the caller is a
         # program, and an exit code plus a plain-text message would leave it
@@ -2750,6 +2994,15 @@ def main():
     if overlay_components and run_tests is None:
         sys.exit("--execution-overlay requires --run-tests (there is no flow "
                  "execution to visualize without it).")
+    if server_log_given and detach:
+        # --detach means this process goes away the moment the windows are up, and
+        # the readers are its threads: there would be nothing left to stream into.
+        # Said once and dropped, not refused - the windows are what was asked for,
+        # and a diagnostic is never a reason not to open them.
+        log.warning("--server-log does nothing with --detach: the launcher exits as "
+                    "soon as the windows open, and the log readers exit with it. "
+                    "Launching without server logs.")
+        server_log_given = False
     if legacy_odoo_flag == "--odoo-debug":
         log.info("%s is deprecated; extensions/ is installed by default, and "
                  "--extensions=odoo_debug names it explicitly.", legacy_odoo_flag)
@@ -2779,6 +3032,15 @@ def main():
     # here, before any window is launched, so a typo fails fast. Legacy default
     # (report_config stays None) when no report flag was given.
     report_config = None
+    if report_level is not None and "server_log" in report_level:
+        # It briefly was one. Backend logs are not the browser's, and they have
+        # their own switch: --server-log decides both the streaming and the file.
+        log.info("--report-level=server_log is no longer a thing; --server-log "
+                 "already keeps the file. Ignoring it.")
+        report_level = ",".join(part for part in report_level.split(",")
+                                if part.strip() != "server_log")
+        if not report_level.strip():
+            report_level = None
     if report_level is not None or report_always or report_screen is not None:
         if run_tests is None:
             sys.exit("--report-level/--report-always/--report-screen require --run-tests "
@@ -2948,12 +3210,35 @@ def main():
                 log.warning("Extension %s (%s) unavailable (%s); continuing without it.",
                             ext.name, ext.value, exc)
 
+    # Backend logs, if asked for. Started before the first window so a line written
+    # while Chrome is still coming up is already being read - the correlation window
+    # opens when the window does, and a reader that starts late has a blind spot at
+    # exactly the moment the session begins.
+    log_hub = None
+    if server_log_given:
+        chosen = resolve_server_logs(sorted({u.env for u in users}), server_log)
+        if chosen:
+            from engine import serverlog
+            log_hub = serverlog.ServerLogHub(chosen, on_lines=_emit_server_lines)
+            log_hub.start()
+            atexit.register(log_hub.close)
+            log.info("Streaming %d server log(s): %s", len(chosen),
+                     ", ".join(sorted({s.name for s in chosen})))
+        elif not isinstance(server_log, list):
+            # A named log that did not resolve has already been reported, with the
+            # detail this could not add. Only the vaguer requests need a word here.
+            log.warning("--server-log matched no logs for %s; nothing to stream.",
+                        ", ".join(sorted({u.env for u in users})) or "this run")
+
     procs = []
     sessions = []  # (cls, proc, profile, login, origin, tests) per window, for --run-tests
     windows_by_session = {}  # session name -> Popen, for "stop just this one"
     # profile -> planted extension directories, for the Windows CDP install
     # (see load_extensions_over_cdp).
     extension_dirs = {}
+    # profile -> the config's env string. logsources.json is keyed by that exact
+    # string, and it is the one thing the session tuple does not carry.
+    session_envs = {}
     # Staged launching: open each window inside the runner's slot instead of all of
     # them here, so --jobs caps resident browsers and the load governor has a lever
     # that returns memory. Only when the windows are going to be closed anyway -
@@ -2966,6 +3251,7 @@ def main():
         # --user-session overrides the config's per-entry prefix.
         session_dir = session_dir_for(session_prefix, entry_prefix, login)
         profile = os.path.join(sessions_dir, session_dir)
+        session_envs[profile] = entry_prefix
         os.makedirs(profile, exist_ok=True)
         set_profile_name(profile, "%s - %s" % (cls, login))
         clear_previous_tabs(profile)  # always start with one tab, keep the login
@@ -3008,6 +3294,9 @@ def main():
         # Keyed the way the engine and the event stream name a session, so a
         # "stop this one" command can be addressed to what the user is looking at.
         windows_by_session[os.path.basename(profile)] = proc
+        if log_hub is not None:
+            # From here on, whatever the backend writes is this window's.
+            log_hub.add_session(os.path.basename(profile), entry_prefix)
         if run_tests or recorder:
             # user_tests is this user's own "tests" field; the runner uses it
             # when --run-tests=config, and ignores it otherwise.
@@ -3067,10 +3356,13 @@ def main():
                                flows_dir=flows_dir, reports_dir=reports_dir,
                                overlay_components=overlay_components, report=report_config,
                                jobs=len(sessions) if jobs == "all" else jobs,   # "auto" passes through
+                               server_logs=log_hub,
                                windows=WindowSource(chrome, url, spawn_kwargs, procs,
                                                     by_session=windows_by_session,
                                                     bind_lifetime=not detach,
-                                                    extension_dirs=extension_dirs)
+                                                    extension_dirs=extension_dirs,
+                                                    log_hub=log_hub,
+                                                    session_envs=session_envs)
                                        if staged else None)
         except KeyboardInterrupt:
             stopped = True

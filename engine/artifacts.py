@@ -33,6 +33,16 @@ SCREEN_MODES = ("start", "each", "finish")
 # The non-screenshot artifacts captured from live page state on a full report.
 _DIAGNOSTIC = ("console", "dom", "url")
 
+# Backend logs are deliberately NOT one of ARTIFACTS. Everything in that tuple is
+# captured from the browser, and --report-level decides which. A server log is not
+# the browser's, and it has its own switch: --server-log turns the streaming on,
+# and if it is on, the run keeps the file. Gating it a second time behind a report
+# level only creates a way to stream lines all run and then throw them away.
+
+# One file per log, because a stand usually has several (app, nginx, journal) and
+# a single file would interleave them into something nobody can read.
+_SERVER_FILE = "server_log-%s.log"
+
 
 def new_run_dir(reports_dir):
     path = os.path.join(reports_dir, time.strftime("%Y%m%d-%H%M%S"))
@@ -64,6 +74,23 @@ def capture_failure(adapter, out_dir):
     _safe(lambda: _write(os.path.join(out_dir, "console.log"),
                          "\n".join(adapter.console_logs())), "console")
     _safe(lambda: _write(os.path.join(out_dir, "url.txt"), adapter.url()), "url")
+
+
+def write_server_logs(server, out_dir):
+    """One ``server_log-<name>.log`` per backend log that had lines in this window.
+
+    ``server`` is a zero-argument callable answering ``{log name: [lines]}`` - the
+    same shape as ``adapter.console_logs()``, and for the same reason: the reporter
+    asks for the text when it is ready to write it, and knows nothing about how it
+    was collected. ``None`` (no --server-log) writes nothing.
+    """
+    if server is None:
+        return
+    def _collect():
+        for name, lines in (server() or {}).items():
+            if lines:
+                _write(os.path.join(out_dir, _SERVER_FILE % name), "\n".join(lines))
+    _safe(_collect, "server")
 
 
 # --- configurable reporting --------------------------------------------------
@@ -162,10 +189,14 @@ class Reporter:
     diagnostic bundle with a ``screenshot.png`` on failure, nothing extra on success.
     """
 
-    def __init__(self, config, out_dir, adapter):
+    def __init__(self, config, out_dir, adapter, server=None):
         self._cfg = config
         self._out = out_dir
         self._adapter = adapter
+        # Zero-argument callable -> {log name: [lines]}, or None when --server-log
+        # is off. Same contract as adapter.console_logs(): asked for at write time,
+        # so the reporter never learns where the lines came from.
+        self._server = server
         self._each_n = 0
 
     def capture_start(self):
@@ -183,6 +214,11 @@ class Reporter:
         """Write the finish screenshot and the outcome's report artifacts."""
         try:
             self._finalize(flow_result, failed)
+            # Unconditional, and outside the level: if the run was streaming a
+            # backend log, the scenario keeps its slice of it - pass or fail, with
+            # or without --report-* flags. Turning the streaming on is the whole
+            # decision. No provider (no --server-log) writes nothing.
+            write_server_logs(self._server, self._out)
         finally:
             # Announce what actually landed on disk, whichever branch ran, so a
             # consumer never has to guess the artifact names from the config.
@@ -208,6 +244,7 @@ class Reporter:
             _safe(lambda: _write(os.path.join(self._out, "url.txt"),
                                  self._adapter.url()), "url")
 
+
     def finalize_compile_error(self, flow_result):
         """Compile-time failure: only ``result.json`` (dropped if not in the level).
 
@@ -216,6 +253,7 @@ class Reporter:
         """
         if not self._cfg.configured or "result" in self._cfg.effective_level:
             write_result(flow_result, self._out)
+        write_server_logs(self._server, self._out)
         events.emit_artifacts(self._out, scenario=flow_result.scenario,
                               session=flow_result.session)
 

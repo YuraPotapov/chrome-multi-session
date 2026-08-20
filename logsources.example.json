@@ -1,0 +1,89 @@
+{
+  "_comment": "Copy this file to logsources.json (git-ignored) and describe your own servers, or edit it on the GUI's Log sources page. --server-log streams these into each session's panel and keeps each scenario's slice next to the screenshots in the report. Connections say WHERE to run a reader; logs say WHAT to read. One connection serves every log on that machine, so a stand with three logs opens one ssh connection, not three.",
+
+  "connections": [
+    {
+      "_comment": "type local runs the reader on this machine. Use it for a backend you run yourself.",
+      "name": "local",
+      "type": "local"
+    },
+    {
+      "_comment": "type ssh runs it one hop away. The host key is NOT auto-accepted: ssh in by hand once first, or the reader fails with ssh's own message. identity is optional when your agent or ~/.ssh/config already answers; options are extra -o settings.",
+      "name": "staging",
+      "type": "ssh",
+      "host": "staging.example.com",
+      "user": "deploy",
+      "identity": "~/.ssh/id_ed25519"
+    }
+  ],
+
+  "logs": [
+    {
+      "_comment": "format names the SHAPE of a line, not an application. iso covers ISO-8601 and Python logging's default '2026-08-19 10:53:09,123' - so Django, Flask, FastAPI/uvicorn, Celery, Gunicorn, Odoo, Node/pino and Rails all read with this one. tz is the clock those timestamps were written by, and it is the setting worth checking first: plenty of backends (Odoo among them) log UTC, and on a machine that is not UTC every line then parses hours into the past and matches no window at all. envs must be spelled exactly as in users.json: that string is what ties a log to the windows opened against it. 'env' is accepted for a single one. default: true means a bare --server-log picks it.",
+      "name": "app",
+      "connection": "local",
+      "env": "localhost:8069",
+      "type": "file",
+      "path": "/var/log/myapp/app.log",
+      "format": "iso",
+      "tz": "utc",
+      "default": true
+    },
+    {
+      "_comment": "type docker follows a container instead of a file (docker logs -f), run through this log's connection. The application aliases - django, fastapi, node, odoo, rails, go... - each point at one of the shapes, and read better in a config file than the shape's own name.",
+      "name": "app",
+      "connection": "staging",
+      "env": "https://staging.example.com/",
+      "type": "docker",
+      "container": "backend",
+      "format": "django",
+      "default": true
+    },
+    {
+      "_comment": "Several logs per environment is the point - this one is not a default, so ask for it: --server-log=app,nginx. A name has to be unique within an environment, which is why 'app' can repeat above. The slash shape is nginx's error log and Go's standard log package.",
+      "name": "nginx",
+      "connection": "staging",
+      "env": "https://staging.example.com/",
+      "type": "file",
+      "path": "/var/log/nginx/error.log",
+      "format": "nginx"
+    },
+    {
+      "_comment": "type journal follows systemd. unit '*' (or no unit) means the whole journal. The syslog shape matches what journalctl prints.",
+      "name": "system",
+      "connection": "staging",
+      "env": "https://staging.example.com/",
+      "type": "journal",
+      "unit": "*",
+      "format": "syslog"
+    },
+    {
+      "_comment": "No preset fits? Give timestamp and level yourself and any backend works. 'regex' must capture the value in one group, 'format' is a strptime pattern or the literal \"iso\" / \"clf\", and 'tz' is local/utc/+HH:MM for lines carrying no offset. A line with no timestamp inherits the previous line's, which is what keeps a stack trace attached to its own message. format 'none' is for logs with no timestamps at all - every line is stamped as it arrives.",
+      "name": "worker",
+      "connection": "staging",
+      "env": "https://staging.example.com/",
+      "type": "file",
+      "path": "/var/log/myapp/worker.log",
+      "timestamp": {
+        "regex": "^\\[(\\d{2}/\\d{2}/\\d{4} \\d{2}:\\d{2}:\\d{2})\\]",
+        "format": "%d/%m/%Y %H:%M:%S",
+        "tz": "utc"
+      },
+      "level": {
+        "regex": "\\b(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\\b"
+      }
+    },
+    {
+      "_comment": "type http reads a line-oriented stream (plain text or server-sent events) and ignores 'connection'. headers is where a token goes - which is why this file is git-ignored.",
+      "name": "gateway",
+      "connection": "local",
+      "env": "https://staging.example.com/",
+      "type": "http",
+      "url": "https://logs.example.com/stream",
+      "headers": {
+        "Authorization": "Bearer CHANGE-ME"
+      },
+      "format": "iso"
+    }
+  ]
+}

@@ -91,6 +91,9 @@ def test_screen_ignored_when_not_in_level():
 def test_outcome_artifacts_default():
     cfg = ReportConfig()
     assert cfg.outcome_artifacts(failed=False) == {"result"}
+    # server_log is absent on purpose: it follows the level it was asked for in,
+    # not the outcome, because it records the whole scenario rather than snapshots
+    # where the page ended up. See test_a_passing_scenario_still_keeps_it.
     assert cfg.outcome_artifacts(failed=True) == {"console", "dom", "result", "url"}
 
 
@@ -192,3 +195,117 @@ def test_configured_compile_error_respects_level(tmp_path):
     r = Reporter(ReportConfig.from_cli(level="console"), str(tmp_path), FakeAdapter())
     r.finalize_compile_error(_flow())       # result not in level -> nothing written
     assert _files(tmp_path) == set()
+
+
+# --- the server_log artifact -------------------------------------------------
+# Not a --report-level choice. Everything in ARTIFACTS is captured from the
+# browser; a backend log is not, and --server-log is its switch. If the run was
+# streaming one, the scenario keeps its slice - pass or fail, flags or no flags.
+def _server(**logs):
+    """A provider in the shape the runner hands over: {log name: [lines]}."""
+    return lambda: dict(logs)
+
+
+def test_server_log_writes_one_file_per_log(tmp_path):
+    # A stand usually has several (app, nginx, journal); one merged file would
+    # interleave them into something nobody can read.
+    r = Reporter(ReportConfig.from_cli(level="result"), str(tmp_path),
+                 FakeAdapter(), server=_server(app=["boom"], nginx=["upstream"]))
+    r.finalize(_flow(), failed=True)
+    assert _files(tmp_path) == {"result.json", "server_log-app.log",
+                                "server_log-nginx.log"}
+    assert (tmp_path / "server_log-app.log").read_text() == "boom"
+
+
+def test_a_log_with_nothing_in_the_window_writes_no_file(tmp_path):
+    # An empty file reads as "the server said nothing", which is a claim; no file
+    # reads as "nothing to show here", which is the truth.
+    r = Reporter(ReportConfig.from_cli(level="result"), str(tmp_path),
+                 FakeAdapter(), server=_server(app=["kept"], nginx=[]))
+    r.finalize(_flow(), failed=True)
+    assert _files(tmp_path) == {"result.json", "server_log-app.log"}
+
+
+def test_nothing_is_written_without_a_provider(tmp_path):
+    # No --server-log: there is no slice to keep, and no empty file pretending.
+    r = Reporter(ReportConfig.from_cli(level="result"), str(tmp_path), FakeAdapter())
+    r.finalize(_flow(), failed=True)
+    assert _files(tmp_path) == {"result.json"}
+
+
+def test_a_narrow_report_level_does_not_suppress_it(tmp_path):
+    """--report-level is about the browser's artifacts, and never gates this one.
+
+    Gating it a second time only creates a way to stream a backend's log all run
+    and then throw the evidence away.
+    """
+    r = Reporter(ReportConfig.from_cli(level="screen", screen="each"), str(tmp_path),
+                 FakeAdapter(), server=_server(app=["boom"]))
+    r.capture_step()
+    r.finalize(_flow(), failed=True)
+    assert _files(tmp_path) == {"screenshot_001.png", "server_log-app.log"}
+
+
+def test_a_passing_scenario_keeps_it_too(tmp_path):
+    r = Reporter(ReportConfig.from_cli(level="result"), str(tmp_path),
+                 FakeAdapter(), server=_server(app=["chatter"]))
+    r.finalize(_flow(), failed=False)
+    assert _files(tmp_path) == {"result.json", "server_log-app.log"}
+
+
+def test_the_legacy_path_keeps_it_on_success_as_well(tmp_path):
+    # No --report-* flag at all is the commonest way to run, and the one where
+    # "logs are configured, so save them" has to hold just the same.
+    r = Reporter(ReportConfig(), str(tmp_path), FakeAdapter(),
+                 server=_server(app=["chatter"]))
+    r.finalize(_flow(), failed=False)
+    assert _files(tmp_path) == {"result.json", "server_log-app.log"}
+
+
+def test_the_legacy_failure_bundle_includes_it(tmp_path):
+    r = Reporter(ReportConfig(), str(tmp_path), FakeAdapter(),
+                 server=_server(app=["Traceback (most recent call last):"]))
+    r.finalize(_flow(), failed=True)
+    assert "server_log-app.log" in _files(tmp_path)
+
+
+def test_a_compile_error_still_keeps_what_the_backend_said(tmp_path):
+    # A scenario that never compiled is exactly when the backend's own complaint
+    # is worth reading.
+    r = Reporter(ReportConfig(), str(tmp_path), FakeAdapter(),
+                 server=_server(app=["ValueError: bad view"]))
+    r.finalize_compile_error(_flow())
+    assert "server_log-app.log" in _files(tmp_path)
+
+
+def test_a_provider_that_raises_does_not_lose_the_rest_of_the_report(tmp_path):
+    # The hub reads over ssh; a connection can die between the run and the write.
+    def broken():
+        raise OSError("ssh: connection closed")
+
+    r = Reporter(ReportConfig.from_cli(level="result"), str(tmp_path),
+                 FakeAdapter(), server=broken)
+    r.finalize(_flow(), failed=True)
+    assert _files(tmp_path) == {"result.json"}
+
+
+def test_server_log_is_not_a_report_level_value():
+    # It was, briefly. Keeping it would mean two switches for one decision.
+    assert "server_log" not in ARTIFACTS
+    with pytest.raises(ValueError):
+        ReportConfig.from_cli(level="server_log")
+
+
+def test_written_server_logs_are_announced_like_every_other_artifact(tmp_path,
+                                                                     monkeypatch):
+    # The GUI's Artifacts page builds its tree from this event, not from a guess
+    # at the file names.
+    from engine import artifacts as artifacts_mod
+
+    seen = {}
+    monkeypatch.setattr(artifacts_mod.events, "emit_artifacts",
+                        lambda out_dir, **kw: seen.update(dir=out_dir))
+    r = Reporter(ReportConfig.from_cli(level="result"), str(tmp_path),
+                 FakeAdapter(), server=_server(app=["boom"]))
+    r.finalize(_flow(), failed=True)
+    assert seen["dir"] == str(tmp_path)

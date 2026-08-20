@@ -133,6 +133,17 @@ def config_path():
     return os.path.join(user_data_root(), "users.json")
 
 
+def logsources_path():
+    """The logsources.json --server-log reads: server connections and log files.
+
+    Beside users.json rather than inside it: a log belongs to an environment, not
+    to a login, and users.json's schema is part of the public API (see the README's
+    Compatibility section). It sits in the user's data root for the same reason
+    users.json does - it names real hosts and can carry an access token.
+    """
+    return os.path.join(user_data_root(), "logsources.json")
+
+
 def bundled_flows_dir():
     """The flows tree that ships with the app: read-only, replaced on upgrade."""
     return os.path.join(app_root(), "flows")

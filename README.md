@@ -232,7 +232,9 @@ python3 session_launcher.py --env=localhost --run-tests=smoke_odoo --events=- \
 Event kinds: `launcher.start`, `window.launched`, `windows.ready`,
 `session.attached` / `session.attach_failed`, `session.start`, `flow.start` (carrying
 the same step tree the HUD draws), `step.start` / `step.end` / `step.retry`,
-`flow.end`, `artifacts.written`, `run.dir`, `run.summary`, `window.exited`. Each line
+`flow.end`, `artifacts.written`, `serverlog.lines` (a batch of backend log lines
+belonging to one window - see *Server logs, tied to a window*), `run.dir`,
+`run.summary`, `window.exited`. Each line
 has `ts`, a monotonic `seq`, `kind`, and — for anything inside a window — `session`.
 `--events=PATH` appends to a file instead.
 
@@ -292,6 +294,13 @@ Options:
 - `--password=PASS` — override the stored password. With `--user` it applies to
   that user (and needs no config entry at all); on its own it applies to every
   selected user.
+- `--server-log[=LIST]` — stream the backend's own log next to the windows, each
+  session shown only what was written after its window opened. `LIST` is
+  comma-separated log names, `all`, `none`, `default` (what the bare flag means),
+  or `list` to print what is configured. Under `--run-tests` it also keeps each
+  scenario's slice in the report. See *Server logs, tied to a window*.
+- `--server-log-show=NAME` — read one configured log and answer JSON: its lines,
+  or the error. `--server-log-lines=N|all` says how much (default: the last 500).
 
 **Everything `--env` provides is a default — any flag you pass explicitly wins.**
 
@@ -466,6 +475,144 @@ python3 session_launcher.py --user=admin --password=admin \
 An unknown artifact name or screenshot mode is a hard error; duplicate screenshot
 modes are ignored; a `--report-screen` with no `screen` in `--report-level` is
 ignored (with a warning).
+
+### Server logs, tied to a window
+
+Ten windows are open as ten different roles, one of them misbehaves, and the
+server's log is a single stream with everyone's requests mixed together.
+`--server-log` tails that stream and shows each session only the lines written
+after **its own window opened** — live in the GUI's session panel, and, with
+`server_log` in `--report-level`, in the report beside the screenshots.
+
+It works with or without `--run-tests`, and it never opens a debug port: nothing
+here talks to the browser.
+
+**What is configured where.** `logsources.json` (beside `users.json`, git-ignored
+because it names real hosts and can carry a token) has two levels, because one
+machine usually serves several logs:
+
+- a **connection** says *where* to run a reader — `local`, or `ssh` with
+  host/user/identity/port;
+- a **log** says *what* to read there — `file`, `docker`, `journal` or `http` —
+  which environments it belongs to, and how to read its timestamps.
+
+One connection serves every log on a machine, so a stand with three logs opens
+**one** ssh connection, not three. Copy `logsources.example.json` to get started,
+or edit it on the GUI's **Log sources** page.
+
+```json
+{
+  "connections": [
+    {"name": "local", "type": "local"},
+    {"name": "staging", "type": "ssh", "host": "staging.example.com",
+     "user": "deploy", "identity": "~/.ssh/id_ed25519"}
+  ],
+  "logs": [
+    {"name": "app", "connection": "local", "env": "localhost:8069",
+     "type": "file", "path": "/var/log/odoo/odoo.log",
+     "format": "odoo", "default": true},
+    {"name": "app", "connection": "staging", "env": "https://staging.example.com/",
+     "type": "docker", "container": "odoo", "format": "odoo", "default": true},
+    {"name": "nginx", "connection": "staging", "env": "https://staging.example.com/",
+     "type": "file", "path": "/var/log/nginx/error.log", "format": "nginx"}
+  ]
+}
+```
+
+`envs` must be spelled exactly as in `users.json` — that string is what ties a log
+to the windows opened against it. A log **name** has to be unique within an
+environment (so `--server-log=nginx` resolves to one thing), which is why `app` can
+repeat across stands.
+
+```bash
+python3 session_launcher.py --env=staging --server-log            # the defaults
+python3 session_launcher.py --env=staging --server-log=app,nginx  # by name
+python3 session_launcher.py --env=staging --server-log=all
+python3 session_launcher.py --server-log=list                     # what is configured
+python3 session_launcher.py --server-log-show=nginx               # read it
+python3 session_launcher.py --server-log-show=nginx --server-log-lines=all
+```
+
+`--server-log-show=NAME` reads a configured log and answers JSON — the last 500
+lines by default, `--server-log-lines=N|all` for anything else. It is also how you
+find out a connection works, and a better answer than a yes: an unknown host key or
+a stopped container is survivable during a run (that log is marked unavailable and
+the rest carry on), which is exactly what makes it easy to miss. The GUI's **Open
+Tail** / **Open Full** buttons are this command.
+
+**In the report.** Under `--run-tests`, every scenario keeps the lines written
+while *it* ran, one file per log — always, pass or fail, whatever `--report-*`
+says:
+
+```
+reports/<run>/<session>/<scenario>/server_log-app.log
+                                   server_log-nginx.log
+```
+
+Turning the streaming on is the whole decision: `server_log` is deliberately **not**
+a `--report-level` value. Everything in that list is captured from the browser, and
+a second switch for a backend's log could only ever create a way to stream it all
+run and then throw the evidence away.
+
+**Formats — any backend, not one.** `format` names the *shape* of a line, never an
+application:
+
+| Shape | Reads |
+| --- | --- |
+| `iso` | `2026-08-19T10:53:09.123Z`, `2026-08-19 10:53:09,123`, with or without an offset |
+| `slash` | `2026/08/19 10:53:09` — nginx's error log, Go's `log` package |
+| `clf` | `[19/Aug/2026:10:53:09 +0300]` — Common Log Format: Apache and nginx access logs |
+| `syslog` | `Aug 19 10:53:09 host app[42]:` — rsyslog, and what `journalctl` prints |
+| `none` | no timestamp in the line at all; each line is stamped as it arrives |
+
+`iso` is also Python logging's default `%(asctime)s`, so that one shape already
+reads Django, Flask, FastAPI/uvicorn, Celery, Gunicorn, Odoo, Node/pino, Rails and
+`docker logs -t`. Those names all work too, as **aliases** for the shape they
+write — `"format": "django"` reads better in a config file than `"iso"` does, and
+means the same thing. `--server-log=list` and the GUI's picker show every accepted
+value.
+
+**`tz` is the setting to check first.** It says which clock the timestamps were
+written by, for lines carrying no offset of their own — `local` (the default),
+`utc`, or `+HH:MM`. Plenty of backends log UTC (Odoo among them); on a machine that
+is not UTC, every line then parses hours into the past and matches no session's
+window, so a log streams nothing at all. A tailed line was written moments ago, so
+the reader notices when a timestamp disagrees with that by more than a couple of
+minutes: it reads the line as written now and says once what is wrong and how to
+fix it. Setting `tz` properly is still worth doing — the correction is a safety
+net, not a substitute.
+
+When no preset fits, give `timestamp` and `level` yourself and any backend works:
+`regex` capturing the value in one group, `format` as a `strptime` pattern or the
+literal `"iso"` / `"clf"`, and `tz` (`local` / `utc` / `+HH:MM`) for lines carrying
+no offset. A line with no timestamp of its own inherits the previous line's, which
+is what keeps a stack trace attached to the message that introduced it.
+
+**Levels.** Whatever a backend calls it — `TRACE`, `NOTICE`, `WARN`, `SEVERE`,
+`CRIT`, `FATAL`, `PANIC` — lands on one of five: `DEBUG`, `INFO`, `WARN`, `ERROR`,
+`CRITICAL`. In the GUI they are coloured by severity (debug recedes, info green,
+warn amber, error red, critical the same red with weight and a wash behind it), and
+the filter is a threshold: picking `WARN` shows warnings *and worse*. A word nobody
+recognises reads as `INFO` rather than crying wolf in colour.
+
+```json
+{"name": "worker", "connection": "staging", "env": "https://staging.example.com/",
+ "type": "file", "path": "/var/log/myapp/worker.log",
+ "timestamp": {"regex": "^\\[(\\d{2}/\\d{2}/\\d{4} \\d{2}:\\d{2}:\\d{2})\\]",
+               "format": "%d/%m/%Y %H:%M:%S", "tz": "utc"},
+ "level": {"regex": "\\b(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\\b"}}
+```
+
+**Nothing about a log stops a launch.** A name that does not resolve, a config with
+a mistake in it, a host that will not answer, a pattern that will not compile: each
+is reported once and costs that one log. The windows open either way — a diagnostic
+that prevents the thing being diagnosed is worse than no diagnostic.
+
+> **What time-based correlation can and cannot do.** A session is shown the lines
+> written after its window opened. Nothing inspects the request, so when several
+> windows are open against the *same* environment they all see the same tail —
+> time alone cannot say which of them made the call. It separates environments and
+> separates runs; it does not separate two roles clicking at once.
 
 ### Execution overlay (HUD)
 

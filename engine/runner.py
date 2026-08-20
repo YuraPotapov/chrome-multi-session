@@ -447,7 +447,8 @@ def _governor(slots, ceiling, stop_event, unit="windows"):
 
 
 def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
-                  overlay_components=None, report=None, jobs=1, windows=None):
+                  overlay_components=None, report=None, jobs=1, windows=None,
+                  server_logs=None):
     """Run ``which`` scenarios against every launched ``sessions`` entry.
 
     ``sessions`` is a list of ``(cls, proc, profile, login, origin[, tests])``
@@ -527,7 +528,7 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
         if slot_pool is None:
             return _run_one_session(session, session_name, scenarios, env, flows_dir,
                                     selectors, run_dir, overlay_components, report,
-                                    log_prefix=log_prefix)
+                                    log_prefix=log_prefix, server_logs=server_logs)
         if not slot_pool.acquire():
             return []            # stopping: this session never started
         proc = None
@@ -535,12 +536,13 @@ def run_scenarios(sessions, which, env=None, flows_dir=None, reports_dir=None,
             if not staged:
                 return _run_one_session(session, session_name, scenarios, env, flows_dir,
                                         selectors, run_dir, overlay_components, report,
-                                        log_prefix=log_prefix, slots=yielding)
+                                        log_prefix=log_prefix, slots=yielding,
+                                        server_logs=server_logs)
             proc = windows.open(session)
             opened = (session[0], proc) + tuple(session[2:])
             return _run_one_session(opened, session_name, scenarios, env, flows_dir,
                                     selectors, run_dir, overlay_components, report,
-                                    log_prefix=log_prefix)
+                                    log_prefix=log_prefix, server_logs=server_logs)
         finally:
             # Close BEFORE releasing: the next window must not start while this
             # one is still flushing cookies, or the two overlap for the seconds
@@ -683,7 +685,8 @@ def _plan_sessions(sessions, per_session, shared, flows_dir, slots):
 
 
 def _run_one_session(session, session_name, scenarios, env, flows_dir, selectors,
-                     run_dir, overlay_components, report, log_prefix=None, slots=None):
+                     run_dir, overlay_components, report, log_prefix=None, slots=None,
+                     server_logs=None):
     """Drive ONE window: attach, run its scenarios, disconnect. Returns its results.
 
     Everything here - the CDP attach, every step, every screenshot and the
@@ -702,14 +705,15 @@ def _run_one_session(session, session_name, scenarios, env, flows_dir, selectors
     try:
         return _drive_session(session, session_name, scenarios, env, flows_dir,
                               selectors, run_dir, overlay_components, report, results,
-                              slots)
+                              slots, server_logs)
     finally:
         if token is not None:
             _session_ctx.reset(token)
 
 
 def _drive_session(session, session_name, scenarios, env, flows_dir, selectors,
-                   run_dir, overlay_components, report, results, slots=None):
+                   run_dir, overlay_components, report, results, slots=None,
+                   server_logs=None):
     cls, _proc, profile, login, origin = session[:5]
     log.info("--- session %s: %s ---", session_name, ", ".join(scenarios))
     adapter = _attach(profile, session_name)
@@ -744,7 +748,7 @@ def _drive_session(session, session_name, scenarios, env, flows_dir, selectors,
                 slots.yield_if_over()
             results.append(
                 _run_scenario(adapter, scenario_id, session_name, flows_dir,
-                              selectors, ctx, run_dir, overlay, report))
+                              selectors, ctx, run_dir, overlay, report, server_logs))
     finally:
         if bridge is not None:
             logging.getLogger("flowengine").removeHandler(bridge)
@@ -822,12 +826,19 @@ def wait_for_devtools(profile, timeout_s=DEVTOOLS_WAIT_S):
 
 
 def _run_scenario(adapter, scenario_id, session_name, flows_dir, selectors, ctx, run_dir,
-                  overlay=None, report=None):
+                  overlay=None, report=None, server_logs=None):
     overlay = overlay or NullOverlay()
     out_dir = artifacts.scenario_dir(run_dir, session_name, scenario_id)
-    reporter = artifacts.Reporter(report or artifacts.ReportConfig(), out_dir, adapter)
-    result = FlowResult(scenario=scenario_id, session=session_name, artifacts_dir=out_dir)
+    # Before the reporter, so the artifact's window can close over it: the backend
+    # lines that belong to THIS scenario are the ones written while it ran, not
+    # everything the tail has seen since the window opened.
     started = time.time()
+    server = None
+    if server_logs is not None:
+        server = lambda: server_logs.slice_for_session(session_name, started)  # noqa: E731
+    reporter = artifacts.Reporter(report or artifacts.ReportConfig(), out_dir, adapter,
+                                  server=server)
+    result = FlowResult(scenario=scenario_id, session=session_name, artifacts_dir=out_dir)
     try:
         steps, plan = compiler.compile_plan(scenario_id, flows_dir, selectors, ctx)
     except Exception as exc:

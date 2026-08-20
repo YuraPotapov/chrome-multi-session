@@ -16,6 +16,10 @@ user_sessions/
 # own with --init-users-json
 users.json
 
+# Server log sources name real hosts and can carry an access token - copy
+# logsources.example.json
+logsources.json
+
 # Run artifacts: screenshots and full-page DOM dumps of whatever the flows visited,
 # so they carry the app's data. Regenerated on every --run-tests run.
 reports/

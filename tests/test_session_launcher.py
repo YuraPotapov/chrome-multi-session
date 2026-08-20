@@ -1463,3 +1463,247 @@ def test_detached_windows_are_never_adopted(monkeypatch):
     sl.open_window("/usr/bin/chrome", "/tmp/p", "Agent", "a", "http://x",
                    False, {}, bind_lifetime=True)
     assert len(adopted) == 1
+
+
+# ============================================================ --server-log
+
+def _logsources(tmp_path, logs=None, connections=None):
+    path = tmp_path / "logsources.json"
+    path.write_text(json.dumps({
+        "connections": connections or [{"name": "here", "type": "local"}],
+        "logs": logs if logs is not None else [
+            {"name": "app", "connection": "here", "env": LOCAL, "type": "file",
+             "path": str(tmp_path / "app.log"), "format": "odoo", "default": True},
+            {"name": "nginx", "connection": "here", "env": LOCAL, "type": "file",
+             "path": str(tmp_path / "nginx.log"), "format": "nginx"},
+        ],
+    }), encoding="utf-8")
+    return str(path)
+
+
+@pytest.fixture
+def sources(tmp_path, monkeypatch):
+    """A logsources.json at the path the launcher reads by default."""
+    path = _logsources(tmp_path)
+    monkeypatch.setattr(sl.runtime_paths, "logsources_path", lambda: path)
+    return path
+
+
+@pytest.fixture
+def launched(monkeypatch, tmp_path):
+    """Run main() against a fake Chrome; returns the argv of every window opened.
+
+    Everything that would touch a real profile is stubbed, so this exercises the
+    launch loop itself - which flags are assembled, and what gets wired up - with
+    nothing left running afterwards.
+    """
+    opened = []
+
+    def fake_popen(argv, **kwargs):
+        opened.append(argv)
+        return _FakeProc(argv)
+
+    monkeypatch.setattr(sl, "find_chrome", lambda: "/usr/bin/chrome")
+    monkeypatch.setattr(sl.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(sl, "clear_devtools_port", lambda profile: None)
+    monkeypatch.setattr(sl, "set_profile_name", lambda profile, name: None)
+    monkeypatch.setattr(sl, "clear_previous_tabs", lambda profile: None)
+    monkeypatch.setattr(sl, "install_autologin_extension",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(sl, "seed_password", lambda *a, **k: None)
+    monkeypatch.setattr(sl, "keep_open_until_closed", lambda procs: None)
+    monkeypatch.setattr(sl.time, "sleep", lambda seconds: None)
+
+    def run(config_path, *args):
+        monkeypatch.setattr("sys.argv", ["session_launcher.py",
+                                         "--config=" + config_path,
+                                         "--sessions-dir=" + str(tmp_path / "profiles"),
+                                         "--extensions=none"] + list(args))
+        sl.main()
+        return opened
+
+    return run
+
+
+@pytest.fixture
+def local_config(tmp_path):
+    return _config(tmp_path, [
+        {"env": LOCAL, "class": "Admin", "login": "admin", "password": "pw"},
+    ])
+
+
+def test_server_log_never_opens_a_debug_port(launched, local_config, sources):
+    # The reason this feature has no CDP anywhere in it. --remote-debugging-port
+    # is unauthenticated: anything on loopback could drive the browser and read
+    # the cookies of a real logged-in session. Pulling a log off a server is not
+    # a reason to open that, and nothing here should ever make it one.
+    argv, = launched(local_config, "--env=localhost", "--server-log")
+    assert not any("remote-debugging-port" in part for part in argv)
+
+
+def test_a_plain_launch_still_opens_no_debug_port(launched, local_config):
+    argv, = launched(local_config, "--env=localhost")
+    assert not any("remote-debugging-port" in part for part in argv)
+
+
+def test_server_log_registers_each_window_with_its_environment(launched, local_config,
+                                                               sources, monkeypatch):
+    from engine import serverlog
+
+    hubs = []
+    build = serverlog.ServerLogHub        # captured BEFORE the name is replaced
+
+    def factory(*args, **kwargs):
+        hub = build(*args, **kwargs)
+        hub.start = lambda: None          # no reader threads in a test
+        hubs.append(hub)
+        return hub
+
+    monkeypatch.setattr(serverlog, "ServerLogHub", factory)
+    launched(local_config, "--env=localhost", "--server-log")
+    hub, = hubs
+    # Keyed by the session name the event stream and the report tree also use,
+    # and carrying the config's env string, which is what logsources.json matches.
+    session = hub._sessions["localhost:8069-admin"]
+    assert session.env == LOCAL
+    assert session.opened_at > 0
+
+
+def test_server_log_is_no_longer_a_report_level_value(monkeypatch, config, sources,
+                                                      caplog):
+    """It was, briefly, and somebody's saved configuration still says so.
+
+    Backend logs are not the browser's artifacts and have their own switch, so the
+    spelling is tolerated and ignored rather than turned into a hard error on a
+    command line that used to work.
+    """
+    with caplog.at_level("INFO"):
+        message = _main(monkeypatch, config, "--url=http://x", "--run-tests=all",
+                        "--report-level=result,server_log")
+    assert "Unknown report-level artifact" not in message
+    assert "no longer a thing" in caplog.text
+
+
+def test_a_report_level_of_only_server_log_falls_back_to_the_default(monkeypatch,
+                                                                     config, sources):
+    # Stripping the one value it named must not leave an empty --report-level,
+    # which the core would then read as "generate nothing at all".
+    message = _main(monkeypatch, config, "--url=http://x", "--run-tests=all",
+                    "--report-level=server_log")
+    assert "Unknown report-level artifact" not in message
+
+
+def test_server_log_list_prints_what_is_configured(monkeypatch, capsys, sources):
+    monkeypatch.setattr("sys.argv", ["session_launcher.py", "--server-log=list"])
+    with pytest.raises(SystemExit) as exc:
+        sl.main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert LOCAL in out and "app" in out and "nginx" in out
+    assert "app *" in out              # marks which ones a bare --server-log takes
+
+
+def test_server_log_list_reports_a_broken_config_instead_of_a_traceback(
+        monkeypatch, capsys, tmp_path):
+    path = _logsources(tmp_path, logs=[{"name": "app", "connection": "nope",
+                                        "env": LOCAL, "path": "/x"}])
+    monkeypatch.setattr(sl.runtime_paths, "logsources_path", lambda: path)
+    monkeypatch.setattr("sys.argv", ["session_launcher.py", "--server-log=list"])
+    with pytest.raises(SystemExit):
+        sl.main()
+    assert "no connection named 'nope'" in capsys.readouterr().out
+
+
+def test_describe_lists_log_sources_one_row_per_environment(monkeypatch, capsys,
+                                                            config, sources):
+    _code, payload = _flow_cmd(monkeypatch, capsys, "--config=" + config, "--describe")
+    rows = payload["log_sources"]
+    assert {row["name"] for row in rows} == {"app", "nginx"}
+    assert all(row["env"] == LOCAL for row in rows)
+    assert [row["default"] for row in rows if row["name"] == "app"] == [True]
+    assert payload["log_sources_path"] == sources
+    # Not a report artifact: --server-log decides the file, not --report-level.
+    assert "server_log" not in payload["report_artifacts"]
+
+
+def test_describe_survives_a_broken_logsources_file(monkeypatch, capsys, config,
+                                                    tmp_path):
+    # The inventory is what a front-end builds its whole UI from; one bad section
+    # must degrade to a warning, not sink the JSON.
+    path = _logsources(tmp_path, connections=[{"name": "dev", "type": "ssh"}], logs=[])
+    monkeypatch.setattr(sl.runtime_paths, "logsources_path", lambda: path)
+    _code, payload = _flow_cmd(monkeypatch, capsys, "--config=" + config, "--describe")
+    assert payload["log_sources"] == []
+    assert any("server logs unavailable" in w for w in payload["warnings"])
+
+
+def test_the_event_for_a_batch_of_lines_carries_session_log_and_levels(monkeypatch):
+    from engine import serverlog
+
+    emitted = []
+    monkeypatch.setattr(sl, "_emit", lambda kind, **fields: emitted.append((kind, fields)))
+    sl._emit_server_lines("dev-agent", "nginx", [
+        serverlog.Entry(1723545600.125, "ERROR", "upstream timed out"),
+        serverlog.Entry(1723545600.5, "INFO", "recovered"),
+    ])
+    (kind, fields), = emitted
+    assert kind == "serverlog.lines"
+    assert fields["session"] == "dev-agent" and fields["log"] == "nginx"
+    assert fields["lines"] == [
+        {"ts": 1723545600.125, "level": "ERROR", "text": "upstream timed out"},
+        {"ts": 1723545600.5, "level": "INFO", "text": "recovered"},
+    ]
+
+
+def test_a_log_that_does_not_resolve_never_stops_the_launch(monkeypatch, launched,
+                                                            local_config, sources,
+                                                            caplog):
+    """The bug this guards: --server-log used to exit(1) before opening a window.
+
+    A backend log is a diagnostic. One that names a log the chosen environment does
+    not have - which is what a saved configuration does the moment the environment
+    is switched - is worth saying loudly and worth nothing else. Ten windows must
+    still open.
+    """
+    with caplog.at_level("WARNING"):
+        opened = launched(local_config, "--env=localhost", "--server-log=not-here")
+    assert len(opened) == 1                    # the window opened anyway
+    assert "not-here" in caplog.text
+
+
+def test_no_logsources_file_at_all_never_stops_the_launch(monkeypatch, launched,
+                                                          local_config, tmp_path,
+                                                          caplog):
+    monkeypatch.setattr(sl.runtime_paths, "logsources_path",
+                        lambda: str(tmp_path / "absent.json"))
+    with caplog.at_level("WARNING"):
+        opened = launched(local_config, "--env=localhost", "--server-log")
+    assert len(opened) == 1
+    assert "no logs configured" in caplog.text
+
+
+def test_a_broken_logsources_file_never_stops_the_launch(monkeypatch, launched,
+                                                         local_config, tmp_path,
+                                                         caplog):
+    path = tmp_path / "logsources.json"
+    path.write_text("{ not json", encoding="utf-8")
+    monkeypatch.setattr(sl.runtime_paths, "logsources_path", lambda: str(path))
+    with caplog.at_level("WARNING"):
+        opened = launched(local_config, "--env=localhost", "--server-log")
+    assert len(opened) == 1
+    assert "Continuing without server logs" in caplog.text
+
+
+def test_detach_drops_the_server_log_rather_than_refusing_to_launch(launched,
+                                                                    local_config,
+                                                                    sources, caplog):
+    """--detach and --server-log cannot both mean anything, and that is not fatal.
+
+    The launcher exits the moment the windows are up, taking its reader threads
+    with it. Refusing the launch over it - which is what this used to do - trades
+    a diagnostic nobody can have for windows they asked for.
+    """
+    with caplog.at_level("WARNING"):
+        opened = launched(local_config, "--env=localhost", "--server-log", "--detach")
+    assert len(opened) == 1
+    assert "--detach" in caplog.text and "does nothing" in caplog.text
