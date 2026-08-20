@@ -322,3 +322,57 @@ def test_an_edit_takes_the_overflow_entry_away_again(page):
     page.jobs.setValue(page.jobs.value() + 1)
     # What is on screen no longer matches the file the link would point at.
     assert not page.desktop_link.isEnabled()
+
+
+def test_fire_and_forget_turns_the_server_logs_block_off(page):
+    page.detach.setChecked(True)
+    assert not page.logs_mode.isEnabled()
+    assert "leave the windows running" in page.logs_note.text()
+
+
+def test_unticking_it_puts_the_block_back(page):
+    page.detach.setChecked(True)
+    page.detach.setChecked(False)
+    assert page.logs_mode.isEnabled()
+    # And does not leave its own explanation behind.
+    assert "leave the windows running" not in page.logs_note.text()
+
+
+def _log_inventory(log_sources):
+    from cms_gui import core as core_mod
+    return core_mod.Inventory({
+        "envs": [{"alias": "localhost", "value": "localhost:8069"},
+                 {"alias": "dev", "value": "https://dev.example.com/"}],
+        "users": [], "scenarios": [], "extensions": [],
+        "log_sources": log_sources, "log_sources_path": "/tmp/logsources.json"})
+
+
+def test_no_logs_configured_at_all_says_where_to_configure_them(page):
+    page.set_inventory(_log_inventory([]))
+    assert "No server logs configured" in page.logs_note.text()
+    assert "Log sources page" in page.logs_note.text()
+
+
+def test_logs_that_belong_to_another_environment_are_called_out(page):
+    """The state behind an empty report, said before the run rather than after.
+
+    A saved configuration keeps the log names it was saved with; switching the
+    environment leaves them pointing at a stand this run does not touch, and the
+    launcher then streams nothing.
+    """
+    page.set_inventory(_log_inventory([{"name": "app", "env": "https://dev.example.com/",
+                                    "connection": "dev", "type": "file",
+                                    "target": "file (ssh) /x", "default": True}]))
+    page._populate_server_logs(["app"])          # as a saved configuration would
+    page._select_env("localhost")
+    page._populate_server_logs(["app"])
+    assert "nothing will be streamed" in page.logs_note.text()
+
+
+def test_a_usable_log_leaves_the_note_silent(page):
+    page.set_inventory(_log_inventory([{"name": "app", "env": "localhost:8069",
+                                    "connection": "here", "type": "file",
+                                    "target": "file (local) /x", "default": True}]))
+    page._select_env("localhost")
+    page._populate_server_logs([])
+    assert page.logs_note.text() == ""

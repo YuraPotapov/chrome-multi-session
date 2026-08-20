@@ -8,11 +8,21 @@ an event the launcher sent.
 
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QProgressBar, QScrollArea,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import (Property, QEasingCurve, QPropertyAnimation, Qt,
+                            QTimer, Signal)
+from PySide6.QtGui import QColor, QPainter
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel,
+                               QMessageBox, QPlainTextEdit, QProgressBar,
+                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from .. import icons, theme, widgets
+from .serverlogwindow import ServerLogWindow, level_html
+
+#: Lines painted in one session's Server log box. The model keeps more (see
+#: cms_gui.runner.SERVER_LOG_LINES); this is only what is worth re-rendering.
+SERVER_VISIBLE_LINES = 400
+
+ALL_LOGS = "All logs"
 
 STATE_TAGS = {
     "launching": ("LAUNCHING", "neutral"),
@@ -37,6 +47,93 @@ STATUS_MARKS = {
     "error": ("fail", theme.BAD),
     "running": ("running", theme.ACCENT),
 }
+
+
+class _StreamingElsewhere(QWidget):
+    """What sits where the log was, while a separate window has it.
+
+    A blank space would read as "the log stopped". A pulse reads as "it is still
+    coming, just not here" - which is the one thing this has to say, and it says
+    it without a second copy of the lines being rendered off screen.
+    """
+
+    show_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._phase = 1.0
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 6, 0, 6)
+        row.setSpacing(10)
+
+        self._dot = _PulseDot(self)
+        row.addWidget(self._dot, 0, Qt.AlignVCenter)
+        label = QLabel("Streaming to a separate window")
+        label.setStyleSheet("font-size: 12px; color: %s;" % theme.NEUTRAL[700])
+        row.addWidget(label)
+        row.addStretch(1)
+        button = QPushButton("Show window")
+        button.setProperty("variant", "ghost")
+        button.clicked.connect(self.show_requested)
+        row.addWidget(button)
+
+    def start(self):
+        self._dot.start()
+
+    def stop(self):
+        # Stopped whenever it is not on screen: an animation nobody can see is a
+        # timer waking the process up for nothing, once per session panel.
+        self._dot.stop()
+
+
+class _PulseDot(QWidget):
+    """A dot that breathes. Its opacity is the animated property."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(10, 10)
+        self._opacity = 1.0
+        self._animation = QPropertyAnimation(self, b"pulse", self)
+        self._animation.setDuration(1100)
+        self._animation.setStartValue(1.0)
+        self._animation.setEndValue(0.2)
+        self._animation.setEasingCurve(QEasingCurve.InOutSine)
+        self._animation.setLoopCount(-1)
+        # Back down and up again rather than snapping to full brightness.
+        self._animation.setDirection(QPropertyAnimation.Forward)
+        self._animation.finished.connect(self._flip)
+
+    def _flip(self):
+        self._animation.setDirection(
+            QPropertyAnimation.Backward
+            if self._animation.direction() == QPropertyAnimation.Forward
+            else QPropertyAnimation.Forward)
+
+    def start(self):
+        if self._animation.state() != QPropertyAnimation.Running:
+            self._animation.start()
+
+    def stop(self):
+        self._animation.stop()
+        self._set_pulse(1.0)
+
+    def _get_pulse(self):
+        return self._opacity
+
+    def _set_pulse(self, value):
+        self._opacity = value
+        self.update()
+
+    pulse = Property(float, _get_pulse, _set_pulse)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        colour = QColor(theme.ACCENT)
+        colour.setAlphaF(max(0.0, min(1.0, self._opacity)))
+        painter.setBrush(colour)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(self.rect().adjusted(1, 1, -1, -1))
 
 
 def _mark(status):
@@ -88,6 +185,180 @@ class SessionPanel(widgets.BlueprintPanel):
         self.steps_layout.setSpacing(1)
         column.addWidget(self.steps)
 
+        # --server-log only. Folded away and hidden entirely until the first line
+        # arrives, so a run without it looks exactly as it did before.
+        self._server_window = None
+        self.server = self._build_server_section()
+        column.addWidget(self.server)
+        self.server.setVisible(False)
+
+    # -- server log ---------------------------------------------------------
+    def _build_server_section(self):
+        section = QWidget()
+        wrap = QVBoxLayout(section)
+        wrap.setContentsMargins(14, 0, 14, 12)
+        self._server_disclosure = widgets.Disclosure("Server log")
+        # Beside the fold, not inside it: reading a log is what this is for, and
+        # the reason to reach for it is usually that the folded strip is too small
+        # to read in - which is a poor place to hide the way out of it.
+        self._server_popout = QPushButton("Separate Window")
+        self._server_popout.setProperty("variant", "ghost")
+        self._server_popout.setToolTip(
+            "This session's backend log, full size, with search and level filters. "
+            "Stays open and keeps up as the run goes on.")
+        self._server_popout.clicked.connect(self.open_server_window)
+
+        self._server_filter = QComboBox()
+        self._server_filter.addItem(ALL_LOGS)
+        self._server_filter.currentIndexChanged.connect(self._repaint_server)
+        save = QPushButton("Save…")
+        save.setProperty("variant", "ghost")
+        save.clicked.connect(self._save_server)
+        # Without --run-tests there is no report directory, so this button is the
+        # only way the lines leave the window.
+        save.setToolTip("Write the lines shown here to a file")
+        self._server_count = widgets.mono("")
+
+        self._server_view = QPlainTextEdit()
+        self._server_view.setReadOnly(True)
+        self._server_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self._server_view.setMaximumBlockCount(SERVER_VISIBLE_LINES)
+        self._server_view.setFixedHeight(180)
+        self._server_view.setStyleSheet("font-family: %s; font-size: 12px;"
+                                        % theme.MONO_CSS)
+
+        self._server_controls = widgets.row(self._server_filter,
+                                            self._server_count, None, save)
+        self._server_elsewhere = _StreamingElsewhere()
+        self._server_elsewhere.show_requested.connect(self.open_server_window)
+        self._server_elsewhere.setVisible(False)
+
+        body = self._server_disclosure.body()
+        body.addWidget(self._server_controls)
+        body.addWidget(self._server_view)
+        body.addWidget(self._server_elsewhere)
+        # Built by hand rather than with widgets.row: a Disclosure is header AND
+        # body stacked, so a plain hbox would centre the button against the whole
+        # expanded height. Top-aligned, it sits on the header's own line.
+        header = QWidget()
+        header_row = QHBoxLayout(header)
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+        header_row.addWidget(self._server_disclosure, 1)
+        header_row.addWidget(self._server_popout, 0, Qt.AlignTop)
+        wrap.addWidget(header)
+        # What is currently on screen, so a repaint only happens when it changed:
+        # this runs on every event, and re-rendering hundreds of lines each time
+        # would fight the user's scrollbar as well as the CPU.
+        self._server_painted = None
+        self._server_lines = []
+        self._server_log_names = []
+        return section
+
+    def _update_server(self, session):
+        lines = list(session.get("server") or ())
+        if not lines:
+            return
+        self._server_lines = lines
+        self.server.setVisible(True)
+        if self._server_window is not None:
+            # The window has it. Nothing is repainted here at all - a second copy
+            # of a few hundred lines, rendered where nobody is looking, is the
+            # whole cost this avoids.
+            self._server_window.update_from(session)
+            self._server_log_names = list(session.get("server_logs") or ())
+            return
+        names = list(session.get("server_logs") or ())
+        self._server_log_names = names
+        current = self._server_filter.currentText()
+        if [self._server_filter.itemText(i)
+                for i in range(1, self._server_filter.count())] != names:
+            self._server_filter.blockSignals(True)
+            self._server_filter.clear()
+            self._server_filter.addItems([ALL_LOGS] + names)
+            index = self._server_filter.findText(current)
+            self._server_filter.setCurrentIndex(index if index >= 0 else 0)
+            self._server_filter.blockSignals(False)
+        # One log is the common case, and then its name on every line is noise.
+        self._server_filter.setVisible(len(names) > 1)
+        self._repaint_server()
+
+    def _visible_server_lines(self):
+        chosen = self._server_filter.currentText()
+        if chosen and chosen != ALL_LOGS:
+            return [line for line in self._server_lines if line["log"] == chosen]
+        return list(self._server_lines)
+
+    def _repaint_server(self):
+        lines = self._visible_server_lines()
+        many = len({line["log"] for line in lines}) > 1
+        key = (len(lines), self._server_filter.currentText(),
+               lines[-1]["text"] if lines else "")
+        if key == self._server_painted:
+            return
+        self._server_painted = key
+        at_bottom = (self._server_view.verticalScrollBar().value()
+                     >= self._server_view.verticalScrollBar().maximum() - 4)
+        self._server_view.clear()
+        for line in lines[-SERVER_VISIBLE_LINES:]:
+            prefix = "[%s] " % line["log"] if many else ""
+            self._server_view.appendHtml(
+                '<pre style="margin:0">%s</pre>'
+                % level_html(line["level"], prefix + line["text"]))
+        self._server_count.setText("%d line%s" % (len(lines),
+                                                  "" if len(lines) == 1 else "s"))
+        if at_bottom:
+            bar = self._server_view.verticalScrollBar()
+            bar.setValue(bar.maximum())
+
+    def open_server_window(self):
+        """Raise this session's log window, opening one if there is none.
+
+        Kept and re-raised rather than opened again: clicking twice should bring
+        back what you were reading, not start a second copy of it beside the first.
+        """
+        if self._server_window is None:
+            self._server_window = ServerLogWindow(self.name.text() or "session")
+            self._server_window.closed.connect(self._server_window_closed)
+        self._server_window.update_from({"server": self._server_lines,
+                                         "server_logs": self._server_log_names})
+        self._set_server_detached(True)
+        self._server_window.show()
+        self._server_window.raise_()
+        self._server_window.activateWindow()
+        return self._server_window
+
+    def _server_window_closed(self):
+        self._server_window = None
+        self._set_server_detached(False)
+        # It kept arriving while the window had it, so the strip is behind.
+        self._server_painted = None
+        self._repaint_server()
+
+    def _set_server_detached(self, detached):
+        """Show the lines here, or say where they went. Never both."""
+        self._server_controls.setVisible(not detached)
+        self._server_view.setVisible(not detached)
+        self._server_popout.setVisible(not detached)
+        self._server_elsewhere.setVisible(detached)
+        if detached:
+            self._server_elsewhere.start()
+        else:
+            self._server_elsewhere.stop()
+
+    def _save_server(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save server log",
+                                              "%s-server.log" % self.name.text(),
+                                              "Log files (*.log);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("\n".join("[%s] %s" % (line["log"], line["text"])
+                                   for line in self._visible_server_lines()))
+        except OSError as exc:
+            QMessageBox.warning(self, "Save server log", str(exc))
+
     def update_from(self, session):
         self.name.setText(session["name"])
         label, variant = STATE_TAGS.get(session["state"], (session["state"].upper(),
@@ -104,6 +375,7 @@ class SessionPanel(widgets.BlueprintPanel):
         self.progress.setValue(session.get("done", 0))
         self.counter.setText("%d/%d" % (session.get("done", 0), total) if total else "")
         self._render_tree(session)
+        self._update_server(session)
 
     def _render_tree(self, session):
         """Every scenario this window has run, not only the one running now.

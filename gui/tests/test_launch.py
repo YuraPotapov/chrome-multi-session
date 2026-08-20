@@ -370,3 +370,91 @@ def test_without_an_inventory_all_accounts_is_unknowable_not_empty():
     # not as "no accounts" and launch nothing.
     config = _config(users={"mode": launch.USERS_ALL, "logins": []})
     assert launch.selected_logins(config, None) == []
+
+
+# ------------------------------------------------------------- server logs
+def _argv(**server_logs):
+    config = dict(launch.DEFAULTS)
+    config["server_logs"] = dict(launch.DEFAULTS["server_logs"], **server_logs)
+    return launch.argv(config)
+
+
+def test_off_by_default_no_flag_at_all():
+    assert not any(a.startswith("--server-log") for a in launch.argv({}))
+
+
+def test_the_default_mode_spells_itself_out():
+    # build_argv drops a flag whose value is empty, so "the bare flag" cannot be
+    # expressed by a form. The core takes "default" as the word for it.
+    assert "--server-log=default" in _argv(mode=launch.LOGS_DEFAULT)
+
+
+def test_all_and_picked_names_reach_the_command_line():
+    assert "--server-log=all" in _argv(mode=launch.LOGS_ALL)
+    assert "--server-log=app,nginx" in _argv(mode=launch.LOGS_PICK,
+                                             names=["app", "nginx"])
+
+
+def test_picking_nothing_passes_no_flag():
+    # An empty --server-log= is an error in the core; the GUI must not build it.
+    assert not any(a.startswith("--server-log") for a in _argv(mode=launch.LOGS_PICK))
+
+
+def test_server_logs_work_without_run_tests():
+    # Unlike the flow and report flags: a plain launch streams them into the Run
+    # page's panels just the same.
+    config = dict(launch.DEFAULTS)
+    config["server_logs"] = {"mode": launch.LOGS_ALL, "names": []}
+    config["scenarios"] = {"mode": launch.SCENARIOS_NONE, "selected": []}
+    args = launch.argv(config)
+    assert "--server-log=all" in args
+    assert not any(a.startswith("--run-tests") for a in args)
+
+
+def test_a_configuration_saved_before_this_feature_still_loads():
+    # merged() treats a missing section as "the config predates it", which is the
+    # whole reason saved Launch configurations survive an upgrade.
+    old = {"environment": "localhost", "users": {"mode": launch.USERS_ALL,
+                                                 "logins": []}}
+    assert launch.merged(old)["server_logs"] == launch.DEFAULTS["server_logs"]
+    assert not any(a.startswith("--server-log") for a in launch.argv(old))
+
+
+def test_server_log_is_not_a_report_artifact_the_gui_offers():
+    # --server-log decides the file; a second control for the same decision could
+    # only ever contradict it.
+    assert "server_log" not in launch.ALL_ARTIFACTS
+
+
+def test_a_configuration_that_still_lists_it_does_not_pass_it_on():
+    # It was briefly an artifact, so a saved configuration can still name it.
+    # report_level() intersects with what the core advertises, which is what keeps
+    # a stale name off the command line.
+    config = dict(launch.DEFAULTS)
+    config["scenarios"] = {"mode": launch.SCENARIOS_ALL, "selected": []}
+    config["reports"] = {"level": launch.REPORTS_CUSTOM,
+                         "artifacts": ["result", "server_log"], "always": False}
+    level = [a for a in launch.argv(config) if a.startswith("--report-level")]
+    assert level == ["--report-level=result"]
+
+
+def test_fire_and_forget_drops_the_server_log_flag():
+    """--detach and --server-log cannot both mean anything.
+
+    The launcher exits the moment the windows are up, taking its reader threads
+    with it, so there is nothing left to stream into. It says so and carries on;
+    the GUI does not build the line at all.
+    """
+    config = dict(launch.DEFAULTS)
+    config["server_logs"] = {"mode": launch.LOGS_ALL, "names": []}
+    config["sessions"] = dict(launch.DEFAULTS["sessions"], detach=True)
+    args = launch.argv(config)
+    assert "--detach" in args
+    assert not any(a.startswith("--server-log") for a in args)
+
+
+def test_without_fire_and_forget_the_flag_is_built_as_usual():
+    config = dict(launch.DEFAULTS)
+    config["server_logs"] = {"mode": launch.LOGS_ALL, "names": []}
+    config["sessions"] = dict(launch.DEFAULTS["sessions"], detach=False)
+    assert "--server-log=all" in launch.argv(config)

@@ -25,6 +25,10 @@ from . import commands
 # -- vocabularies the GUI offers ---------------------------------------------
 USERS_ALL, USERS_PICK = "all", "pick"
 EXT_ALL, EXT_NONE, EXT_PICK = "all", "none", "pick"
+# Which backend logs (--server-log) a launch streams. "default" is the absence of
+# the flag on the command line, i.e. the logs logsources.json marks as defaults for
+# the environment; "off" is the absence of the feature.
+LOGS_OFF, LOGS_DEFAULT, LOGS_ALL, LOGS_PICK = "off", "default", "all", "pick"
 SCENARIOS_NONE, SCENARIOS_ALL = "none", "all"
 SCENARIOS_PER_USER, SCENARIOS_PICK = "per_user", "pick"
 REPORTS_RESULTS, REPORTS_FULL, REPORTS_CUSTOM = "results", "full", "custom"
@@ -61,6 +65,7 @@ DEFAULTS = {
     "sessions": {"jobs": 1, "all_at_once": False, "auto_jobs": False,
                  "keep_open": True, "detach": False},
     "extensions": {"mode": EXT_ALL, "names": []},
+    "server_logs": {"mode": LOGS_OFF, "names": []},
     "scenarios": {"mode": SCENARIOS_NONE, "selected": []},
     "reports": {"level": REPORTS_RESULTS, "artifacts": [], "always": False},
     "screenshots": {"mode": SHOTS_OFF},
@@ -104,6 +109,7 @@ def to_command_state(config, inventory=None):
         "--user-session": advanced["profile_prefix"],
         "--sessions-dir": advanced["sessions_dir"],
         "--extensions": _extensions(extensions),
+        "--server-log": _server_logs(config["server_logs"]),
         "--log-level": advanced["log_level"] or "INFO",
         "--detach": bool(sessions["detach"]),
 
@@ -169,6 +175,23 @@ def _extensions(extensions):
     if extensions["mode"] == EXT_PICK:
         return ",".join(extensions["names"])
     return ""                            # no flag: the core installs its default set
+
+
+def _server_logs(server_logs):
+    """The --server-log value, or "" when the flag should not appear at all.
+
+    LOGS_DEFAULT spells itself out rather than leaving the value off: build_argv
+    omits any flag whose value is empty, so "the bare flag" is not something a
+    {flag: value} form can say. The core accepts "default" as that word.
+    """
+    mode = server_logs["mode"]
+    if mode == LOGS_ALL:
+        return "all"
+    if mode == LOGS_DEFAULT:
+        return "default"
+    if mode == LOGS_PICK:
+        return ",".join(server_logs["names"])
+    return ""                            # LOGS_OFF: no flag at all
 
 
 def _run_tests(scenarios):

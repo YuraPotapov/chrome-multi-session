@@ -5,7 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cms_gui.runner import LauncherProcess, RunState, parse_log_line
+from cms_gui.runner import (SERVER_LOG_LINES, LauncherProcess, RunState,
+                            parse_log_line)
 
 
 # ------------------------------------------------------------------ log lines
@@ -284,3 +285,81 @@ def test_the_process_group_flag_records_whether_it_was_applied(qapp, tmp_path):
                                            "setCreateProcessArgumentsModifier")
     assert launcher._own_group is expected
     launcher._proc.waitForFinished(15000)
+
+
+# ------------------------------------------------------- server log batches
+def _state_with_lines(*events):
+    state = RunState()
+    state.handle({"kind": "window.launched", "session": "dev-agent",
+                  "login": "agent", "pid": 7})
+    for event in events:
+        state.handle(event)
+    return state.sessions["dev-agent"]
+
+
+def _batch(session="dev-agent", log="app", *texts, **kw):
+    level = kw.get("level", "INFO")
+    return {"kind": "serverlog.lines", "session": session, "log": log,
+            "lines": [{"ts": 1.0, "level": level, "text": t} for t in texts]}
+
+
+def test_server_lines_land_on_the_session_they_belong_to():
+    session = _state_with_lines(_batch("dev-agent", "app", "one", "two"))
+    assert [line["text"] for line in session["server"]] == ["one", "two"]
+    assert session["server_logs"] == ["app"]
+
+
+def test_batches_from_several_logs_keep_their_names():
+    session = _state_with_lines(_batch("dev-agent", "app", "a"),
+                                _batch("dev-agent", "nginx", "b"),
+                                _batch("dev-agent", "app", "c"))
+    assert [(l["log"], l["text"]) for l in session["server"]] == [
+        ("app", "a"), ("nginx", "b"), ("app", "c")]
+    # The order the panel's filter offers them in: first seen, first listed.
+    assert session["server_logs"] == ["app", "nginx"]
+
+
+def test_one_sessions_lines_do_not_reach_another():
+    # The launcher already decided who each line belongs to; the model must not
+    # blur that back together.
+    state = RunState()
+    state.handle({"kind": "window.launched", "session": "a", "login": "a"})
+    state.handle({"kind": "window.launched", "session": "b", "login": "b"})
+    state.handle(_batch("a", "app", "only-a"))
+    assert [l["text"] for l in state.sessions["a"]["server"]] == ["only-a"]
+    assert list(state.sessions["b"]["server"]) == []
+
+
+def test_the_level_survives_so_the_panel_can_colour_it():
+    session = _state_with_lines(_batch("dev-agent", "app", "boom", level="ERROR"))
+    assert session["server"][0]["level"] == "ERROR"
+
+
+def test_a_long_run_does_not_grow_the_model_without_bound():
+    texts = ["line %d" % i for i in range(SERVER_LOG_LINES + 50)]
+    session = _state_with_lines(_batch("dev-agent", "app", *texts))
+    assert len(session["server"]) == SERVER_LOG_LINES
+    # And what it keeps is the recent end - the part next to a failure.
+    assert session["server"][-1]["text"] == texts[-1]
+
+
+def test_lines_arriving_before_the_window_announces_itself_are_kept():
+    # The reader starts before the first window opens, deliberately: a line
+    # written while Chrome is coming up still belongs to that session.
+    state = RunState()
+    state.handle(_batch("dev-agent", "app", "early"))
+    assert [l["text"] for l in state.sessions["dev-agent"]["server"]] == ["early"]
+
+
+def test_a_batch_without_a_session_is_ignored_rather_than_crashing():
+    state = RunState()
+    state.handle({"kind": "serverlog.lines", "log": "app",
+                  "lines": [{"ts": 1.0, "level": "INFO", "text": "x"}]})
+    assert state.sessions == {}
+
+
+def test_a_run_without_server_logs_has_an_empty_box():
+    state = RunState()
+    state.handle({"kind": "window.launched", "session": "dev-agent", "login": "a"})
+    assert list(state.sessions["dev-agent"]["server"]) == []
+    assert state.sessions["dev-agent"]["server_logs"] == []

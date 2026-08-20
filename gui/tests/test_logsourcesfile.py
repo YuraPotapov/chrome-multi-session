@@ -1,0 +1,252 @@
+"""cms_gui.logsourcesfile: the editor's model of the core's logsources.json.
+
+The contract these tests exist to hold: whatever this module writes, the launcher
+must be able to read. So the round-trip cases end by handing the file to
+``engine.serverlog.parse_config`` itself rather than to a second opinion.
+"""
+
+import json
+import os
+import sys
+
+import pytest
+
+from cms_gui import logsourcesfile as lsf
+
+# The core lives one directory up and is not installed; the GUI never imports it
+# at runtime, but a test may - to check the two agree about the file.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
+LOCAL = "localhost:8069"
+DEV = "https://dev.example.com/"
+
+
+def _rows():
+    return (
+        [lsf.ConnectionRow(name="here", type="local"),
+         lsf.ConnectionRow(name="dev", type="ssh", host="dev.example.com",
+                           user="deploy", identity="~/.ssh/id_ed25519")],
+        [lsf.LogRow(name="app", connection="here", envs=[LOCAL], type="file",
+                    target="/var/log/app.log", format="odoo", default=True),
+         lsf.LogRow(name="nginx", connection="dev", envs=[DEV], type="file",
+                    target="/var/log/nginx/error.log", format="nginx")],
+    )
+
+
+def _engine_reads(path):
+    """Hand the written file to the launcher's own parser."""
+    from engine import serverlog
+    return serverlog.load_config(str(path))
+
+
+# ------------------------------------------------------------------ round trip
+def test_what_the_editor_writes_the_launcher_can_read(tmp_path):
+    path = tmp_path / "logsources.json"
+    connections, logs = _rows()
+    lsf.save(str(path), connections, logs)
+    config = _engine_reads(path)
+    assert [c.name for c in config.connections] == ["here", "dev"]
+    assert [s.name for s in config.for_env(LOCAL)] == ["app"]
+    assert [s.name for s in config.for_env(DEV)] == ["nginx"]
+
+
+def test_a_file_survives_a_load_save_cycle_unchanged(tmp_path):
+    path = tmp_path / "logsources.json"
+    lsf.save(str(path), *_rows())
+    first = path.read_text()
+    connections, logs = lsf.load(str(path))
+    lsf.save(str(path), connections, logs)
+    assert path.read_text() == first
+
+
+def test_each_log_type_keeps_its_own_target_field(tmp_path):
+    path = tmp_path / "logsources.json"
+    connections = [lsf.ConnectionRow(name="here", type="local")]
+    logs = [lsf.LogRow(name="a", connection="here", envs=[LOCAL], type="file",
+                       target="/x.log"),
+            lsf.LogRow(name="b", connection="here", envs=[LOCAL], type="docker",
+                       target="odoo"),
+            lsf.LogRow(name="c", connection="here", envs=[LOCAL], type="journal",
+                       target="app.service"),
+            lsf.LogRow(name="d", connection="here", envs=[LOCAL], type="http",
+                       target="https://logs.example.com/stream")]
+    lsf.save(str(path), connections, logs)
+    written = json.loads(path.read_text())["logs"]
+    assert [set(e) & {"path", "container", "unit", "url"} for e in written] == \
+        [{"path"}, {"container"}, {"unit"}, {"url"}]
+    # And the launcher agrees they are usable.
+    assert len(_engine_reads(path).logs) == 4
+
+
+def test_unknown_keys_round_trip_so_a_comment_is_not_eaten(tmp_path):
+    path = tmp_path / "logsources.json"
+    path.write_text(json.dumps({
+        "connections": [{"name": "here", "type": "local", "_comment": "keep me"}],
+        "logs": [{"name": "app", "connection": "here", "env": LOCAL,
+                  "path": "/x", "_note": "and me"}]}))
+    connections, logs = lsf.load(str(path))
+    lsf.save(str(path), connections, logs)
+    data = json.loads(path.read_text())
+    assert data["connections"][0]["_comment"] == "keep me"
+    assert data["logs"][0]["_note"] == "and me"
+
+
+def test_the_singular_env_spelling_is_read_and_normalised(tmp_path):
+    path = tmp_path / "logsources.json"
+    path.write_text(json.dumps({
+        "connections": [{"name": "here", "type": "local"}],
+        "logs": [{"name": "app", "connection": "here", "env": LOCAL, "path": "/x"}]}))
+    _connections, logs = lsf.load(str(path))
+    assert logs[0].envs == [LOCAL]
+
+
+def test_a_local_connection_does_not_keep_ssh_fields(tmp_path):
+    # A host on a local connection reads as though it might connect somewhere.
+    path = tmp_path / "logsources.json"
+    row = lsf.ConnectionRow(name="here", type="local", host="left-over",
+                            user="stale")
+    lsf.save(str(path), [row], [])
+    written = json.loads(path.read_text())["connections"][0]
+    assert "host" not in written and "user" not in written
+
+
+def test_a_byte_order_mark_does_not_break_the_editor(tmp_path):
+    # The trap that lost saved configurations in 0.8.3.
+    path = tmp_path / "logsources.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps(
+        {"connections": [{"name": "here", "type": "local"}],
+         "logs": []}).encode("utf-8"))
+    connections, _logs = lsf.load(str(path))
+    assert [c.name for c in connections] == ["here"]
+
+
+def test_a_missing_file_is_empty_not_an_error(tmp_path):
+    assert lsf.load(str(tmp_path / "nope.json")) == ([], [])
+
+
+def test_broken_json_names_the_file(tmp_path):
+    path = tmp_path / "logsources.json"
+    path.write_text("{not json")
+    with pytest.raises(lsf.LogSourcesFileError) as exc:
+        lsf.load(str(path))
+    assert "logsources.json" in str(exc.value)
+
+
+# ------------------------------------------------------------------ validation
+def _problems(connections, logs):
+    return "\n".join(lsf.validate(connections, logs))
+
+
+def test_a_log_pointing_at_no_connection_is_reported():
+    connections = [lsf.ConnectionRow(name="here", type="local")]
+    logs = [lsf.LogRow(name="app", connection="typo", envs=[LOCAL], target="/x")]
+    assert "no connection named 'typo'" in _problems(connections, logs)
+
+
+def test_an_ssh_connection_without_a_host_is_reported():
+    assert "needs a host" in _problems([lsf.ConnectionRow(name="dev", type="ssh")], [])
+
+
+def test_a_duplicate_name_within_one_environment_is_reported():
+    connections = [lsf.ConnectionRow(name="here", type="local")]
+    logs = [lsf.LogRow(name="app", connection="here", envs=[LOCAL], target="/a"),
+            lsf.LogRow(name="app", connection="here", envs=[LOCAL], target="/b")]
+    assert "unique per environment" in _problems(connections, logs)
+
+
+def test_the_same_name_on_two_environments_is_not_a_problem():
+    connections = [lsf.ConnectionRow(name="here", type="local")]
+    logs = [lsf.LogRow(name="app", connection="here", envs=[LOCAL], target="/a"),
+            lsf.LogRow(name="app", connection="here", envs=[DEV], target="/b")]
+    assert lsf.validate(connections, logs) == []
+
+
+def test_a_log_with_no_environment_is_reported():
+    connections = [lsf.ConnectionRow(name="here", type="local")]
+    logs = [lsf.LogRow(name="app", connection="here", envs=[], target="/x")]
+    assert "at least one environment" in _problems(connections, logs)
+
+
+def test_a_missing_target_is_named_by_its_own_field():
+    connections = [lsf.ConnectionRow(name="here", type="local")]
+    assert "path is required" in _problems(
+        connections, [lsf.LogRow(name="a", connection="here", envs=[LOCAL],
+                                 type="file")])
+    assert "container is required" in _problems(
+        connections, [lsf.LogRow(name="a", connection="here", envs=[LOCAL],
+                                 type="docker")])
+
+
+def test_a_journal_with_no_unit_is_allowed():
+    # No unit means the whole journal, which is a reasonable thing to ask for.
+    connections = [lsf.ConnectionRow(name="here", type="local")]
+    logs = [lsf.LogRow(name="sys", connection="here", envs=[LOCAL], type="journal")]
+    assert lsf.validate(connections, logs) == []
+
+
+def test_every_problem_is_reported_at_once():
+    # The editor shows them all rather than making the user fix one, save, and
+    # discover the next.
+    problems = lsf.validate([lsf.ConnectionRow(name="", type="ssh")],
+                            [lsf.LogRow(name="", connection="", envs=[])])
+    assert len(problems) >= 4
+
+
+def test_saving_an_invalid_file_writes_nothing(tmp_path):
+    path = tmp_path / "logsources.json"
+    with pytest.raises(lsf.LogSourcesFileError):
+        lsf.save(str(path), [], [lsf.LogRow(name="a", connection="nope",
+                                            envs=[LOCAL], target="/x")])
+    assert not path.exists()
+
+
+def test_nothing_the_editor_accepts_is_refused_by_the_launcher(tmp_path):
+    """The failure the mirrored validation exists to prevent.
+
+    A file this module accepts and the engine then refuses means the editor said
+    "saved" and the next launch exits before opening a window. Covers each log
+    type, a log bound to two environments, and the optional ssh fields.
+    """
+    from engine import serverlog
+
+    connections = [lsf.ConnectionRow(name="here", type="local"),
+                   lsf.ConnectionRow(name="dev", type="ssh", host="h", user="u",
+                                     port="2222")]
+    logs = [lsf.LogRow(name="app", connection="here", envs=[LOCAL, DEV],
+                       type="file", target="/x", format="odoo", default=True),
+            lsf.LogRow(name="sys", connection="dev", envs=[DEV], type="journal",
+                       target="", format="syslog"),
+            lsf.LogRow(name="gw", connection="dev", envs=[DEV], type="http",
+                       target="https://x/stream", format="iso")]
+    assert lsf.validate(connections, logs) == []
+    path = tmp_path / "logsources.json"
+    lsf.save(str(path), connections, logs)
+    config = serverlog.load_config(str(path))      # must not raise
+    assert {s.name for s in config.for_env(DEV)} == {"app", "sys", "gw"}
+
+
+# ----------------------------------------------------------------- atomic save
+def test_an_existing_file_is_kept_as_a_backup(tmp_path):
+    path = tmp_path / "logsources.json"
+    lsf.save(str(path), [lsf.ConnectionRow(name="one", type="local")], [])
+    first = path.read_text()
+    lsf.save(str(path), [lsf.ConnectionRow(name="two", type="local")], [])
+    assert (tmp_path / "logsources.json.bak").read_text() == first
+    assert "two" in path.read_text()
+
+
+def test_no_temp_file_is_left_behind(tmp_path):
+    path = tmp_path / "logsources.json"
+    lsf.save(str(path), *_rows())
+    assert [p.name for p in tmp_path.iterdir()] == ["logsources.json"]
+
+
+def test_fingerprint_notices_a_change_underneath_the_editor(tmp_path):
+    path = tmp_path / "logsources.json"
+    assert lsf.fingerprint(str(path)) is None
+    lsf.save(str(path), [lsf.ConnectionRow(name="one", type="local")], [])
+    before = lsf.fingerprint(str(path))
+    lsf.save(str(path), [lsf.ConnectionRow(name="one", type="local"),
+                         lsf.ConnectionRow(name="two", type="local")], [])
+    assert lsf.fingerprint(str(path)) != before

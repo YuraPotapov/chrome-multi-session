@@ -162,6 +162,7 @@ class LaunchSessionsPage(QWidget):
         grid.addWidget(self._sessions_panel(), 0, 1)
         grid.addWidget(self._scenarios_panel(), 1, 1)
         grid.addWidget(self._reports_panel(), 2, 1)
+        grid.addWidget(self._server_logs_panel(), 3, 0, 1, 2)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         grid.setRowStretch(1, 1)
@@ -250,6 +251,95 @@ class LaunchSessionsPage(QWidget):
         self.ext_list.changed.connect(self._changed)
         panel.layout().addWidget(self.ext_list, 1)
         return panel
+
+    def _server_logs_panel(self):
+        panel = widgets.BlueprintPanel()
+        self.logs_mode = widgets.Segmented(["Off", "Default", "All", "Choose"])
+        self.logs_mode.changed.connect(lambda _v: self._logs_mode_changed())
+        panel.layout().addWidget(widgets.row(widgets.kicker("Server logs"), None,
+                                             self.logs_mode))
+        panel.layout().addWidget(widgets.lede(
+            "The backend's own log, streamed into each session's panel and shown "
+            "only the lines written after that window opened."))
+        self.logs_list = widgets.CheckList(searchable=False)
+        self.logs_list.set_noun("logs")
+        self.logs_list.list.setMinimumHeight(96)
+        self.logs_list.changed.connect(self._changed)
+        panel.layout().addWidget(self.logs_list, 1)
+        self.logs_note = QLabel("")
+        self.logs_note.setProperty("role", "hint")
+        self.logs_note.setWordWrap(True)
+        panel.layout().addWidget(self.logs_note)
+        return panel
+
+    def _logs_mode_changed(self):
+        if not self._building and self.logs_mode.current() == "Choose" \
+                and not self.logs_list.checked():
+            self.logs_list.set_all(True)      # "choose" starts from everything
+        self._changed()
+
+    def _logs_mode_value(self):
+        return {"Default": launch.LOGS_DEFAULT, "All": launch.LOGS_ALL,
+                "Choose": launch.LOGS_PICK}.get(self.logs_mode.current(),
+                                                launch.LOGS_OFF)
+
+    def _populate_server_logs(self, keep):
+        """The logs configured for the chosen environment, with ``keep`` ticked.
+
+        Filtered by environment on purpose: offering the staging stand's nginx
+        while launching localhost is offering something the core will reject.
+        """
+        alias = self.env_combo.currentText()
+        alias = "" if alias == ALL_ENVIRONMENTS else alias
+        rows = []
+        if self.inventory:
+            env_value = self.inventory.env_value(alias) if alias else None
+            for row in self.inventory.logs_for(env_value or None):
+                note = row.get("target", "") or row.get("type", "")
+                if row.get("default"):
+                    note = "default   %s" % note
+                rows.append((row.get("name", ""), note))
+        known = {name for name, _note in rows}
+        # Kept rather than dropped: silently editing a saved configuration the
+        # moment it is opened is worse than showing a row that will be skipped.
+        self._logs_here = len(rows)
+        for name in keep or ():
+            if name not in known:
+                rows.append((name, "(not configured for this environment)"))
+        self.logs_list.clear()
+        for name, note in rows:
+            self.logs_list.add(name, name, note)
+        self.logs_list.set_checked(keep)
+        self._logs_carried = len(rows) - self._logs_here
+        self._update_logs_note(self.detach.isChecked())
+
+    def _update_logs_note(self, detached):
+        """One place for every reason this block might have nothing to offer.
+
+        Each has to be able to clear the others: unticking fire-and-forget must not
+        leave its explanation behind, and neither must a refresh that finds logs.
+        """
+        here = getattr(self, "_logs_here", 0)
+        carried = getattr(self, "_logs_carried", 0)
+        path = self.inventory.log_sources_path if self.inventory else ""
+        if detached:
+            text = ("Not available with \"leave the windows running after the "
+                    "launcher exits\": the log readers belong to this launcher, and "
+                    "they stop when it does.")
+        elif not here and not carried:
+            text = ("No server logs configured%s. Describe your connections and log "
+                    "files on the Log sources page." % (" in %s" % path if path else ""))
+        elif not here:
+            # The state behind an empty report: the saved configuration names logs
+            # that belong to another environment, so the run streams nothing. Said
+            # here rather than left to a warning after the windows are already open.
+            text = ("None of these logs is configured for this environment, so "
+                    "nothing will be streamed. Add the environment to them on the "
+                    "Log sources page, or pick different ones.")
+        else:
+            text = ""
+        self.logs_note.setText(text)
+        self.logs_note.setVisible(bool(text))
 
     def _sessions_panel(self):
         panel = widgets.BlueprintPanel()
@@ -508,6 +598,8 @@ class LaunchSessionsPage(QWidget):
                          "detach": self.detach.isChecked()},
             "extensions": {"mode": self._ext_mode_value(),
                            "names": self.ext_list.checked()},
+            "server_logs": {"mode": self._logs_mode_value(),
+                            "names": self.logs_list.checked()},
             "scenarios": {"mode": SCENARIO_MODES[self._scenario_mode_id()][0],
                           "selected": self.scenario_list.checked()},
             "reports": {"level": self._report_mode_value(),
@@ -549,6 +641,13 @@ class LaunchSessionsPage(QWidget):
                                        launch.EXT_PICK: "Choose"}.get(
                                           extensions["mode"], "All"), notify=False)
             self._populate_extensions(extensions["names"])
+
+            server_logs = config["server_logs"]
+            self.logs_mode.set_current({launch.LOGS_DEFAULT: "Default",
+                                        launch.LOGS_ALL: "All",
+                                        launch.LOGS_PICK: "Choose"}.get(
+                                            server_logs["mode"], "Off"), notify=False)
+            self._populate_server_logs(server_logs["names"])
 
             scenarios = config["scenarios"]
             for index, (mode, _label, _hint) in enumerate(SCENARIO_MODES):
@@ -606,6 +705,13 @@ class LaunchSessionsPage(QWidget):
         config = self.state()
         self.users_list.setEnabled(config["users"]["mode"] == launch.USERS_PICK)
         self.ext_list.setEnabled(config["extensions"]["mode"] == launch.EXT_PICK)
+        # Fire-and-forget takes the log readers with it when the launcher exits,
+        # so the whole block is off rather than quietly ignored later.
+        detached = bool(config["sessions"]["detach"])
+        self.logs_mode.setEnabled(not detached)
+        self.logs_list.setEnabled(not detached
+                                  and config["server_logs"]["mode"] == launch.LOGS_PICK)
+        self._update_logs_note(detached)
         self.scenario_list.setEnabled(
             config["scenarios"]["mode"] == launch.SCENARIOS_PICK)
         self.report_list.setEnabled(
@@ -647,6 +753,7 @@ class LaunchSessionsPage(QWidget):
         # Keep whatever is still available; an account only in the old
         # environment cannot be part of this run any more.
         self._populate_users(self.users_list.checked())
+        self._populate_server_logs(self.logs_list.checked())
         self._changed()
 
     def _users_mode_changed(self):
@@ -737,6 +844,7 @@ class LaunchSessionsPage(QWidget):
 
             self._populate_users(config["users"]["logins"])
             self._populate_extensions(config["extensions"]["names"])
+            self._populate_server_logs(config["server_logs"]["names"])
             self._populate_scenarios(config["scenarios"]["selected"])
             self._populate_artifacts(config["reports"]["artifacts"])
             self._populate_overlay(config["overlay"]["components"])

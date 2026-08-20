@@ -37,8 +37,28 @@ WARN = "#a8712a"
 BAD = "#a33a2e"
 BAD_TINT = "#f7e7e5"
 
+# --- log levels --------------------------------------------------------------
+# A backend log is read by scanning, so severity has to be legible at a glance
+# without reading the word. Its own ramp rather than OK/WARN/BAD: those are
+# interface marks on a light surface, and a log pane is a wall of monospace in
+# whichever theme is on - so these are tuned per theme and switched below.
+#
+# DEBUG recedes (it is usually most of the lines), INFO is green, WARN amber,
+# ERROR red, and CRITICAL escalates the same red with weight and a wash behind
+# it - a new hue would read as a different KIND of thing, when it is the same
+# thing gone further.
+LOG_LEVEL = {
+    "DEBUG": "#8a8a8d",
+    "INFO": "#2f7d43",
+    "WARN": "#b06f18",
+    "ERROR": "#c0392b",
+    "CRITICAL": "#8e1b12",
+}
+LOG_CRITICAL_BG = "#f7ddda"
+
 def set_dark_mode(enabled: bool):
     global BG, SURFACE, TEXT, ACCENT, NEUTRAL, ACCENT_RAMP, DIVIDER, DIVIDER_STRONG, OK, WARN, BAD, BAD_TINT
+    global LOG_LEVEL, LOG_CRITICAL_BG
     
     if enabled:
         BG = "#1a1b1e"
@@ -55,6 +75,17 @@ def set_dark_mode(enabled: bool):
         }
         
         BAD_TINT = "#4a2522" # Darker wash behind red marks
+
+        # Lifted off the near-black background: the light-theme values are dark
+        # inks meant for paper, and on #1a1b1e they read as barely-there smudges.
+        LOG_LEVEL = {
+            "DEBUG": "#6f7075",
+            "INFO": "#5fbf7d",
+            "WARN": "#e0a33f",
+            "ERROR": "#ef6a5e",
+            "CRITICAL": "#ff9d92",
+        }
+        LOG_CRITICAL_BG = "#4a2522"
     else:
         BG = "#f2f2f3"
         SURFACE = "#e9e9ea"
@@ -69,6 +100,15 @@ def set_dark_mode(enabled: bool):
         }
         
         BAD_TINT = "#f7e7e5"
+
+        LOG_LEVEL = {
+            "DEBUG": "#8a8a8d",
+            "INFO": "#2f7d43",
+            "WARN": "#b06f18",
+            "ERROR": "#c0392b",
+            "CRITICAL": "#8e1b12",
+        }
+        LOG_CRITICAL_BG = "#f7ddda"
 
 # --- type -------------------------------------------------------------------
 # The design asks for Barlow / Barlow Condensed / JetBrains Mono. They are web

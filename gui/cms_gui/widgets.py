@@ -495,6 +495,9 @@ def field(label_text, widget, hint=None):
         note.setStyleSheet("font-size: 11px; color: %s;" % theme.NEUTRAL[600])
         note.setWordWrap(True)
         column.addWidget(note)
+    # Kept reachable so a form can relabel a control whose meaning depends on
+    # another answer - a log's target is a path, a container, a unit or a URL.
+    box.label = label
     return box
 
 

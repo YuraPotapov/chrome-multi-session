@@ -24,6 +24,11 @@ from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 LOG_LINE = re.compile(r"^(?P<ts>\d{2}:\d{2}:\d{2})\s+(?P<level>[A-Z]+)\s+"
                       r"(?:\[(?P<session>[^\]]+)\]\s*)?(?P<text>.*)$")
 
+# Backend log lines kept per session (--server-log). A run against a busy server
+# can produce a great many, and every one of them would otherwise live in the
+# model for as long as the window is open.
+SERVER_LOG_LINES = 2000
+
 
 def parse_log_line(line):
     """Split a console line into its parts; unparseable lines stay whole."""
@@ -237,6 +242,14 @@ class RunState(QObject):
                                    "scenarios": [], "tree": None, "steps": {},
                                    "current": None, "done": 0, "total": 0,
                                    "scenario": "", "flows": [],
+                                   # Backend log lines belonging to THIS window
+                                   # (--server-log), newest last, capped so a
+                                   # chatty server cannot grow the model without
+                                   # bound over a long run. "server_logs" is the
+                                   # names seen so far, which is what the panel's
+                                   # filter offers.
+                                   "server": collections.deque(maxlen=SERVER_LOG_LINES),
+                                   "server_logs": [],
                                    # Every scenario this session has reached, in
                                    # the order it reached them. The fields above
                                    # are the CURRENT one; without this the rest
@@ -266,6 +279,25 @@ class RunState(QObject):
                                 event.get("login"))
         session["pid"] = event.get("pid")
         session["state"] = "launched"
+
+    def _on_serverlog_lines(self, event, name):
+        """One batch of backend log lines, already filtered to this window.
+
+        The launcher decided which session each line belongs to (it knows when the
+        window opened and what the line's own timestamp is); all that is left here
+        is to keep them and remember the log's name for the panel's filter.
+        """
+        if not name:
+            return
+        session = self._session(name)
+        log_name = event.get("log") or "server"
+        if log_name not in session["server_logs"]:
+            session["server_logs"].append(log_name)
+        for line in event.get("lines", []):
+            session["server"].append({"log": log_name,
+                                      "ts": line.get("ts") or 0,
+                                      "level": line.get("level") or "INFO",
+                                      "text": line.get("text") or ""})
 
     def _on_governor_limit(self, event, _name):
         """How many sessions may run right now, and why it last changed.

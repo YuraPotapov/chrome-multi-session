@@ -66,6 +66,19 @@ per-row reveal. Validation mirrors the launcher exactly: `class`/`login`/
 `password` required, `env`+`login` unique (that pair names the profile folder),
 `tag:` not `tags:`. Saving is atomic and keeps one `.bak`.
 
+**Log sources** — a table editor over `logsources.json`: the servers the backend
+logs live on, and which log belongs to which environment. Two tables rather than
+one list, because the file has two levels - a *connection* is where to run a
+reader, a *log* is what to read there - and one connection serves every log on a
+machine. Validation mirrors `engine.serverlog` exactly, so the editor cannot write
+a file the next launch would refuse; a file that could not be *read* disables Save
+entirely, because an empty editor over a broken file validates perfectly and one
+click would replace its contents. **Open Tail** and **Open Full** read the log through the core
+(`--server-log-show`) and put it on screen - the GUI has no ssh of its own - which
+is how an unknown host key, a stopped container or simply the wrong path gets found
+before a run depends on it. The viewer filters, saves, and is not modal, so two
+logs can be compared side by side.
+
 **Command** — every flag, grouped the way `--help` groups them. The
 flow-execution and report flags stay disabled until `--run-tests` is set,
 because the launcher rejects them without it, so an invalid line cannot be
@@ -85,7 +98,25 @@ is folded away under *Advanced*.
 
 **Run** — one panel per window: state (launching → attached → running → pass /
 fail), the step tree (the very tree the in-page HUD draws - it arrives in the
-`flow.start` event), progress and the run summary.
+`flow.start` event), progress and the run summary. With `--server-log` on, each
+panel also folds out that window's **Server log**: the backend lines written since
+*that* window opened, level-coloured, filterable when several logs are streaming,
+and saveable - which is the only way to keep them from a plain launch, where there
+is no report directory to write into.
+
+**Separate Window** moves that log into a full-size window of its own, with a
+search, a level filter that means "this level and worse", and a Follow
+switch for when you want to read something that has already scrolled past. Several
+sessions can be open at once, which is the point of a per-session log when ten
+windows are running as ten roles. While a window has the lines, the strip stops
+drawing them and says so with a pulse instead - one copy of a few hundred lines is
+enough, and a blank space there would read as "the log stopped".
+
+Lines are coloured by severity - debug recedes into grey, info is green, warnings
+amber, errors red, and a critical is the same red with weight and a wash behind it,
+because a critical is not a different *kind* of thing from an error but the same
+thing gone further. The palette is read from the theme as each line is painted, so
+it follows dark mode instead of freezing into whichever theme was on at startup.
 
 **Log** — the launcher's stderr, level-coloured, filterable by level, by session
 and by text. The `[session]` prefixes the core adds during parallel runs are what

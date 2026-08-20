@@ -31,6 +31,7 @@ from .settings import Settings
 from .pages.artifacts import ArtifactsPage
 from .pages.command import CommandPage
 from .pages.credentials import CredentialsPage
+from .pages.logsources import LogSourcesPage
 from .pages.environments import EnvironmentsPage
 from .pages.history import HistoryPage
 from .pages.launch import LaunchSessionsPage
@@ -42,6 +43,7 @@ from .pages.settings_dialog import SettingsDialog
 # (page key, label, icon name painted by icons.icon)
 CONFIGURE = [("environments", "Environments", "environments"),
              ("credentials", "Credentials", "credentials"),
+             ("logsources", "Log sources", "log"),
              ("scenarios", "Scenarios", "scenarios"),
              ("commands", "Command", "command"),
              ("launch", "Launch Sessions", "launch")]
@@ -357,6 +359,8 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.environments = EnvironmentsPage(self.settings)
         self.credentials = CredentialsPage()
+        self.logsources = LogSourcesPage()
+        self.logsources.set_core(self.core)
         self.scenarios = ScenariosPage(self.settings)
         self.command = CommandPage(self.settings)
         self.launch = LaunchSessionsPage(self.settings)
@@ -369,6 +373,7 @@ class MainWindow(QMainWindow):
         self.log.set_history(self.history)
         self.artifacts.set_history(self.history)
         self._pages = {"environments": self.environments, "credentials": self.credentials,
+                       "logsources": self.logsources,
                        "scenarios": self.scenarios,
                        "commands": self.command, "launch": self.launch,
                        "run": self.run, "log": self.log,
@@ -382,6 +387,9 @@ class MainWindow(QMainWindow):
         self.command.run_requested.connect(lambda: self.start_run("commands"))
         self.launch.run_requested.connect(lambda: self.start_run("launch"))
         self.credentials.saved.connect(self.refresh_inventory)
+        # A new log source changes what --server-log can pick, and the
+        # Launch page builds its picker from the inventory.
+        self.logsources.saved.connect(self.refresh_inventory)
         # Writing a scenario changes what --run-tests can run, so the inventory
         # every other page reads has to be re-read.
         self.scenarios.saved.connect(self.refresh_inventory)
@@ -639,6 +647,11 @@ class MainWindow(QMainWindow):
             
             _splash_msg("Loading credentials...")
             self.credentials.load(self.inventory.config_path or self.core.config_path)
+
+            _splash_msg("Loading log sources...")
+            self.logsources.set_environments([env.get("value", "")
+                                              for env in self.inventory.envs])
+            self.logsources.load(self.inventory.log_sources_path)
             
             _splash_msg("Finalizing UI...")
             self.describe_label.setText(self.inventory.summary())

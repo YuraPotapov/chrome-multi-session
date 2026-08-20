@@ -314,6 +314,23 @@ class Core:
     def flow_import(self, path):
         return self._flow_json("--flow-import=" + path)
 
+    def server_log_show(self, name, lines=None):
+        """Read one configured backend log through the launcher.
+
+        The GUI cannot read it itself - it never imports the engine, so it has no
+        ssh, no docker and no tail of its own. ``lines`` is how many from the end;
+        None asks for as much as the core's byte budget allows.
+
+        A failure comes back as ``{"ok": False, "error": ...}`` rather than an
+        exception: "this connection is wrong" is the useful answer, not a fault.
+        """
+        args = ["--server-log-show=" + name]
+        args.append("--server-log-lines=%s" % ("all" if lines is None else lines))
+        try:
+            return self._flow_json(*args)
+        except CoreError as exc:
+            return {"log": name, "ok": False, "error": str(exc), "lines": []}
+
     def selectors_show(self):
         """The named-target map, and the user's own file as editable text."""
         return self._flow_json("--selectors-show")
@@ -397,6 +414,32 @@ class Inventory:
     @property
     def extensions(self):
         return list(self.payload.get("extensions", []))
+
+    @property
+    def log_sources(self):
+        """Backend logs (--server-log), one row per (log, environment) pair."""
+        return list(self.payload.get("log_sources", []))
+
+    @property
+    def log_sources_path(self):
+        return self.payload.get("log_sources_path", "")
+
+    def logs_for(self, env_value=None):
+        """The distinct log names available, optionally within one environment.
+
+        A name repeats across environments on purpose ("app" exists on every
+        stand), so an unfiltered call de-duplicates rather than listing it twice.
+        """
+        names, rows = [], []
+        for row in self.log_sources:
+            if env_value and row.get("env") != env_value:
+                continue
+            name = row.get("name", "")
+            if not name or name in names:
+                continue
+            names.append(name)
+            rows.append(row)
+        return rows
 
     @property
     def tags(self):

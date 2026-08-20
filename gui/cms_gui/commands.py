@@ -20,8 +20,9 @@ import collections
 #   path   - a directory or file
 #   int    - a number (or one of `choices`, e.g. "all")
 Flag = collections.namedtuple(
-    "Flag", "name kind group help placeholder choices needs_run_tests default")
-Flag.__new__.__defaults__ = ("", None, False, None)
+    "Flag", "name kind group help placeholder choices needs_run_tests default "
+            "needs_foreground")
+Flag.__new__.__defaults__ = ("", None, False, None, False)
 
 GENERAL = "General"
 FLOW = "Flow execution"
@@ -51,6 +52,16 @@ FLAGS = [
          choices=["DEBUG", "INFO", "WARNING", "ERROR"], default="INFO"),
     Flag("--detach", "flag", GENERAL,
          "Fire-and-forget: leave windows running after the launcher exits."),
+    # No needs_run_tests: a plain launch streams these into the Run page's
+    # session panels just as a --run-tests one does. Choices come from
+    # --describe (log_sources), filtered to the environment being launched.
+    # needs_foreground: with --detach the launcher exits the moment the windows
+    # are up, taking its reader threads with it, so there is nothing left to
+    # stream into. The launcher says so and carries on; the GUI does not build
+    # the line at all.
+    Flag("--server-log", "list", GENERAL,
+         "Backend logs to stream into each panel, and keep in the report.",
+         placeholder="the environment's defaults", needs_foreground=True),
 
     Flag("--run-tests", "text", FLOW,
          "Attach over CDP and run scenarios: all, config, or ids / tag:NAME.",
@@ -71,7 +82,8 @@ FLAGS = [
 
     Flag("--report-level", "list", REPORTS,
          "Which artifacts to generate.",
-         choices=["console", "dom", "result", "screen", "url"], needs_run_tests=True),
+         choices=["console", "dom", "result", "screen", "url"],
+         needs_run_tests=True),
     Flag("--report-screen", "list", REPORTS,
          "When screenshots are captured (needs 'screen' in --report-level).",
          choices=["start", "each", "finish"], needs_run_tests=True),
@@ -88,6 +100,8 @@ GROUPS = [GENERAL, FLOW, REPORTS]
 GUI_OWNED = ("--config", "--events", "--control", "--describe", "--init-users-json",
              "--flow-show", "--flow-save", "--flow-delete", "--flow-import",
              "--selectors-show", "--selectors-save", "--from",
+             # The Log sources page's "Open" buttons, not launch options.
+             "--server-log-show", "--server-log-lines",
              # RUN ▾ -> "With Recorder" adds this; it is a mode, not a form field.
              "--recorder",
              "--help", "-h", "--version", "-V")
@@ -132,12 +146,16 @@ def build_argv(state, events=True):
 
     Rules mirror the launcher's own validation so the GUI cannot build a line it
     would reject: the flow-execution and report flags are dropped unless
-    ``--run-tests`` is set, and a flag left at its default is simply not passed.
+    ``--run-tests`` is set, anything needing this process to stay alive is dropped
+    under ``--detach``, and a flag left at its default is simply not passed.
     """
     args = []
     run_tests = str(state.get("--run-tests", "") or "").strip()
+    detached = bool(state.get("--detach"))
     for flag in FLAGS:
         if flag.needs_run_tests and not run_tests:
+            continue
+        if flag.needs_foreground and detached:
             continue
         value = state.get(flag.name)
         if flag.kind == "flag":

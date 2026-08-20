@@ -39,7 +39,8 @@ def _visible(window, key):
 
 def test_the_navigation_has_both_groups_in_the_intended_order(window):
     assert [key for key, _l, _g in main_window_mod.CONFIGURE] == [
-        "environments", "credentials", "scenarios", "commands", "launch"]
+        "environments", "credentials", "logsources", "scenarios", "commands",
+        "launch"]
     assert [key for key, _l, _g in main_window_mod.OBSERVE] == [
         "run", "log", "artifacts", "history"]
 
