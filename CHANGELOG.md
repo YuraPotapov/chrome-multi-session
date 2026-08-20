@@ -16,6 +16,121 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-20
+
+### Added
+- **The backend's log, tied to the window it belongs to.** Ten windows open as ten
+  roles, one misbehaves, and the server's log is a single stream with everyone's
+  requests mixed together — so the evidence that would explain the failure was the
+  one thing the tool could not show. `--server-log` now tails that stream and gives
+  each session only the lines written after **its own window opened**: live in the
+  GUI's session panel, and - under `--run-tests` - in the report beside the
+  screenshots, one file per log covering that scenario's own window. Turning the
+  streaming on is the whole decision: it is written pass or fail, whatever
+  `--report-*` says, because streaming a backend's log all run and then throwing
+  the evidence away is not a thing anyone wants a flag for.
+
+  Where the logs live is described in a new `logsources.json`, beside `users.json`
+  and git-ignored for the same reason. It has two levels because one machine
+  usually serves several logs: a **connection** says *where* to run a reader
+  (`local` or `ssh`), a **log** says *what* to read there (`file`, `docker`,
+  `journal`, `http`) and which environments it belongs to. One connection serves
+  every log on a machine, so a stand with three logs opens one ssh connection
+  rather than three. `--server-log=list` prints what is configured, and
+  `--server-log-show=NAME` reads one (`--server-log-lines=N|all`), which is how an
+  unknown host key or a stopped container gets found before a run depends on it
+  rather than after the report comes back empty - and, unlike a yes/no check,
+  shows whether it is even the right file.
+
+  Each session's panel folds out its own lines, and **Separate Window** moves them
+  into a full-size window with a search and a level filter - several at once, so ten
+  roles can be read side by side. The strip stops drawing them while a window has
+  them, and pulses instead of going blank.
+
+  Levels are the log viewer's own five - `DEBUG`, `INFO`, `WARN`, `ERROR`,
+  `CRITICAL` - not the HUD's three. Folding "the process is going down" into the
+  same bucket as "that request failed" is right for one small in-page widget and
+  wrong for the place you go to read a log. They are coloured by severity, the
+  filter is a threshold rather than a single level, and the palette is read from the
+  theme per line so it follows dark mode.
+
+  Correlation is by time and says so: a session sees what was written after it
+  opened, which separates environments and runs but cannot separate two windows
+  clicking at once against the same stand. The matcher is a strategy object so a
+  precise key can replace it without touching the reading or the fan-out.
+
+  **No debug port is involved.** Drawing this *inside* the page would have needed
+  `--remote-debugging-port`, which is unauthenticated and would have handed
+  anything on loopback control of a real logged-in profile. Nothing in this feature
+  talks to the browser, and a plain launch still opens no port.
+- **A Log sources page in the GUI**, next to Credentials. Connections and logs are
+  created and edited in a form, not in the grid: the fields that matter depend on
+  choices made in the same row - an ssh connection needs a host and a local one must
+  not have one, a log's target is a path, a container, a unit or a URL depending on
+  its kind - and a form can show exactly what applies and explain it, where eight
+  narrow columns in a fixed order cannot. The tables are the overview, with Edit,
+  Copy and Delete on each row. Validation mirrors the launcher's own, so the editor
+  cannot write a file the next launch would refuse, and Test asks the core whether a
+  log can really be read - **Open Tail** and **Open Full** put it on screen, in a
+  window that filters and saves and is not modal, so two logs can sit side by side.
+  Launch Sessions gained a matching **Server logs** block, filtered to the
+  environment being launched.
+- **Format presets named after the shape of a line, not after an application.**
+  `iso`, `slash`, `clf`, `syslog` and `none`, with `django`, `fastapi`, `node`,
+  `nginx`, `apache`, `go`, `rails`, `odoo` and the rest accepted as aliases for the
+  shape they write. `iso` alone covers everything using Python logging's default
+  `%(asctime)s`. Anything no preset describes is served by giving `timestamp` and
+  `level` patterns on the log itself - which the GUI now offers as "custom" rather
+  than leaving to a text editor.
+
+### Fixed
+- **A backend logging UTC streamed nothing, silently.** Odoo (and plenty else)
+  writes UTC; on a machine that is not, every line parsed hours into the past, fell
+  outside every session's window, and the run produced an empty panel and no report
+  file - which looks exactly like a server that had nothing to say. A line coming
+  off a live tail was written moments ago, so a timestamp claiming otherwise is a
+  misread one: it is now read as written-now, and the mismatch is reported once with
+  the offset measured and the fix named. That fix is a new `tz` on the log
+  (`local` / `utc` / `+HH:MM`), which applies to the presets and not only to a
+  hand-written pattern - the shape of a line and the clock it was written by are
+  different questions, and only the second changes per deployment.
+- **Server logs never reached the report.** `run_scenarios` took the hub and
+  `_run_scenario` used it, but nothing carried it between them, so every real run
+  wrote no `server_log-*.log` at all - while both halves passed their own tests.
+  The gap was the test suite's: it covered each end of the path and never the path.
+  It now drives the public entry point. `--server-log` naming a log the chosen
+  environment does not have - which is what a saved configuration does the moment
+  the environment is switched - exited before a single window opened. So did a
+  `logsources.json` with a mistake in it, a custom pattern that would not compile,
+  and combining it with `--detach` (where the launcher exits at once and takes its
+  reader threads with it, so nothing could be streamed anyway). A backend log is a
+  diagnostic, and a diagnostic that prevents the thing being diagnosed is worse
+  than none: each of these is now reported once and costs that one log. Asking for
+  two logs and misspelling one no longer costs the other either. The GUI does not
+  offer the `--detach` combination at all, and says why rather than dropping it
+  quietly.
+- **The editor destroyed a custom log format.** `timestamp` and `level` - the
+  patterns that make any backend readable without a preset - were parsed and then
+  dropped when the file was written back, so opening the Log sources page once
+  silently replaced a hand-written format with whatever preset the combo happened
+  to show. They now round-trip, and a pattern that will not compile, or that
+  captures nothing, is refused before it can be saved.
+- **A log file rewritten in place lost a line.** The follower spotted a truncation
+  by watching the file's size, and there is no moment to observe between a truncate
+  and the write that follows it — by the next poll the file was already longer than
+  the old read position and looked like ordinary growth, so reading resumed from a
+  stale offset and handed out the tail of a line as though it were a line. It now
+  fingerprints the file's first bytes, which a rewrite changes however fast it
+  happened, and checks that *before* reading rather than after.
+- **A follow command that died looked like a log with nothing to say.** An unknown
+  ssh host, a container that is not running and a missing path all end the reader
+  in milliseconds; it simply returned, so every one of them read as silence — the
+  worst possible answer for a "test this connection" button. The reader now reports
+  why it stopped, preferring the line that says what went wrong over ssh's leading
+  warning about an identity file.
+
+## [0.8.3] - 2026-08-19
+
 ### Fixed
 - **Saved Launch Sessions configurations could vanish.** The store read its file
   as strict UTF-8, so a byte-order mark - which is what a Windows shell writes
