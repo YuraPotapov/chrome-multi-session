@@ -16,6 +16,45 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-21
+
+### Added
+- **The sidebar collapses, and you choose what is on it.** 196px of labels is a
+  lot to give a navigation that is read once and then known, so `Ctrl+B` — or
+  *View → Collapse sidebar*, or the handle on the rail itself — folds it down to
+  its marks, each carrying its label as a tooltip. The group headings go with the
+  labels, because "CONFIGURE" cannot be drawn in the width a mark needs and a
+  clipped word is worse than none.
+
+  *View → Sidebar items* switches each of the ten entries on or off, for the
+  common case of using three of them. What is stored is what is **hidden**, so a
+  page added in a later version arrives on the rail rather than having to be found
+  and switched on. It will not empty the rail — the last entry refuses to go — and
+  it will not leave you on a page whose entry you just switched off. Both settings
+  survive a restart, and neither overrides developer mode: Command shows when that
+  mode is on *and* its entry is switched on.
+
+### Changed
+- **Flag names are gone from the pages unless developer mode is on.** `--flows-dir`
+  is noise to someone launching sessions and the only thing worth knowing to
+  someone about to type it, so a string that names a flag is now written twice and
+  the mode picks: "Flows" and `--flows-dir`, "Refresh" and "Refresh --describe".
+  Nothing is hidden either way — the plain wording says what the control does, not
+  less. The Command page is exempt, being the command line itself.
+
+### Fixed
+- **The URL override straddled its own row.** The design's inputs are 30px and a
+  row of text is 30px, but a table insets a cell widget by the item padding on
+  both sides — so the editor was handed 24px, rendered at its own minimum anyway,
+  and the extra hung downwards across the gridline below. Rows are now measured to
+  fit the editor they hold.
+- **The Server log box was 150px narrower than the card around it**, for a button
+  that shares its title's line and none of its own. A folding section is a header
+  and a body stacked in one widget, and standing the whole thing beside a control
+  takes that control's width off both.
+- The Tools menu's *Create a starter users.json* opened a window titled
+  `--init-users-json`.
+
 ## [0.9.1] - 2026-08-21
 
 ### Fixed
