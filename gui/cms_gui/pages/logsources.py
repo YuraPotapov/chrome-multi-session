@@ -227,19 +227,24 @@ class ConnectionDialog(_RowDialog):
 class LogDialog(_RowDialog):
     """Create or edit one log: what to read, where it belongs, how to parse it."""
 
-    def __init__(self, row=None, connections=(), envs=(), siblings=(), parent=None):
+    def __init__(self, row=None, connections=(), envs=(), siblings=(),
+                 developer=False, parent=None):
         super().__init__("Log" if row else "New log", parent)
         self._row = (row or lsf.LogRow()).copy()
         self._connections = [c.name for c in connections if c.name]
         self._siblings = list(siblings)
+        # Fixed for the life of the dialog: it is opened, answered and closed,
+        # so there is no mode switch to follow the way a page has to.
+        self._developer = bool(developer)
 
         self.name = QLineEdit(self._row.name)
         self.name.setPlaceholderText("app, nginx, worker…")
         self.name.textChanged.connect(self._changed)
         self.column.addWidget(widgets.field(
             "Name", self.name,
-            "How --server-log refers to it. Unique per environment, so the same "
-            "name may repeat on another stand."))
+            "How %s refers to it. Unique per environment, so the same name may "
+            "repeat on another stand."
+            % ("--server-log" if self._developer else "a run")))
 
         self.connection = QComboBox()
         self.connection.addItems(self._connections or [self._row.connection])
@@ -352,8 +357,10 @@ class LogDialog(_RowDialog):
 
         self.default = QCheckBox("Stream this one by default")
         self.default.setChecked(self._row.default)
-        self.default.setToolTip("A bare --server-log takes the logs marked default "
-                                "for the environment being launched.")
+        self.default.setToolTip(
+            "%s takes the logs marked default for the environment being launched."
+            % ("A bare --server-log" if self._developer
+               else "A run that names no log"))
         self.default.toggled.connect(self._changed)
         self.column.addWidget(self.default)
 
@@ -530,6 +537,7 @@ class LogSourcesPage(QWidget):
         self._envs = []          # from --describe, so environments are picked not typed
         self._core = None
         self._viewers = []       # open log windows, kept from being collected
+        self._developer = False  # which register this page and its dialogs use
 
         column = QVBoxLayout(self)
         column.setContentsMargins(24, 20, 24, 20)
@@ -545,12 +553,16 @@ class LogSourcesPage(QWidget):
 
         self.path_label = widgets.mono("")
         column.addWidget(self.path_label)
-        column.addWidget(widgets.lede(
-            "Backend logs --server-log can stream into each session's panel. A "
-            "connection is where to run a reader; a log is what to read there, and "
-            "which environments it belongs to. One connection serves every log on "
-            "that machine. Works with any backend - the format presets are named "
-            "after the shape of a line, and \"custom\" takes your own patterns."))
+        self.wording = widgets.Phrasing()
+        _tail = ("connection is where to run a reader; a log is what to read there, "
+                 "and which environments it belongs to. One connection serves every "
+                 "log on that machine. Works with any backend - the format presets "
+                 "are named after the shape of a line, and \"custom\" takes your own "
+                 "patterns.")
+        column.addWidget(self.wording.text(
+            widgets.lede(""),
+            "Backend logs a run can stream into each session's panel. A " + _tail,
+            "Backend logs --server-log can stream into each session's panel. A " + _tail))
         column.addSpacing(12)
 
         self.add_connection_button = QPushButton("+ Add connection")
@@ -617,6 +629,12 @@ class LogSourcesPage(QWidget):
     def set_environments(self, envs):
         """The env values from --describe, so a log is bound by picking not typing."""
         self._envs = [e for e in envs if e]
+
+    def set_developer_mode(self, enabled):
+        # Kept as well as applied: the row dialogs are built when they open,
+        # and they have to open in the register the rest of the page is in.
+        self._developer = bool(enabled)
+        self.wording.apply(enabled)
 
     # -- loading / saving -----------------------------------------------------
     def load(self, path):
@@ -720,7 +738,8 @@ class LogSourcesPage(QWidget):
         seed = lsf.LogRow(connection=self._connections[0].name,
                           envs=self._envs[:1], type="file")
         dialog = LogDialog(seed, connections=self._connections, envs=self._envs,
-                           siblings=self._logs, parent=self)
+                           siblings=self._logs, developer=self._developer,
+                           parent=self)
         if dialog.exec() == QDialog.Accepted:
             self._logs.append(dialog.value())
             self._rebuild()
@@ -731,7 +750,8 @@ class LogSourcesPage(QWidget):
             return
         others = [row for i, row in enumerate(self._logs) if i != index]
         dialog = LogDialog(self._logs[index], connections=self._connections,
-                           envs=self._envs, siblings=others, parent=self)
+                           envs=self._envs, siblings=others,
+                           developer=self._developer, parent=self)
         if dialog.exec() == QDialog.Accepted:
             self._logs[index] = dialog.value()
             self._rebuild()
@@ -903,7 +923,7 @@ class LogSourcesPage(QWidget):
             self._show_problem("\n".join(problems[:6]))
         elif not self._connections and not self._logs:
             self._show_ok("Nothing configured yet. Add a connection, then a log on "
-                          "it - --server-log has nothing to stream until you do.")
+                          "it - there is nothing to stream until you do.")
         else:
             self._show_ok("%d connection(s) · %d log(s) · every log has a connection, "
                           "an environment and a target · names unique per environment"

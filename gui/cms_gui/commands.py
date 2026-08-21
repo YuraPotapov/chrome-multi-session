@@ -106,12 +106,14 @@ GUI_OWNED = ("--config", "--events", "--control", "--describe", "--init-users-js
              "--recorder",
              "--help", "-h", "--version", "-V")
 
-# One-shot commands offered in the Tools menu: (label, args, needs a config).
+# One-shot commands offered in the Tools menu: (what it is called, what a
+# developer calls it, what it runs). Two names because the menu is read in both
+# modes and a flag is the answer in only one of them - see widgets.Phrasing.
 ONE_SHOTS = [
-    ("Show --help", ["--help"]),
-    ("Show --version", ["--version"]),
-    ("List extensions", ["--extensions=list"]),
-    ("Describe (JSON)", ["--describe"]),
+    ("Launcher help", "Show --help", ["--help"]),
+    ("Launcher version", "Show --version", ["--version"]),
+    ("List extensions", "List extensions", ["--extensions=list"]),
+    ("What the launcher reports", "Describe (JSON)", ["--describe"]),
 ]
 
 

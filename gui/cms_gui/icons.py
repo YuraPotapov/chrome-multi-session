@@ -229,6 +229,15 @@ def _chevron_right(painter, ink):
     painter.drawPath(path)
 
 
+def _chevron_left(painter, ink):
+    _stroke(painter, ink)
+    path = QPainterPath()
+    path.moveTo(15, 5.5)
+    path.lineTo(8, 12)
+    path.lineTo(15, 18.5)
+    painter.drawPath(path)
+
+
 def _chevron_down(painter, ink):
     _stroke(painter, ink)
     path = QPainterPath()
@@ -290,6 +299,10 @@ DRAWINGS = {
     "more": _more,
     "disclosure_open": _chevron_down,
     "disclosure_closed": _chevron_right,
+    # The rail's handle, named for what it does rather than which way it points,
+    # so the call site reads as the state it is switching to.
+    "collapse": _chevron_left,
+    "expand": _chevron_right,
     "plus": _plus,
     "minus": _minus,
 }

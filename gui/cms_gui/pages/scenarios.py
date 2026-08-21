@@ -71,6 +71,8 @@ class ScenariosPage(QWidget):
         self._last_edited = "steps"  # which view Save should believe
         self._recorded = []          # steps seen on the --events stream, live
         self._open_when_listed = ""  # a recording to open once --describe has it
+        self._developer = False      # which register the lede is written in
+        self._flows_dir = ""
 
         column = QVBoxLayout(self)
         column.setContentsMargins(24, 20, 24, 20)
@@ -233,8 +235,8 @@ class ScenariosPage(QWidget):
         self.tags_edit.textChanged.connect(self._changed)
         panel.layout().addWidget(widgets.field(
             "Tags", self.tags_edit,
-            "Comma-separated. template, manual and blocked are kept out of "
-            "--run-tests=all; a new scenario starts as template."))
+            "Comma-separated. template, manual and blocked are kept out of a "
+            "run-everything selection; a new scenario starts as template."))
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._steps_tab(), "Steps")
@@ -314,12 +316,26 @@ class ScenariosPage(QWidget):
             self.select(wanted)
         self._reload_selector_list()
         self._refresh_resolved()
-        dirs = inventory.dirs()
+        self._flows_dir = inventory.dirs().get("flows") or ""
+        self._write_lede()
+
+    def set_developer_mode(self, enabled):
+        self._developer = bool(enabled)
+        self._write_lede()
+
+    def _write_lede(self):
+        """Said two ways, and it carries a path, so it is built rather than paired.
+
+        See widgets.Phrasing for the pairs that are only a string; the mode is
+        the same one, and the flag is only an answer to someone who is going to
+        type it.
+        """
         self.lede.setText(
-            "Everything --run-tests can run, the blocks they are built from, and the "
-            "named targets they point at. Yours are written to %s; the ones that "
-            "ship with the application are read-only - duplicate one to change it."
-            % (dirs.get("flows") or "the flows directory"))
+            "Everything %s can run, the blocks they are built from, and the named "
+            "targets they point at. Yours are written to %s; the ones that ship "
+            "with the application are read-only - duplicate one to change it."
+            % ("--run-tests" if self._developer else "a run",
+               self._flows_dir or "the flows directory"))
 
     def actions_for(self, group):
         """One group of the step grammar, from the core when it says so."""

@@ -21,6 +21,11 @@ from cms_gui.settings import Settings
 
 @pytest.fixture
 def window(qapp):
+    # What the rail is showing persists, so without this one test's View menu is
+    # where the next test starts from.
+    settings = Settings()
+    settings.sidebar_collapsed = False
+    settings.save_hidden_nav_items([])
     win = main_window_mod.MainWindow()
     win.set_developer_mode(False)
     win.show()
@@ -33,6 +38,35 @@ def window(qapp):
 def _visible(window, key):
     """Whether a nav entry is offered (the rail itself is shown)."""
     return not window._nav_buttons[key].isHidden()
+
+
+def _menu_labels(window, title):
+    """Every entry in one of the menu bar's menus, ampersands stripped."""
+    for action in window.menuBar().actions():
+        if action.text().replace("&", "") == title:
+            return [entry.text().replace("&", "")
+                    for entry in action.menu().actions() if entry.text()]
+    raise AssertionError("no %s menu" % title)
+
+
+def _divider_breaks(window, qapp):
+    """Colours found down the rail's rightmost pixel that are not the divider."""
+    from cms_gui import theme
+
+    window.resize(1200, 800)
+    window.show()
+    qapp.processEvents()
+    qapp.processEvents()
+
+    rail = window._nav_buttons["launch"].parentWidget()
+    image = rail.grab().toImage()
+    edge = rail.width() - 1
+    wrong = {}
+    for y in range(image.height()):
+        name = image.pixelColor(edge, y).name().lower()
+        if name != theme.DIVIDER.lower():
+            wrong[name] = wrong.get(name, 0) + 1
+    return wrong
 
 
 # ------------------------------------------------------------------ navigation
@@ -83,22 +117,20 @@ def test_the_sidebar_divider_runs_unbroken_down_the_whole_rail(window, qapp):
     A stylesheet border is painted inside the widget rect and children are not
     clipped to the contents rect, so full-width children have to leave it a pixel.
     """
-    from cms_gui import theme
+    breaks = _divider_breaks(window, qapp)
+    assert not breaks, "the divider is broken by %s" % breaks
 
-    window.resize(1200, 800)
-    window.show()
-    qapp.processEvents()
-    qapp.processEvents()
 
-    rail = window._nav_buttons["launch"].parentWidget()
-    image = rail.grab().toImage()
-    edge = rail.width() - 1
-    wrong = {}
-    for y in range(image.height()):
-        name = image.pixelColor(edge, y).name().lower()
-        if name != theme.DIVIDER.lower():
-            wrong[name] = wrong.get(name, 0) + 1
-    assert not wrong, "the divider is broken by %s" % wrong
+def test_the_divider_survives_the_rail_being_collapsed(window, qapp):
+    """The same border, and a rail with different things in it.
+
+    Collapsing changes every width in there - the frame's, each button's, the
+    handle's - and the one pixel on the right is reserved by a margin rather
+    than by anything that measures.
+    """
+    window.set_sidebar_collapsed(True)
+    breaks = _divider_breaks(window, qapp)
+    assert not breaks, "the divider is broken by %s" % breaks
 
 
 def test_a_group_heading_sits_on_the_sidebar_tint_not_the_page_colour(window, qapp):
@@ -125,6 +157,158 @@ def test_the_window_has_the_application_icon(window):
     assert not window.windowIcon().isNull()
 
 
+# ------------------------------------------------------ collapsing the rail
+# 196px of labels is a lot to give a navigation that is read once and then known.
+# Collapsed the rail keeps the marks and gives the width back to the page.
+
+def test_collapsing_keeps_the_marks_and_says_what_each_one_is(window):
+    """With no label drawn, the label has to be reachable some other way.
+
+    A column of unexplained marks is a guessing game; the same marks with a
+    tooltip each is what every sidebar that collapses has settled on.
+    """
+    from PySide6.QtCore import Qt
+
+    window.set_sidebar_collapsed(True)
+    for key, button in window._nav_buttons.items():
+        assert button.toolButtonStyle() == Qt.ToolButtonIconOnly, key
+        assert button.toolTip() == window._nav_labels[key], key
+        assert not button.icon().isNull(), key
+
+    window.set_sidebar_collapsed(False)
+    for key, button in window._nav_buttons.items():
+        assert button.toolButtonStyle() == Qt.ToolButtonTextBesideIcon, key
+        # Beside a label that is right there, a tooltip is a wait for something
+        # already on screen.
+        assert button.toolTip() == "", key
+
+
+def test_the_collapsed_rail_is_narrower_and_still_fits_its_marks(window, qapp):
+    """Measured, not assumed: an icon-only button's width is the style's doing."""
+    rail = window._nav_buttons["launch"].parentWidget()
+    expanded = rail.width()
+    window.set_sidebar_collapsed(True)
+    qapp.processEvents()
+
+    assert rail.width() < expanded
+    usable = rail.width() - 1          # the frame's own border-right
+    for key, button in window._nav_buttons.items():
+        assert button.sizeHint().width() <= usable, key
+
+
+def test_the_group_headings_go_where_they_cannot_be_read(window):
+    """"CONFIGURE" does not fit in a rail of marks, and a clipped word is worse
+    than no word."""
+    window.set_sidebar_collapsed(True)
+    assert all(heading.isHidden() for heading, _keys in window._nav_headings)
+    window.set_sidebar_collapsed(False)
+    assert not any(heading.isHidden() for heading, _keys in window._nav_headings)
+
+
+def test_the_menu_entry_and_the_rails_own_handle_stay_in_step(window):
+    window.collapse_action.setChecked(True)
+    assert window.settings.sidebar_collapsed is True
+    assert "Expand" in window.collapse_button.toolTip()
+    window.set_sidebar_collapsed(False)
+    assert window.collapse_action.isChecked() is False
+    assert "Collapse" in window.collapse_button.toolTip()
+
+
+def test_the_collapsed_rail_survives_a_restart(window):
+    window.set_sidebar_collapsed(True)
+    again = main_window_mod.MainWindow()
+    try:
+        assert again.settings.sidebar_collapsed is True
+        assert again._nav_buttons["launch"].toolTip() == "Launch Sessions"
+    finally:
+        again.set_sidebar_collapsed(False)
+        again.close()
+
+
+# ------------------------------------------------ choosing what the rail holds
+# Ten entries, and most people use three. Each one can be switched off in View,
+# which is stored as what is *hidden* so a page added in a later version arrives
+# on the rail rather than having to be found and switched on.
+
+def test_a_page_can_be_taken_off_the_rail(window):
+    window.set_nav_item_visible("artifacts", False)
+    assert not _visible(window, "artifacts")
+    assert window._nav_actions["artifacts"].isChecked() is False
+    assert "artifacts" in window.settings.hidden_nav_items()
+
+    window.set_nav_item_visible("artifacts", True)
+    assert _visible(window, "artifacts")
+    assert "artifacts" not in window.settings.hidden_nav_items()
+
+
+def test_taking_the_page_you_are_on_off_the_rail_moves_you_off_it(window):
+    """Otherwise the window sits on a page with no way back to any other."""
+    window.show_page("history")
+    assert window.stack.currentWidget() is window.history_page
+    window.set_nav_item_visible("history", False)
+    assert window.stack.currentWidget() is not window.history_page
+
+
+def test_a_heading_goes_with_the_last_item_under_it(window):
+    """A heading over an empty space names an empty space."""
+    for key, _label, _mark in main_window_mod.OBSERVE:
+        window.set_nav_item_visible(key, False)
+    headings = dict((tuple(keys), heading)
+                    for heading, keys in window._nav_headings)
+    observe = headings[tuple(k for k, _l, _m in main_window_mod.OBSERVE)]
+    configure = headings[tuple(k for k, _l, _m in main_window_mod.CONFIGURE)]
+    assert observe.isHidden()
+    assert not configure.isHidden()
+
+
+def test_the_last_item_on_the_rail_cannot_be_taken_off(window):
+    """A rail with nothing in it is a window with no way off the page it is on."""
+    for key, _label, _mark in main_window_mod.CONFIGURE + main_window_mod.OBSERVE:
+        if key != "launch":
+            window.set_nav_item_visible(key, False)
+
+    window.set_nav_item_visible("launch", False)
+    assert _visible(window, "launch")
+    # And the menu says so, rather than showing a tick that did not take.
+    assert window._nav_actions["launch"].isChecked() is True
+
+
+def test_the_per_item_switch_and_developer_mode_do_not_undo_each_other(window):
+    """Two switches decide whether Command shows, and both have to agree."""
+    window.set_developer_mode(True)
+    assert _visible(window, "commands")
+    window.set_nav_item_visible("commands", False)
+    assert not _visible(window, "commands")
+
+    window.set_developer_mode(False)
+    window.set_developer_mode(True)
+    assert not _visible(window, "commands")
+    window.set_nav_item_visible("commands", True)
+    assert _visible(window, "commands")
+
+
+def test_leaving_developer_mode_gives_the_rail_back_rather_than_emptying_it(window):
+    """Everything switched off but Command, and then Command goes away too."""
+    window.set_developer_mode(True)
+    for key, _label, _mark in main_window_mod.CONFIGURE + main_window_mod.OBSERVE:
+        if key != "commands":
+            window.set_nav_item_visible(key, False)
+
+    window.set_developer_mode(False)
+    assert _visible(window, "launch")
+
+
+def test_what_the_rail_holds_survives_a_restart(window):
+    window.set_nav_item_visible("log", False)
+    again = main_window_mod.MainWindow()
+    try:
+        assert not _visible(again, "log")
+        assert again._nav_actions["log"].isChecked() is False
+    finally:
+        again.settings.save_hidden_nav_items([])
+        again.close()
+
+
 def test_launch_sessions_is_offered_in_both_modes(window):
     assert _visible(window, "launch")
     window.set_developer_mode(True)
@@ -143,6 +327,39 @@ def test_command_is_only_offered_in_developer_mode(window):
     assert _visible(window, "commands")
     window.set_developer_mode(False)
     assert not _visible(window, "commands")
+
+
+def test_the_menus_name_things_plainly_until_developer_mode(window):
+    """A flag is the answer to a question a regular user is not asking.
+
+    Developer mode already decides which pages are reachable; the wording is the
+    same decision. "Refresh --describe" told a person launching sessions nothing
+    they could act on, and told the one building a command line exactly what they
+    needed - so it is written both ways and the mode picks.
+    """
+    window.set_developer_mode(False)
+    plain = _menu_labels(window, "Tools")
+    assert not [label for label in plain if "--" in label], plain
+    # Still says what each one does.
+    assert any("help" in label.lower() for label in plain), plain
+
+    window.set_developer_mode(True)
+    spelled_out = _menu_labels(window, "Tools")
+    assert any("--describe" in label for label in spelled_out), spelled_out
+    assert any("--help" in label for label in spelled_out), spelled_out
+
+
+def test_the_wording_reaches_the_pages_not_just_the_menus(window):
+    """The window does not keep a list of which pages care - it asks each one."""
+    from PySide6.QtWidgets import QLabel
+
+    def text_of(page):
+        return "\n".join(l.text() for l in page.findChildren(QLabel))
+
+    window.set_developer_mode(True)
+    assert "--flows-dir" in text_of(window.environments)
+    window.set_developer_mode(False)
+    assert "--" not in text_of(window.environments)
 
 
 def test_the_cli_facing_toolbar_button_follows_the_mode(window):

@@ -34,8 +34,12 @@ class EnvironmentsPage(QWidget):
         column = QVBoxLayout(self)
         column.setContentsMargins(24, 20, 24, 20)
         column.setSpacing(6)
+        self.wording = widgets.Phrasing()
         column.addWidget(widgets.heading("Environments"))
-        column.addWidget(widgets.lede(
+        column.addWidget(self.wording.text(
+            widgets.lede(""),
+            "Read from the launcher. The env value and the user rows live in "
+            "users.json; URL overrides and default directories are stored by the GUI.",
             "Read from --describe. The env value and the user rows live in users.json; "
             "URL overrides and default directories are stored by the GUI."))
         column.addSpacing(12)
@@ -56,7 +60,9 @@ class EnvironmentsPage(QWidget):
 
         column.addSpacing(18)
         column.addWidget(widgets.kicker("Default directories"))
-        column.addWidget(widgets.lede(
+        column.addWidget(self.wording.text(
+            widgets.lede(""),
+            "Where every run reads and writes. Empty means the launcher's own default.",
             "Passed to every run as --flows-dir / --reports-dir / --sessions-dir. "
             "Empty means the core's own default."))
         column.addSpacing(6)
@@ -64,21 +70,26 @@ class EnvironmentsPage(QWidget):
         self.dir_edits = {}
         dirs = QHBoxLayout()
         dirs.setSpacing(16)
-        for key, flag in (("flows", "--flows-dir"), ("reports", "--reports-dir"),
-                          ("sessions", "--sessions-dir")):
+        for key, plain, flag in (("flows", "Flows", "--flows-dir"),
+                                 ("reports", "Reports", "--reports-dir"),
+                                 ("sessions", "Sessions", "--sessions-dir")):
             edit = QLineEdit(self.settings.directory(key))
             edit.setProperty("mono", True)
-            edit.setPlaceholderText("(core default)")
+            edit.setPlaceholderText("(default)")
             edit.editingFinished.connect(
                 lambda k=key, e=edit: self._save_directory(k, e.text()))
             browse = icons.button(QPushButton(""), "browse")
             browse.setFixedWidth(38)
             browse.clicked.connect(lambda _c=False, k=key, e=edit: self._browse(k, e))
             self.dir_edits[key] = edit
-            dirs.addWidget(widgets.field(flag, widgets.row(edit, browse,
-                                                           stretch_last=False)), 1)
+            box = widgets.field(plain, widgets.row(edit, browse, stretch_last=False))
+            self.wording.text(box.label, plain, flag)
+            dirs.addWidget(box, 1)
         column.addLayout(dirs)
         column.addStretch(1)
+
+    def set_developer_mode(self, enabled):
+        self.wording.apply(enabled)
 
     # -- data -----------------------------------------------------------------
     def set_inventory(self, inventory):
@@ -106,7 +117,7 @@ class EnvironmentsPage(QWidget):
         for key, value in inventory.dirs().items():
             edit = self.dir_edits.get(key)
             if edit is not None and not edit.text():
-                edit.setPlaceholderText(value or "(core default)")
+                edit.setPlaceholderText(value or "(default)")
 
     def _fit_rows_to_the_override(self):
         """Make a row tall enough for the editor it holds.

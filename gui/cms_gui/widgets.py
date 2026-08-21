@@ -500,6 +500,35 @@ def vline(height=20):
     return line
 
 
+class Phrasing:
+    """The same thing said two ways: plainly, and with the flag named.
+
+    Developer mode is the switch between the two interaction levels, and the
+    wording belongs to a level as much as the pages do. "--flows-dir" is noise
+    to someone launching sessions and the only thing worth knowing to someone
+    building a command line, so a string that names a flag is written twice and
+    the mode picks which one is showing. Nothing is hidden either way: the plain
+    wording says what the control does, not less.
+
+    A page collects its pairs as it builds - each call sets the plain wording and
+    hands the widget straight back, so it still reads as one line - and applies
+    them from its own ``set_developer_mode``. The mode itself is the window's.
+    """
+
+    def __init__(self):
+        self._entries = []
+
+    def text(self, widget, plain, developer):
+        """Register a widget's label text. Returns the widget, ready to add."""
+        self._entries.append((widget.setText, plain, developer))
+        widget.setText(plain)
+        return widget
+
+    def apply(self, developer):
+        for setter, plain, spelled_out in self._entries:
+            setter(spelled_out if developer else plain)
+
+
 def field(label_text, widget, hint=None):
     """A labelled control: the design's `.field` (small label above the input)."""
     box = QWidget()

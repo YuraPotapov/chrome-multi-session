@@ -92,3 +92,25 @@ def test_an_empty_inventory_leaves_the_table_alone(page):
 
     page.set_inventory(Empty())
     assert page.table.rowCount() == 0
+
+
+# ------------------------------------------------------------------- wording
+
+def test_the_page_names_no_flag_until_developer_mode(page):
+    """A flag is the answer to a question a regular user is not asking."""
+    page.set_developer_mode(False)
+    plain = _labels(page)
+    assert "--" not in plain
+    # And it still says what the controls do.
+    assert "Flows" in plain and "Reports" in plain and "Sessions" in plain
+
+    page.set_developer_mode(True)
+    spelled_out = _labels(page)
+    for flag in ("--describe", "--flows-dir", "--reports-dir", "--sessions-dir"):
+        assert flag in spelled_out, flag
+
+
+def test_the_wording_goes_back_when_the_mode_does(page):
+    page.set_developer_mode(True)
+    page.set_developer_mode(False)
+    assert "--" not in _labels(page)

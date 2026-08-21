@@ -270,6 +270,14 @@ QToolButton[variant="nav"]:hover {{ background: {n200}; }}
 QToolButton[variant="nav"][active="true"] {{
     background: {a200}; color: {a900}; border-left: 3px solid {accent};
 }}
+/* The handle that collapses the rail. The base QToolButton rule below puts a
+   hairline box around every tool button, which around a lone chevron reads as a
+   control to think about rather than something to nudge. */
+QToolButton[variant="railhandle"] {{
+    background: transparent; border: none; border-radius: 0;
+    padding: 4px 6px; min-height: 0;
+}}
+QToolButton[variant="railhandle"]:hover {{ background: {n200}; }}
 /* RUN is a QToolButton so it can carry a menu, and Qt styles that as a separate
    class - left to itself it paints in Fusion's default while the identical
    button in the footer paints in the design. These mirror the QPushButton rules

@@ -62,6 +62,11 @@ RAIL_MIN_WIDTH = 196
 RAIL_PADDING = 14
 RAIL_SLACK = 18
 
+# Collapsed, the rail is measured the same way - from an icon-only button, whose
+# width comes from the style and the screen's pixel ratio rather than from
+# anything written here. This is only the floor, and the room the handle needs.
+RAIL_COLLAPSED_MIN_WIDTH = 48
+
 # Taken off a group heading's measured width. "CONFIGURE" is letter-spaced, and the
 # 2px lands after the final character as well as between characters, so its
 # reported width ends in space that draws nothing. A heading should not widen the
@@ -121,7 +126,17 @@ class MainWindow(QMainWindow):
         self.process = LauncherProcess(self)
         self.history = history_mod.History(parent=self)
 
+        # The menu names things twice - plainly, and by the flag - and developer
+        # mode picks. See widgets.Phrasing; the pages keep their own.
+        self.wording = widgets.Phrasing()
         self._nav_buttons = {}
+        self._nav_actions = {}       # nav key -> its View > Sidebar items entry
+        self._nav_headings = []      # (heading widget, the keys under it)
+        self._nav_labels = {key: label
+                            for key, label, _mark in CONFIGURE + OBSERVE}
+        # Which page is on screen, as opposed to which one was last remembered.
+        # They differ while a hidden page is being moved off.
+        self._page_key = self.settings.page
         self._run_source = self.settings.run_source
         self._entry_id = None
         self._stopping = False
@@ -131,6 +146,7 @@ class MainWindow(QMainWindow):
         self._connect_process()
 
         self.set_developer_mode(self.settings.developer_mode)
+        self.set_sidebar_collapsed(self.settings.sidebar_collapsed)
         if self.settings.always_on_top:
             self.set_always_on_top(True)
         self.show_page(self.settings.page)
@@ -209,20 +225,50 @@ class MainWindow(QMainWindow):
         self.dark_mode_action.toggled.connect(self.set_dark_mode)
         view_menu.addAction(self.dark_mode_action)
 
+        view_menu.addSeparator()
+        self.collapse_action = QAction("&Collapse sidebar", self)
+        self.collapse_action.setCheckable(True)
+        self.collapse_action.setShortcut(QKeySequence("Ctrl+B"))
+        self.collapse_action.toggled.connect(self.set_sidebar_collapsed)
+        view_menu.addAction(self.collapse_action)
+
+        # One entry per nav item, so a rail can be cut down to the pages this
+        # particular person uses. Checked is shown, which is why the setting
+        # stores what is hidden: a page added later is on the rail by default
+        # rather than something to go and find.
+        items_menu = view_menu.addMenu("Sidebar &items")
+        hidden = set(self.settings.hidden_nav_items())
+        for key, label, _mark in CONFIGURE + OBSERVE:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            # Set before connecting: setChecked emits toggled, and a menu still
+            # being built has no rail to apply it to.
+            action.setChecked(key not in hidden)
+            action.toggled.connect(
+                lambda on, k=key: self.set_nav_item_visible(k, on))
+            items_menu.addAction(action)
+            self._nav_actions[key] = action
+
         tools_menu = menu.addMenu("&Tools")
-        refresh_action = QAction("Refresh --describe", self)
+        refresh_action = QAction(self)
         refresh_action.setShortcut(QKeySequence("F5"))
         refresh_action.triggered.connect(self.refresh_inventory)
+        self.wording.text(refresh_action, "Refresh", "Refresh --describe")
         tools_menu.addAction(refresh_action)
         tools_menu.addSeparator()
-        for label, args in commands.ONE_SHOTS:
-            action = QAction(label, self)
-            action.triggered.connect(lambda _c=False, a=args, l=label: self.one_shot(l, a))
+        for plain, spelled_out, args in commands.ONE_SHOTS:
+            action = QAction(self)
+            # The window it opens is titled with whichever name the menu used, so
+            # the two never disagree about what was asked for.
+            action.triggered.connect(
+                lambda _c=False, a=args, act=action: self.one_shot(act.text(), a))
+            self.wording.text(action, plain, spelled_out)
             tools_menu.addAction(action)
         tools_menu.addSeparator()
         init_action = QAction("Create a starter users.json", self)
-        init_action.triggered.connect(lambda: self.one_shot("--init-users-json",
-                                                            ["--init-users-json"]))
+        init_action.triggered.connect(
+            lambda: self.one_shot("Create a starter users.json",
+                                  ["--init-users-json"]))
         tools_menu.addAction(init_action)
 
         help_menu = menu.addMenu("&Help")
@@ -318,18 +364,37 @@ class MainWindow(QMainWindow):
         # whichever nav item was active.
         rail_layout.setContentsMargins(0, 8, 1, 8)
         rail_layout.setSpacing(0)
+        # The rail's own handle for the thing the View menu also switches. A
+        # sidebar that can collapse should say so where it collapses; the menu
+        # entry is for the person who wants the keystroke.
+        handle_row = QHBoxLayout()
+        handle_row.setContentsMargins(6, 0, 6, 2)
+        handle_row.addStretch(1)
+        self.collapse_button = QToolButton()
+        self.collapse_button.setProperty("variant", "railhandle")
+        self.collapse_button.setCursor(Qt.PointingHandCursor)
+        self.collapse_button.clicked.connect(
+            lambda: self.set_sidebar_collapsed(not self.settings.sidebar_collapsed))
+        handle_row.addWidget(self.collapse_button)
+        rail_layout.addLayout(handle_row)
+
         # The rail is sized from what is actually in it. A fixed width was fine
         # while the labels were short and the font was whatever this machine had,
         # but "Launch Sessions" and a letter-spaced "CONFIGURE" overflow it as soon
         # as the body font is wider - a condensed family missing, a larger system
         # font, display scaling - and a QFrame with a fixed width clips rather than
-        # growing. So every label is measured and the widest one decides.
+        # growing. So every label is measured and the widest one decides. The
+        # collapsed width is measured the same way, from an icon-only button,
+        # when the rail is first collapsed.
         widest = 0
         for title, entries in (("Configure", CONFIGURE), ("Observe", OBSERVE)):
             heading = widgets.kicker(title)
             heading.setContentsMargins(RAIL_PADDING, 8, RAIL_PADDING, 6)
             widest = max(widest, heading.sizeHint().width() - HEADING_TRIM)
             rail_layout.addWidget(heading)
+            # Kept with the keys under it: a heading over a group whose every
+            # item has been switched off names an empty space.
+            self._nav_headings.append((heading, [k for k, _l, _m in entries]))
             for key, label, mark in entries:
                 # A QToolButton, not a QPushButton: a push button centres its
                 # icon and label as one block whatever text-align says, so the
@@ -347,7 +412,9 @@ class MainWindow(QMainWindow):
                 rail_layout.addWidget(button)
             rail_layout.addSpacing(10)
         rail_layout.addStretch(1)
-        rail.setFixedWidth(max(RAIL_MIN_WIDTH, widest + RAIL_SLACK))
+        self._rail = rail
+        self._rail_width = max(RAIL_MIN_WIDTH, widest + RAIL_SLACK)
+        rail.setFixedWidth(self._rail_width)
         self.rail_note = QLabel("")
         self.rail_note.setStyleSheet(
             "font-family: %s; font-size: 10px; color: %s; border-top: 1px solid %s;"
@@ -430,6 +497,10 @@ class MainWindow(QMainWindow):
     def show_page(self, key):
         if key in DEVELOPER_ONLY and not self.settings.developer_mode:
             key = "launch"
+        # A page switched off in View is not reachable, including the one that
+        # was remembered from last time and the "launch" fallback above.
+        if not self._offered(key) and key in self._pages:
+            key = self._first_offered() or key
         page = self._pages.get(key)
         if page is None:
             key, page = "launch", self.launch
@@ -438,6 +509,7 @@ class MainWindow(QMainWindow):
             button.setProperty("active", "true" if name == key else "false")
             button.style().unpolish(button)
             button.style().polish(button)
+        self._page_key = key
         self.settings.page = key
         # RUN follows whichever of the two launching pages you were last in, so
         # the toolbar button and Ctrl+Return never act on a page you left behind.
@@ -445,6 +517,100 @@ class MainWindow(QMainWindow):
             self._run_source = key
             self.settings.run_source = key
             self._update_run_label()
+
+    # -- the rail: what it holds, and how much of it it shows -----------------
+    def _offered(self, key, hidden=None):
+        """Whether ``key`` is on the rail: not switched off, and in this mode."""
+        if hidden is None:
+            hidden = set(self.settings.hidden_nav_items())
+        if key in hidden:
+            return False
+        return key not in DEVELOPER_ONLY or self.settings.developer_mode
+
+    def _first_offered(self):
+        for key, _label, _mark in CONFIGURE + OBSERVE:
+            if self._offered(key):
+                return key
+        return None
+
+    def set_nav_item_visible(self, key, visible):
+        """Put a page on the rail, or take it off. The View menu's per-item switch."""
+        visible = bool(visible)
+        hidden = set(self.settings.hidden_nav_items())
+        if visible:
+            hidden.discard(key)
+        else:
+            hidden.add(key)
+        if not any(self._offered(k, hidden) for k, _l, _m in CONFIGURE + OBSERVE):
+            # A rail with nothing in it is a window with no way out of the page
+            # it happens to be on. Refuse the last one and say so by putting the
+            # tick back.
+            action = self._nav_actions.get(key)
+            if action is not None:
+                action.blockSignals(True)
+                action.setChecked(True)
+                action.blockSignals(False)
+            return
+        self.settings.save_hidden_nav_items(hidden)
+        self._apply_nav_visibility()
+
+    def _apply_nav_visibility(self):
+        """Bring the rail, the menu ticks and the current page into agreement.
+
+        The single place that decides what shows: both switches feed into it -
+        developer mode, which owns the Command page, and the per-item ones - so
+        neither can undo the other by writing straight to a button.
+        """
+        hidden = set(self.settings.hidden_nav_items())
+        if not any(self._offered(k, hidden) for k, _l, _m in CONFIGURE + OBSERVE):
+            # Reachable by leaving developer mode with nothing but developer
+            # pages left switched on. Give Launch Sessions back rather than
+            # stranding the window.
+            hidden.discard("launch")
+            self.settings.save_hidden_nav_items(hidden)
+        collapsed = self.settings.sidebar_collapsed
+        for key, button in self._nav_buttons.items():
+            button.setVisible(self._offered(key, hidden))
+        for heading, keys in self._nav_headings:
+            heading.setVisible(not collapsed
+                               and any(self._offered(k, hidden) for k in keys))
+        for key, action in self._nav_actions.items():
+            action.blockSignals(True)
+            action.setChecked(key not in hidden)
+            action.blockSignals(False)
+        # If the page on screen is the one that just went away, move off it.
+        self.show_page(self._page_key)
+
+    def set_sidebar_collapsed(self, collapsed):
+        """Show the rail as marks only, or as marks and their labels."""
+        collapsed = bool(collapsed)
+        self.settings.sidebar_collapsed = collapsed
+        self.collapse_action.blockSignals(True)
+        self.collapse_action.setChecked(collapsed)
+        self.collapse_action.blockSignals(False)
+
+        for key, button in self._nav_buttons.items():
+            button.setToolButtonStyle(Qt.ToolButtonIconOnly if collapsed
+                                      else Qt.ToolButtonTextBesideIcon)
+            # The label has to stay reachable once it is no longer drawn. Only
+            # then: beside a label that is right there, a tooltip repeating it
+            # is something to wait for that says nothing.
+            button.setToolTip(self._nav_labels.get(key, "") if collapsed else "")
+        self.rail_note.setVisible(not collapsed)
+        icons.button(self.collapse_button, "expand" if collapsed else "collapse")
+        self.collapse_button.setToolTip("Expand the sidebar" if collapsed
+                                        else "Collapse the sidebar")
+        self._apply_nav_visibility()          # the headings follow the state
+
+        if collapsed:
+            # Measured, like the expanded width and for the same reason: what an
+            # icon-only button comes to is the style's doing and the screen's,
+            # not anything set here.
+            marks = max(button.sizeHint().width()
+                        for button in self._nav_buttons.values())
+            self._rail.setFixedWidth(max(RAIL_COLLAPSED_MIN_WIDTH, marks + 1))
+        else:
+            self._rail.setFixedWidth(self._rail_width)
 
     def set_always_on_top(self, enabled):
         enabled = bool(enabled)
@@ -560,12 +726,16 @@ class MainWindow(QMainWindow):
         self.developer_button.style().unpolish(self.developer_button)
         self.developer_button.style().polish(self.developer_button)
 
-        for key in DEVELOPER_ONLY:
-            nav = self._nav_buttons.get(key)
-            if nav is not None:
-                nav.setVisible(enabled)
+        self._apply_nav_visibility()
         self.copy_button.setVisible(enabled)
-        self.launch.set_developer_mode(enabled)
+        # The wording is part of the mode: a flag name is noise on one level and
+        # the whole answer on the other. Every page that says anything in both
+        # registers gets told, rather than this window knowing which they are.
+        self.wording.apply(enabled)
+        for page in self._pages.values():
+            follow = getattr(page, "set_developer_mode", None)
+            if follow is not None:
+                follow(enabled)
         if not enabled and self.settings.page in DEVELOPER_ONLY:
             self.show_page("launch")
         else:

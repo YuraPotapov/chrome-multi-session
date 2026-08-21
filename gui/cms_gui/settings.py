@@ -78,6 +78,27 @@ class Settings:
         self._qs.setValue("window/developer_mode", bool(value))
 
     @property
+    def sidebar_collapsed(self):
+        """Whether the rail is showing marks only, without their labels."""
+        return self._qs.value("window/sidebar_collapsed", False, bool)
+
+    @sidebar_collapsed.setter
+    def sidebar_collapsed(self, value):
+        self._qs.setValue("window/sidebar_collapsed", bool(value))
+
+    def hidden_nav_items(self):
+        """Nav keys the user has taken off the rail, as a list.
+
+        Stored as what is *hidden* rather than what is shown, so a page added in
+        a later version arrives on the rail instead of having to be found and
+        switched on.
+        """
+        return self._json("window/hidden_nav", [])
+
+    def save_hidden_nav_items(self, keys):
+        self._qs.setValue("window/hidden_nav", json.dumps(sorted(set(keys))))
+
+    @property
     def always_on_top(self):
         """Whether the window stays above others - including a run's Chrome windows."""
         return self._qs.value("window/always_on_top", False, bool)

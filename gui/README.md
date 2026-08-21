@@ -49,10 +49,40 @@ restart:
 | Command | hidden | yes |
 | *Copy command* in the toolbar | hidden | yes |
 | the generated command line under the Launch summary | hidden | yes |
+| flag names in the pages and menus | plain wording | the flag |
 
 Launch Sessions is never hidden: it is the primary interface in one mode and
 still the quicker one in the other. `Ctrl+Shift+D` toggles; the toolbar's RUN
 acts on whichever of the two launching pages you were last in.
+
+That last row is the same decision as the others. `--flows-dir` is noise to
+someone launching sessions and the only thing worth knowing to someone about to
+type it, so a string that names a flag is written twice — "Flows" and
+`--flows-dir`, "Refresh" and "Refresh --describe" — and the mode picks. Nothing
+is hidden either way: the plain wording says what the control does, not less.
+`widgets.Phrasing` holds the pairs, each page applies its own from
+`set_developer_mode`, and the window tells every page that has one rather than
+keeping a list of which pages care. The Command page is exempt: it *is* the
+command line, and a flag there is the subject rather than the jargon.
+
+## The sidebar
+
+`Ctrl+B`, *View → Collapse sidebar*, or the handle at the top of the rail itself.
+Collapsed, each entry keeps its mark and carries its label as a tooltip, and the
+group headings go — "CONFIGURE" cannot be shown in the width a mark needs, and a
+clipped word is worse than none.
+
+*View → Sidebar items* switches each entry on or off individually, for the
+common case of using three of the ten. The setting stores what is **hidden**
+rather than what is shown, so a page added in a later version arrives on the rail
+instead of having to be found and switched on. Two things it will not do: leave
+the rail empty — the last remaining entry refuses to go, and leaving developer
+mode with nothing but Command switched on gives Launch Sessions back — and leave
+you on a page you can no longer navigate away from, so switching off the entry
+you are looking at moves you to the first one that is left.
+
+Both are remembered across restarts, and neither overrides developer mode:
+Command shows only when that mode is on *and* its entry is switched on.
 
 ## The pages
 
@@ -194,7 +224,9 @@ installed. To get the intended type exactly, drop the `.ttf` files into
 
 Because the type is whatever the machine actually has, nothing in the chrome
 assumes a text width: the navigation rail measures its own labels and sizes
-itself to the widest one, with 206px as a floor.
+itself to the widest one, with `RAIL_MIN_WIDTH` as a floor. Collapsed it is
+measured the same way and for the same reason — what an icon-only button comes
+to is the style's doing and the screen's pixel ratio, not a number written here.
 
 The icon is painted too, in `cms_gui/icon.py` - three offset windows in ascending
 lightness on dark slate, which is the tool's one idea. Every size is rendered at
