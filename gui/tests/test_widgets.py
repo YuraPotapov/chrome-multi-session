@@ -89,3 +89,36 @@ def test_folding_hides_the_body(qapp):
     assert not section._body.isVisible()
     section.set_expanded(True)
     assert section._body.isVisible()
+
+
+def test_a_control_on_the_title_line_does_not_narrow_the_body(qapp):
+    """Regression: the Server log's box was 150px narrower than its card.
+
+    The button beside it - "Separate Window" - shares the title's line and none
+    of the body's, but it was put there by standing the whole section next to it
+    in a hbox. A Disclosure is header AND body stacked inside one widget, so
+    that arrangement takes the button's width off both.
+    """
+    from PySide6.QtWidgets import QPlainTextEdit, QPushButton
+
+    section = widgets.Disclosure("Server log", expanded=True)
+    inner = QPlainTextEdit()
+    section.body().addWidget(inner)
+    beside = section.add_to_header(QPushButton("Separate Window"))
+    section.resize(600, 300)
+    section.show()
+    qapp.processEvents()
+
+    assert beside.width() > 0, "the control was never laid out"
+    assert inner.width() == section.width(), (
+        "the body lost %dpx to a control on the header line"
+        % (section.width() - inner.width()))
+    # And the control is still where it was asked to be: the far end of the
+    # title's line, not below it. Measured against the section, because the two
+    # sit in different parents inside it.
+    def in_section(widget, corner):
+        return widget.mapTo(section, corner(widget.rect()))
+
+    assert in_section(beside, lambda r: r.topRight()).x() >= section.width() - 1
+    assert (in_section(beside, lambda r: r.bottomLeft()).y()
+            <= in_section(inner, lambda r: r.topLeft()).y())

@@ -384,7 +384,16 @@ class Disclosure(QWidget):
         self.button.setCheckable(True)
         self.button.setCursor(Qt.PointingHandCursor)
         self.button.toggled.connect(self._on_toggled)
-        column.addWidget(self.button, 0, Qt.AlignLeft)
+        # A row rather than the button alone, so a control can be put on the
+        # title's line without being put beside the whole section - see
+        # add_to_header.
+        self._header = QWidget()
+        header_row = QHBoxLayout(self._header)
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+        header_row.addWidget(self.button, 0, Qt.AlignLeft)
+        header_row.addStretch(1)
+        column.addWidget(self._header)
 
         self._body = QWidget()
         self._body_layout = QVBoxLayout(self._body)
@@ -397,6 +406,18 @@ class Disclosure(QWidget):
 
     def body(self):
         return self._body_layout
+
+    def add_to_header(self, widget):
+        """Put a control at the right-hand end of the title's own line.
+
+        Not the same as standing the whole section next to it. A Disclosure is
+        header and body stacked inside one widget, so a hbox holding the two
+        side by side takes the control's width off the *body* as well - which is
+        how the Server log's box ended up 150px narrower than the card it sits
+        in, for a button that shares none of its line.
+        """
+        self._header.layout().addWidget(widget, 0, Qt.AlignTop)
+        return widget
 
     def set_expanded(self, expanded):
         self.button.setChecked(bool(expanded))

@@ -237,16 +237,11 @@ class SessionPanel(widgets.BlueprintPanel):
         body.addWidget(self._server_controls)
         body.addWidget(self._server_view)
         body.addWidget(self._server_elsewhere)
-        # Built by hand rather than with widgets.row: a Disclosure is header AND
-        # body stacked, so a plain hbox would centre the button against the whole
-        # expanded height. Top-aligned, it sits on the header's own line.
-        header = QWidget()
-        header_row = QHBoxLayout(header)
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(8)
-        header_row.addWidget(self._server_disclosure, 1)
-        header_row.addWidget(self._server_popout, 0, Qt.AlignTop)
-        wrap.addWidget(header)
+        # On the disclosure's own header line, not beside the whole section. The
+        # section used to sit in a hbox next to this button, which put the button
+        # where it belongs and took its width off the log box underneath as well.
+        self._server_disclosure.add_to_header(self._server_popout)
+        wrap.addWidget(self._server_disclosure)
         # What is currently on screen, so a repaint only happens when it changed:
         # this runs on every event, and re-rendering hundreds of lines each time
         # would fight the user's scrollbar as well as the CPU.
