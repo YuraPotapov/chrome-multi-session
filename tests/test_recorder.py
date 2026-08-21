@@ -473,6 +473,121 @@ def test_a_selector_is_never_just_a_tag_name():
     assert described["unique"] is True
 
 
+def test_a_numeric_id_is_a_render_counter_and_not_a_name():
+    """`#[id="49"]` reached a scenario file and the runner refused to parse it.
+
+    The same search dropdown as above, one fault further in. Odoo numbers those
+    rows from a counter - 49, 65 - which read as ids worth keeping, so synthesis
+    stopped there. Two things then went wrong at once: `#` takes an identifier
+    and `49` is not one, so the id fell to the attribute form, which arrives with
+    its own brackets and got a `#` glued in front of it anyway; and the number
+    would have been worthless even spelled correctly, because the next render
+    hands out different ones.
+
+    The fake browser here throws on a `#` that is not followed by an identifier,
+    which is the part a permissive matcher would have let through: every lookup
+    inside synthesis is wrapped in a try/catch, so an unparseable selector comes
+    back looking merely ambiguous and is written down.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    path = os.path.join(os.path.dirname(os.path.abspath(recorder.__file__)),
+                        "recorder.js")
+    harness = """
+      const rows = [];
+      const list = {tagName: 'UL', className: 'o_searchview_autocomplete',
+                    getAttribute: () => null, id: '', children: rows,
+                    parentElement: null};
+      ['47', '48', '49'].forEach((id) => {
+        rows.push({tagName: 'LI', className: 'o_menu_item', id: id, children: [],
+                   getAttribute: () => null, parentElement: list});
+      });
+      function matchesSel(el, sel) {
+        // A browser parses before it matches, and refuses this outright.
+        if (/#(?![A-Za-z_])/.test(sel)) {
+          throw new Error('Unexpected token while parsing css selector "' + sel + '"');
+        }
+        if (sel === 'li.o_menu_item') return el.tagName === 'LI';
+        if (sel === 'ul.o_searchview_autocomplete') return el === list;
+        if (sel === 'ul.o_searchview_autocomplete li.o_menu_item') return el.tagName === 'LI';
+        const m = sel.match(/^li\\.o_menu_item:nth-of-type\\((\\d+)\\)$/);
+        if (m) return el.tagName === 'LI' && rows.indexOf(el) === +m[1] - 1;
+        const s = sel.match(/^\\[id="(\\d+)"\\]$/);
+        if (s) return el.id === s[1];
+        return false;
+      }
+      const all = [list].concat(rows);
+      global.document = {
+        getElementById: () => null,
+        querySelectorAll: (sel) => all.filter(e => matchesSel(e, sel)),
+        createElement: () => ({style: {}, setAttribute() {}, appendChild() {}}),
+        documentElement: {appendChild() {}, hasAttribute: () => false,
+                          removeAttribute() {}},
+        addEventListener() {}, removeEventListener() {}
+      };
+      all.forEach(e => { e.matches = (s) => matchesSel(e, s); });
+      global.window = {};
+      require(%s);
+      const r = window.__Recorder;
+      r.configure({}, {});
+      console.log(JSON.stringify(r._describe(rows[2])));
+    """ % json.dumps(path)
+    done = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    described = json.loads(done.stdout.strip())
+
+    # Nothing that will not parse, and nothing keyed on the counter either.
+    assert "#[" not in described["selector"]
+    assert "49" not in described["selector"]
+    # What is left is the structural path, which does pick out the row.
+    assert described["selector"] == "li.o_menu_item:nth-of-type(3)"
+    assert described["unique"] is True
+
+
+def test_an_id_a_selector_cannot_spell_is_written_the_long_way():
+    """Not every id is a counter, and not every id fits behind a `#`.
+
+    `2fa-code` is a name somebody chose, worth keeping - and still not a CSS
+    identifier, because identifiers do not start with a digit. It has to come out
+    as the attribute form on its own, with no `#` in front of it.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    path = os.path.join(os.path.dirname(os.path.abspath(recorder.__file__)),
+                        "recorder.js")
+    harness = """
+      const field = {tagName: 'INPUT', className: '', id: '2fa-code', children: [],
+                     getAttribute: () => null, parentElement: null};
+      function matchesSel(el, sel) {
+        if (/#(?![A-Za-z_])/.test(sel)) {
+          throw new Error('Unexpected token while parsing css selector "' + sel + '"');
+        }
+        return sel === '[id="2fa-code"]' && el === field;
+      }
+      global.document = {
+        getElementById: () => null,
+        querySelectorAll: (sel) => [field].filter(e => matchesSel(e, sel)),
+        createElement: () => ({style: {}, setAttribute() {}, appendChild() {}}),
+        documentElement: {appendChild() {}, hasAttribute: () => false,
+                          removeAttribute() {}},
+        addEventListener() {}, removeEventListener() {}
+      };
+      field.matches = (s) => matchesSel(field, s);
+      global.window = {};
+      require(%s);
+      const r = window.__Recorder;
+      r.configure({}, {});
+      console.log(JSON.stringify(r._describe(field)));
+    """ % json.dumps(path)
+    done = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    described = json.loads(done.stdout.strip())
+    assert described["selector"] == '[id="2fa-code"]'
+    assert described["unique"] is True
+
+
 def test_a_radio_offers_a_way_to_check_which_one_is_on():
     """"Is this option selected?" is the question none of the assertions answer.
 

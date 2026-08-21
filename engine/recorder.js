@@ -161,14 +161,29 @@
         return "[" + named[i] + '="' + cssEscape(value) + '"]';
       }
     }
-    if (el.id && !UNSTABLE.test(el.id)) return "#" + CSS_ident(el.id);
+    if (el.id && !UNSTABLE.test(el.id) && !isCounter(el.id)) return idSelector(el.id);
     return "";
   }
 
-  function CSS_ident(value) {
-    // An id can legally hold characters a selector cannot, so fall back to the
-    // attribute form rather than emitting something that will not parse.
-    return /^[A-Za-z_][\w-]*$/.test(value) ? value : '[id="' + cssEscape(value) + '"]';
+  function isCounter(value) {
+    // A number is not a name. Owl hands ids out in order, so the rows of Odoo's
+    // search dropdown are 49 and 65 on this render and something else on the
+    // next one - a recording keyed on one of those is green once, by luck.
+    //
+    // Ids only. A numeric `value` or `data-value` is the real answer to "which
+    // option is this?", and dropping those would leave every radio in a group
+    // looking identical again.
+    return /^\d+$/.test(String(value));
+  }
+
+  function idSelector(value) {
+    // "#" is followed by an identifier, and an id can legally hold things an
+    // identifier cannot - a leading digit above all. Those have to be written
+    // the long way round: '#' + '[id="49"]' is not a fussier selector, it is one
+    // no browser will parse, and it reaches the runner as a recorded step.
+    return /^[A-Za-z_][\w-]*$/.test(value)
+      ? "#" + value
+      : '[id="' + cssEscape(value) + '"]';
   }
 
   function matchesUniquely(selector, el) {
@@ -350,7 +365,10 @@
     var candidates = ["data-value", "value", "id"];
     for (var i = 0; i < candidates.length; i++) {
       var value = el.getAttribute(candidates[i]);
-      if (value && !UNSTABLE.test(value)) {
+      // The id is the last resort and the only one a render counter can reach:
+      // a radio numbered by its position says nothing about which option it is.
+      if (value && !UNSTABLE.test(value)
+          && !(candidates[i] === "id" && isCounter(value))) {
         which = "[" + candidates[i] + '="' + cssEscape(value) + '"]';
         break;
       }
