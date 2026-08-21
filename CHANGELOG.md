@@ -16,6 +16,19 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-21
+
+### Fixed
+- **The recorder wrote selectors no browser would parse.** An element whose `id`
+  starts with a digit came out as `#[id="49"]` — the `#` form and the attribute
+  form glued together — and the run failed on it with "Unexpected token #". The
+  id was worthless even spelled correctly: Odoo's search dropdown numbers its
+  rows from a counter that starts over on the next render, and only runs of four
+  digits or more were being rejected as generated. A purely numeric id is no
+  longer taken for a name, so those rows now record by their structural path
+  instead. Recordings that already contain such a step have to be made again;
+  there is nothing in `#[id="49"]` to translate.
+
 ## [0.9.0] - 2026-08-20
 
 ### Added
