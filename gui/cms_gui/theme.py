@@ -174,6 +174,14 @@ def color(name):
 
 
 # --- stylesheet -------------------------------------------------------------
+#: How far inside its cell a table view draws the cell's contents - the
+#: `QTableView::item` padding below, named because a widget PUT in a cell has to
+#: know it. The view insets the widget by this much, so a row has to be this much
+#: taller than the widget's own minimum, or the widget renders at that minimum
+#: anyway and hangs over the gridline it was supposed to sit inside.
+CELL_INSET_V = 3
+CELL_INSET_H = 4
+
 # One sheet for the whole app. Square corners everywhere and 1px hairlines are
 # the design's "wireframe object" rule (styles.css: .card,.btn,.input,.tag
 # {border-radius: 0}), so they are set globally rather than per widget.
@@ -380,7 +388,9 @@ QTableView, QTreeView, QListView {{
     selection-background-color: {a200}; selection-color: {a900};
     outline: none;
 }}
-QTableView::item, QTreeView::item {{ padding: 3px 4px; border: none; }}
+QTableView::item, QTreeView::item {{
+    padding: {cell_v}px {cell_h}px; border: none;
+}}
 QHeaderView::section {{
     background: {bg}; color: {n600};
     font-family: {heading}; font-size: 11px; font-weight: 600;
@@ -442,6 +452,7 @@ def stylesheet():
         a100=ACCENT_RAMP[100], a200=ACCENT_RAMP[200], a300=ACCENT_RAMP[300],
         a600=ACCENT_RAMP[600], a700=ACCENT_RAMP[700], a800=ACCENT_RAMP[800],
         a900=ACCENT_RAMP[900],
+        cell_v=CELL_INSET_V, cell_h=CELL_INSET_H,
     )
 
 

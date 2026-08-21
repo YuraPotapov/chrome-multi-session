@@ -98,6 +98,7 @@ class EnvironmentsPage(QWidget):
             override.editingFinished.connect(
                 lambda a=alias, e=override: self.settings.set_env_override(a, e.text()))
             self.table.setCellWidget(row, 4, override)
+        self._fit_rows_to_the_override()
         self.table.resizeColumnsToContents()
         if self.table.columnWidth(4) < 240:
             self.table.setColumnWidth(4, 240)
@@ -106,6 +107,31 @@ class EnvironmentsPage(QWidget):
             edit = self.dir_edits.get(key)
             if edit is not None and not edit.text():
                 edit.setPlaceholderText(value or "(core default)")
+
+    def _fit_rows_to_the_override(self):
+        """Make a row tall enough for the editor it holds.
+
+        Every other column is text, which a row of any height can draw. The URL
+        override is a real QLineEdit, and the design's inputs are 30px - taller
+        than a row of text - while the view insets a cell widget by the item
+        padding on both sides. In a row sized for text the editor was handed
+        24px, rendered at its own 30 regardless, and the extra hung *downwards*:
+        3px of air above it and 3px of it lying across the gridline below, which
+        is the lopsidedness you could see rather than measure.
+
+        Measured, not written down: how tall an input comes out is the body
+        font's doing and the stylesheet's, and neither is fixed here.
+        """
+        tallest = 0
+        for row in range(self.table.rowCount()):
+            editor = self.table.cellWidget(row, 4)
+            if editor is None:
+                continue
+            editor.ensurePolished()
+            tallest = max(tallest, editor.minimumSizeHint().height())
+        if tallest:
+            self.table.verticalHeader().setDefaultSectionSize(
+                tallest + 2 * theme.CELL_INSET_V)
 
     def _set(self, row, col, text, mono=False, color=None):
         item = QTableWidgetItem(text)
