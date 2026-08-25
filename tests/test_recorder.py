@@ -267,6 +267,148 @@ def _node():
     return shutil.which("node")
 
 
+# A page small enough to build by hand and real enough for selector synthesis:
+# tag, #id, classes, [attr="value"], :nth-of-type, comma groups and descendant
+# combinators - which is everything the recorder writes and everything it asks a
+# document about. The tests below say what the shape is; this says how it answers.
+_DOM = r"""
+function mk(tag, props) {
+  var el = {tagName: tag.toUpperCase(), className: '', id: '', children: [],
+            parentElement: null, attrs: {}};
+  for (var key in (props || {})) el[key] = props[key];
+  el.attrs = Object.assign({}, (props || {}).attrs);
+  if (el.id) el.attrs.id = el.id;
+  el.getAttribute = function (k) {
+    return el.attrs[k] === undefined ? null : el.attrs[k];
+  };
+  return el;
+}
+
+function adopt(parent, kids) {
+  kids.forEach(function (kid) { kid.parentElement = parent; parent.children.push(kid); });
+  return parent;
+}
+
+function one(el, part) {
+  if (!part) return false;
+  var m = part.match(
+    /^([a-z]+)?(#[\w-]+)?((?:\.[\w-]+)*)((?:\[[^\]]*\])*)(?::nth-of-type\((\d+)\))?$/);
+  if (!m) return false;
+  if (m[1] && (el.tagName || '').toLowerCase() !== m[1]) return false;
+  if (m[2] && el.attrs.id !== m[2].slice(1)) return false;
+  var classes = m[3] ? m[3].slice(1).split('.') : [];
+  for (var i = 0; i < classes.length; i++) {
+    if ((' ' + el.className + ' ').indexOf(' ' + classes[i] + ' ') < 0) return false;
+  }
+  var attrs = m[4] ? (m[4].match(/\[[^\]]*\]/g) || []) : [];
+  for (var j = 0; j < attrs.length; j++) {
+    var pair = attrs[j].slice(1, -1).match(/^([\w-]+)="?([^"]*)"?$/);
+    if (!pair || String(el.getAttribute(pair[1])) !== pair[2]) return false;
+  }
+  if (m[5]) {
+    var same = (el.parentElement ? el.parentElement.children : []).filter(function (x) {
+      return x.tagName === el.tagName;
+    });
+    if (same.indexOf(el) !== +m[5] - 1) return false;
+  }
+  return true;
+}
+
+function sel(el, selector) {
+  return String(selector).split(',').some(function (group) {
+    var parts = group.trim().split(/\s+/);
+    if (!one(el, parts[parts.length - 1])) return false;
+    var node = el.parentElement;
+    for (var i = parts.length - 2; i >= 0; i--) {
+      while (node && !one(node, parts[i])) node = node.parentElement;
+      if (!node) return false;
+      node = node.parentElement;
+    }
+    return true;
+  });
+}
+
+function tree(root) {
+  var out = [root];
+  root.children.forEach(function (kid) { out = out.concat(tree(kid)); });
+  return out;
+}
+
+function install(root) {
+  var all = tree(root);
+  all.forEach(function (el) {
+    el.matches = function (s) { return sel(el, s); };
+    el.querySelectorAll = function (s) {
+      return tree(el).slice(1).filter(function (x) { return sel(x, s); });
+    };
+  });
+  // The document is replaced; the window is not, because the recorder has
+  // already been loaded onto it by the time a test builds its page.
+  global.document.getElementById = function (id) {
+    return all.filter(function (e) { return e.attrs.id === id; })[0] || null;
+  };
+  global.document.querySelectorAll = function (s) {
+    return all.filter(function (e) { return sel(e, s); });
+  };
+  return all;
+}
+
+// What the compiler knows, which is what the menu is allowed to offer.
+var GRAMMAR = {selector_only: ['click', 'wait_for', 'assert_exists', 'assert_visible',
+                               'assert_not_visible'],
+               selector_and_value: ['fill', 'assert_text_contains'],
+               value_only: ['press'], url_target: ['goto']};
+
+// The Odoo list the report came from: three lines, each with a record selector
+// in its first cell and data cells beside it that have nothing to do with it.
+function listRow() {
+  var rows = [], cells = [];
+  for (var i = 0; i < 3; i++) {
+    var box = mk('input', {id: 'checkbox-comp-' + (i + 2),
+                           className: 'form-check-input', attrs: {type: 'checkbox'}});
+    var selector = adopt(mk('td', {className: 'o_list_record_selector'}), [box]);
+    var ttn = mk('td', {className: 'o_data_cell'});
+    var status = mk('td', {className: 'o_data_cell'});
+    rows.push(adopt(mk('tr', {className: 'o_data_row'}), [selector, ttn, status]));
+    cells.push({box: box, cell: selector, ttn: ttn});
+  }
+  var table = adopt(mk('table', {className: 'o_list_table'}), rows);
+  var body = adopt(mk('body'), [table]);
+  install(body);
+  return {box: cells[0].box, cell: cells[0].cell, ttn: cells[0].ttn,
+          rows: rows, table: table, body: body};
+}
+"""
+
+
+_LOAD = """
+global.document = {
+  getElementById: function () { return null; },
+  querySelectorAll: function () { return []; },
+  createElement: function () {
+    return {style: {}, setAttribute: function () {}, appendChild: function () {}};
+  },
+  documentElement: {appendChild: function () {}, hasAttribute: function () { return false; },
+                    removeAttribute: function () {}},
+  addEventListener: function () {}, removeEventListener: function () {}
+};
+global.window = {};
+require(%s);
+var r = window.__Recorder;
+r.configure({}, GRAMMAR);
+"""
+
+
+def _run(node, body):
+    """Run one harness against recorder.js and return what it printed."""
+    path = os.path.join(os.path.dirname(os.path.abspath(recorder.__file__)),
+                        "recorder.js")
+    harness = _DOM + (_LOAD % json.dumps(path)) + body
+    done = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip())
+
+
 # ------------------------------------------------- the two that bit in testing
 # Both were invisible from Python: one threw inside a swallowed evaluate, the
 # other made the recorder eat its own menu. They are the reason these exist.
@@ -661,6 +803,221 @@ def test_a_radio_offers_a_way_to_check_which_one_is_on():
     assert ("assert_exists", out["checkable"] + ":checked") in offered
     assert ("assert_exists", out["checkable"] + ":not(:checked)") in offered
     assert ("wait_for", out["checkable"] + ":checked") in offered
+    # The wrapper holds the input, so it is still a thing of its own to click.
+    assert ("click", "") in offered
+
+
+# ------------------------------------------- what is nearby is not what is meant
+# The rule above - "the only checkbox in some ancestor" - was too generous on its
+# own. Every row of an Odoo list holds exactly one checkbox, its record selector,
+# so picking any cell of any row came back as that row's checkbox: the four
+# boolean entries were offered and `click`, the one thing wanted, was suppressed.
+# What separates the two shapes is a label: an option is a control and its name
+# drawn as one thing, and a record selector has no name at all.
+
+def test_a_row_cell_is_not_the_rows_checkbox():
+    """A cell in a list row is a cell, however many checkboxes the row holds."""
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    out = _run(node, """
+      var page = listRow();
+      var described = r._describe(page.ttn);
+      console.log(JSON.stringify({checkable: described.checkable,
+                                  via: described.checkableVia,
+                                  selector: described.selector,
+                                  actions: r._actionsFor(described)}));
+    """)
+    assert out["checkable"] == ""
+    assert out["via"] == ""
+    # The cell describes itself, and it is the first thing offered.
+    assert out["selector"] == "td.o_data_cell:nth-of-type(2)"
+    assert out["actions"][0] == {"action": "click", "why": "click it", "selector": ""}
+    assert not [a for a in out["actions"] if ":checked" in a["selector"]]
+
+
+def test_a_label_beside_a_checkbox_still_finds_it():
+    """The shape the ancestor search exists for, which has to keep working.
+
+    The label is the input's sibling, and what was picked is the text inside that
+    label - so neither the element nor anything under it is the checkbox, and only
+    the `for` pointing back at it says the two belong together.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    out = _run(node, """
+      var box = mk('input', {id: 'agree', className: 'form-check-input',
+                             attrs: {type: 'checkbox', value: 'yes'}});
+      var label = mk('label', {className: 'form-check-label', attrs: {for: 'agree'}});
+      var text = mk('span', {className: 'o_form_label'});
+      adopt(label, [text]);
+      var wrap = adopt(mk('div', {className: 'form-check'}), [box, label]);
+      install(adopt(mk('div', {className: 'o_setting_box'}), [wrap]));
+      var described = r._describe(text);
+      console.log(JSON.stringify({checkable: described.checkable,
+                                  via: described.checkableVia,
+                                  actions: r._actionsFor(described)}));
+    """)
+    assert out["via"] == "near"
+    assert out["checkable"] == 'input[type="checkbox"][value="yes"]'
+    offered = {(a["action"], a["selector"]) for a in out["actions"]}
+    assert ("assert_exists", out["checkable"] + ":checked") in offered
+    assert ("click", out["checkable"]) in offered
+
+
+def test_the_cell_a_checkbox_is_in_can_still_be_clicked_as_itself():
+    """Two different steps, and the menu has to offer both.
+
+    Clicking the cell a record selector sits in is not ticking the record
+    selector, and picking the input itself is - which is the one case where a
+    second `click` entry would be the same step twice.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    out = _run(node, """
+      var page = listRow();
+      var cell = r._describe(page.cell);
+      var box = r._describe(page.box);
+      console.log(JSON.stringify({
+        cell: {via: cell.checkableVia, checkable: cell.checkable,
+               actions: r._actionsFor(cell)},
+        box: {via: box.checkableVia, checkable: box.checkable,
+              actions: r._actionsFor(box)}}));
+    """)
+    cell, box = out["cell"], out["box"]
+    # Odoo numbers that checkbox by component, so the id is not a name to keep.
+    assert cell["checkable"] == 'input[type="checkbox"]'
+    assert cell["via"] == "inside"
+    clicks = [(a["why"], a["selector"]) for a in cell["actions"] if a["action"] == "click"]
+    assert clicks == [("select it", cell["checkable"]), ("click the td itself", "")]
+
+    assert box["via"] == "self"
+    assert [(a["why"], a["selector"]) for a in box["actions"] if a["action"] == "click"] \
+        == [("select it", box["checkable"])]
+
+
+# --------------------------------------------------------- "the third line"
+# Counting is the only way to name a row that has nothing unique in it, and CSS
+# cannot do the counting that is meant: :nth-of-type counts siblings of a tag
+# inside one parent, so from a cell it counts the columns beside it. Playwright's
+# :nth-match counts matches, which is the question actually being asked.
+
+def test_a_row_can_be_named_by_its_number_among_rows():
+    """The two counts differ, and the recording has to be able to say which.
+
+    A grouped list is where they part company: the group header is a <tr> too, so
+    the third data row is the fourth row of the table. Both selectors below find
+    the same row - one by saying where it sits, one by saying which match it is -
+    and only the second still means "the third line" once a group is collapsed.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    out = _run(node, """
+      var header = mk('tr', {className: 'o_group_header'});
+      var rows = [];
+      for (var i = 0; i < 3; i++) rows.push(mk('tr', {className: 'o_data_row'}));
+      var table = adopt(mk('table', {className: 'o_list_table'}),
+                        [header].concat(rows));
+      install(adopt(mk('body'), [table]));
+      var third = rows[2];
+      var described = r._describe(third);
+      // What the step would say with the count switched on, and without it.
+      r._pickedEl = third;
+      r._nth = r._nthFor(third);
+      r._byNth = true;
+      var counted = r._targetFor(described);
+      r._byNth = false;
+      console.log(JSON.stringify({structural: described.selector, nth: r._nth,
+                                  counted: counted, plain: r._targetFor(described)}));
+    """)
+    # Where it sits: the fourth <tr>, because the group header is one as well.
+    assert out["structural"] == "tr.o_data_row:nth-of-type(4)"
+    # Which match it is: the third row. Same element, different question.
+    assert out["nth"]["selector"] == ":nth-match(tr.o_data_row, 3)"
+    assert out["nth"]["index"] == 3
+    assert out["nth"]["total"] == 3
+    # And the mode reaches the step that gets written down.
+    assert out["counted"] == ":nth-match(tr.o_data_row, 3)"
+    assert out["plain"] == "tr.o_data_row:nth-of-type(4)"
+
+
+def test_counting_cells_is_not_counting_rows():
+    """The trap the recorder used to leave you in, and the reason for the row above.
+
+    `[name="shipment_number"]:nth-of-type(4)` was a real recording. It reads as
+    "the fourth line" and means "the fourth column", which every line has - so it
+    matched one cell per row and the step acted on the first.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    out = _run(node, """
+      var page = listRow();
+      console.log(JSON.stringify({row: r._nthFor(page.rows[2]),
+                                  cell: r._nthFor(page.rows[2].children[1]),
+                                  alone: r._nthFor(page.table)}));
+    """)
+    assert out["row"]["selector"] == ":nth-match(tr.o_data_row, 3)"
+    # The same pick one level in: six data cells over three rows, and the third
+    # row's first one is the fifth of them. Nothing there says "row 3".
+    assert out["cell"]["selector"] == ":nth-match(td.o_data_cell, 5)"
+    # One of a kind has no position worth offering, so the menu does not offer it.
+    assert out["alone"] is None
+
+
+def test_a_row_leads_with_itself_and_the_cell_around_a_box_leads_with_the_box():
+    """Widening out to a row finds its record selector again, two levels in.
+
+    It is still a real thing to offer - ticking the row is an action - but it is
+    not what the row IS, so the row's own click comes first. One level in is the
+    other way round: a cell drawn around a control is that control, and leads
+    with it.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    out = _run(node, """
+      var page = listRow();
+      var row = r._describe(page.rows[0]);
+      var cell = r._describe(page.cell);
+      console.log(JSON.stringify({
+        row: {via: row.checkableVia, depth: row.checkableDepth,
+              actions: r._actionsFor(row).map(function (a) { return a.why; })},
+        cell: {depth: cell.checkableDepth,
+               actions: r._actionsFor(cell).map(function (a) { return a.why; })}}));
+    """)
+    assert out["row"]["via"] == "inside" and out["row"]["depth"] == 2
+    assert out["row"]["actions"][0] == "click the tr itself"
+    assert "select it" in out["row"]["actions"]        # still offered, just not first
+    assert out["cell"]["depth"] == 1
+    assert out["cell"]["actions"][0] == "check it IS selected"
+
+
+def test_widening_walks_out_to_the_row_and_stops_at_the_page():
+    """A cell is as close to the row as the pointer can get.
+
+    Cells fill the row, so there is no point on screen where the picked element
+    is the <tr> - without walking outwards a whole-line step cannot be recorded
+    at all. Outwards ends at the page: <body> is not a thing to act on.
+    """
+    node = _node()
+    if not node:
+        pytest.skip("no node available to run the recorder")
+    out = _run(node, """
+      var page = listRow();
+      console.log(JSON.stringify({
+        fromCell: (r._around(page.ttn) || {}).tagName || null,
+        fromRow: (r._around(page.rows[0]) || {}).tagName || null,
+        fromTable: r._around(page.table),
+        fromBody: r._around(page.body)}));
+    """)
+    assert out["fromCell"] == "TR"
+    assert out["fromRow"] == "TABLE"
+    assert out["fromTable"] is None      # its parent is <body>
+    assert out["fromBody"] is None       # and <body> has no parent at all
 
 
 # ----------------------------------------------------- fixing it as you go

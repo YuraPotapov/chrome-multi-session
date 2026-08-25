@@ -128,7 +128,9 @@
   // Never text. A selector keyed on a visible label is the one thing guaranteed
   // to break here: the same app renders Ukrainian on one environment and English
   // on another, so :has-text("Save") records green and fails everywhere else.
-  var UNSTABLE = /(^|[-_])(ng|css|sc|jsx|emotion)[-_]?[a-z0-9]{4,}|\d{4,}|^o_[a-z]+_\d+$/i;
+  // `comp-2` is Owl counting its components: checkbox-comp-2 is checkbox-comp-3
+  // on the next render, which is a name only until the page is reloaded.
+  var UNSTABLE = /(^|[-_])(ng|css|sc|jsx|emotion)[-_]?[a-z0-9]{4,}|\d{4,}|^o_[a-z]+_\d+$|[-_]comp[-_]\d+/i;
 
   function stableClasses(el) {
     var out = [];
@@ -281,9 +283,59 @@
     return "";
   }
 
+  function around(el) {
+    // The element a widen moves out to, or null when there is nothing useful
+    // outside this one. The page itself is not a thing to record a step about.
+    var parent = el && el.parentElement;
+    if (!parent) return null;
+    var tag = (parent.tagName || "").toLowerCase();
+    return (tag === "body" || tag === "html") ? null : parent;
+  }
+
+  function ordinal(n) {
+    var rest = n % 100;
+    if (rest >= 11 && rest <= 13) return n + "th";
+    return n + ["th", "st", "nd", "rd"][n % 10 < 4 ? n % 10 : 0];
+  }
+
+  function nthSelector(el) {
+    // "the third one of these", which no CSS selector can say.
+    //
+    // :nth-of-type counts siblings of a tag inside one parent, so from a cell it
+    // counts the columns beside it - a recording that means "the third line"
+    // comes out meaning "the third field of every line". Playwright's own
+    // :nth-match counts MATCHES, across the page, which is the question actually
+    // being asked. It is not CSS and the browser cannot parse it, so it is built
+    // here and resolved on the Python side like the other Playwright forms.
+    //
+    // null when there is nothing to count: one match is already unique, and a
+    // position among one is not an idea worth offering.
+    var base = ownSelector(el);
+    if (isBareTag(base)) {
+      // A bare tag counts every one of them in the document. Put a describing
+      // ancestor in front so the count is over the list, not over the page.
+      var node = el.parentElement;
+      for (var depth = 0; node && depth < 4; depth++) {
+        var scope = ownSelector(node);
+        if (scope && !isBareTag(scope)) { base = scope + " " + base; break; }
+        node = node.parentElement;
+      }
+    }
+    var found;
+    try { found = document.querySelectorAll(base); } catch (e) { return null; }
+    if (found.length < 2) return null;
+    for (var i = 0; i < found.length; i++) {
+      if (found[i] !== el) continue;
+      return { selector: ":nth-match(" + base + ", " + (i + 1) + ")",
+               base: base, index: i + 1, total: found.length };
+    }
+    return null;
+  }
+
   function describeTarget(el, selectors) {
     var name = namedSelector(el, selectors || {});
     var selector = structuralSelector(el);
+    var found = checkableWithin(el);
     return {
       name: name || "",
       selector: selector,
@@ -294,10 +346,14 @@
       role: (el.getAttribute && el.getAttribute("role")) || "",
       editable: isEditable(el),
       // "" when nothing here can be checked, which is most things.
-      checkable: (function () {
-        var input = checkableWithin(el);
-        return input ? checkableSelector(input) : "";
-      })(),
+      checkable: found ? checkableSelector(found.input) : "",
+      // Where that input was found: "self", "inside", "label", "near" - or "".
+      // The menu needs it to tell "you picked the checkbox" from "the checkbox is
+      // somewhere about", because only the first of those has nothing else to click.
+      checkableVia: found ? found.via : "",
+      // How far inside it sits, when it is inside: 1 is the cell drawn around a
+      // control, more than that is a container the control merely lives in.
+      checkableDepth: (found && found.depth) || 0,
       value: readValue(el),
       // Only ever shown in the menu so a person can tell which element they
       // picked; never put into a selector.
@@ -317,21 +373,77 @@
     } catch (e) { return null; }
   }
 
+  function generations(ancestor, node, max) {
+    // How far `node` sits below `ancestor`, or -1 if not below it within `max`.
+    // Walked over parentElement rather than Node.contains: the same walk answers
+    // both questions, and the tests drive this with a DOM they build by hand.
+    var up = node && node.parentElement;
+    for (var depth = 1; up && depth <= max; depth++) {
+      if (up === ancestor) return depth;
+      up = up.parentElement;
+    }
+    return -1;
+  }
+
+  function related(a, b) {
+    // One of them is the other, or holds it. Either way they are about the same
+    // thing on screen.
+    return a === b || generations(a, b, 6) > 0 || generations(b, a, 6) > 0;
+  }
+
+  function labelsIt(el, input) {
+    // Does `el` label `input`? The question the ancestor search below turns on.
+    //
+    // An option is a label and a control drawn as one thing, and the label is
+    // what carries its name: `for`, or a <label> wrapped around both, or
+    // aria-labelledby. A table row is not - the cells beside its record selector
+    // say nothing about it, which is exactly what has to be told apart here.
+    var labels = [];
+    var id = input.getAttribute && input.getAttribute("id");
+    if (id) {
+      try {
+        var each = document.querySelectorAll('label[for="' + cssEscape(id) + '"]');
+        for (var i = 0; i < each.length; i++) labels.push(each[i]);
+      } catch (e) { /* an id a selector cannot express */ }
+    }
+    var node = input.parentElement;
+    for (var depth = 0; node && depth < 4; depth++) {
+      if ((node.tagName || "").toLowerCase() === "label") { labels.push(node); break; }
+      node = node.parentElement;
+    }
+    var named = (input.getAttribute && input.getAttribute("aria-labelledby")) || "";
+    named.split(/\s+/).forEach(function (ref) {
+      if (!ref) return;
+      try {
+        var found = document.getElementById(ref);
+        if (found) labels.push(found);
+      } catch (e) { /* not a lookup worth failing over */ }
+    });
+    for (var j = 0; j < labels.length; j++) {
+      if (related(el, labels[j])) return true;
+    }
+    return false;
+  }
+
   function checkableWithin(el) {
-    // The input a "is this selected?" check would be about.
+    // The input a "is this selected?" check would be about, and how it was found.
     //
     // Rarely the element under the pointer. A radio is a 13px circle and people
     // click the label beside it or the row around it, and in most frameworks -
     // Odoo included - the label is the input's *sibling*, not its parent. So
     // this looks at the element, then inside it, then at what a label points to,
-    // and finally at the row it sits in.
+    // and finally at the option it is drawn as part of.
     var type = ((el.getAttribute && el.getAttribute("type")) || "").toLowerCase();
     if ((el.tagName || "").toLowerCase() === "input"
         && (type === "radio" || type === "checkbox")) {
-      return el;
+      return { input: el, via: "self" };
     }
+    // Inside, but close by. A cell around a checkbox is that checkbox; a panel
+    // that happens to hold one somewhere is not, and taking it would be the same
+    // mistake as below, one level in.
     var inside = onlyCheckableIn(el);
-    if (inside) return inside;
+    var depth = inside ? generations(el, inside, 3) : -1;
+    if (depth > 0) return { input: inside, via: "inside", depth: depth };
 
     if ((el.tagName || "").toLowerCase() === "label") {
       var target = el.getAttribute && el.getAttribute("for");
@@ -339,17 +451,24 @@
         try {
           var referenced = document.getElementById(target);
           if (referenced && referenced.matches && referenced.matches(CHECKABLE)) {
-            return referenced;
+            return { input: referenced, via: "label" };
           }
         } catch (e) { /* an id a selector cannot express */ }
       }
     }
-    // The row this option is drawn as. Bounded, and self-limiting anyway: one
-    // step too far is the whole group, which holds more than one.
+    // The option this is drawn as part of - the label beside the radio, or the
+    // wrapper around the pair.
+    //
+    // "the only checkbox in some ancestor" is not enough on its own, and used to
+    // be: every row of an Odoo list holds exactly one, its record selector, so
+    // picking any cell of any row came back as that row's checkbox and the cell
+    // itself could not even be clicked. So the input has to be one this element
+    // labels. Unlabelled ones - a record selector, a toolbar toggle - are then
+    // reachable the honest way, by picking the input.
     var node = el.parentElement;
-    for (var depth = 0; node && depth < 3; depth++) {
+    for (var up = 0; node && up < 3; up++) {
       var sibling = onlyCheckableIn(node);
-      if (sibling) return sibling;
+      if (sibling && labelsIt(el, sibling)) return { input: sibling, via: "near" };
       node = node.parentElement;
     }
     return null;
@@ -411,6 +530,27 @@
       if (known[action]) out.push({ action: action, why: why || "",
                                     selector: selector || "" });
     }
+    // What the element itself does. Whatever was picked can be clicked as
+    // itself; only the input has nothing to add, because "select it" below is
+    // already that click. For a cell, a label or a row the two are different
+    // steps and both are wanted - clicking the row that holds a record selector
+    // is not ticking the record selector.
+    function itself() {
+      if (target.tag === "select") {
+        offer("select", "choose an option by value");
+      } else if (target.editable) {
+        offer("fill", "type into it");
+        offer("click", "focus it");
+      } else if (target.checkableVia !== "self") {
+        offer("click", target.checkable ? "click the " + target.tag + " itself"
+                                        : "click it");
+      }
+    }
+    // Whether the control is what this element is, or something it merely
+    // contains. A cell drawn around a checkbox is that checkbox and leads with
+    // it; a row two levels out is a row, and leads with itself.
+    var incidental = target.checkableVia === "inside" && target.checkableDepth > 1;
+    if (incidental) itself();
     // A radio or a checkbox has a question of its own that none of the ordinary
     // assertions answer: is it the one that is on? CSS says it exactly, so this
     // needs no new step type - :checked on the selector, and assert_exists.
@@ -422,14 +562,7 @@
             target.checkable + ":checked");
       offer("click", "select it", target.checkable);
     }
-    if (target.tag === "select") {
-      offer("select", "choose an option by value");
-    } else if (target.editable) {
-      offer("fill", "type into it");
-      offer("click", "focus it");
-    } else if (!target.checkable) {
-      offer("click", "click it");
-    }
+    if (!incidental) itself();
     offer("assert_visible", "check it is on screen");
     offer("assert_not_visible", "check it is gone");
     offer("assert_exists", "check it is in the DOM");
@@ -447,6 +580,14 @@
     _selectors: {}, _grammar: {},
     _drag: null,
     _hover: null,
+    // The element the open menu is about, and the ones widening walked up from.
+    // Kept as elements rather than descriptions because widening re-describes:
+    // what the menu offers is a property of the element, not of the pick.
+    _pickedEl: null,
+    _narrower: [],
+    // ":nth-match(...)" for the element the menu is about, and whether the step
+    // is being written that way. null when there is only one of it.
+    _nth: null, _byNth: false,
 
     // Exposed for the tests: selector synthesis is the one piece here with
     // enough logic to be worth checking without a browser.
@@ -456,6 +597,14 @@
 
     _actionsFor: function (target) {
       return actionsFor(target, this._grammar);
+    },
+
+    _nthFor: function (el) {
+      return nthSelector(el);
+    },
+
+    _around: function (el) {
+      return around(el);
     },
 
     // ------------------------------------------------------------- lifecycle
@@ -785,6 +934,9 @@
       this._armed = false;
       this._unbind();
       this._clearHighlight();
+      // Forget what was under the pointer, or the next arming skips the first
+      // highlight: the pointer has not moved, so _track sees no change.
+      this._hover = null;
       this._closeMenu();
       this.paint();
     },
@@ -826,8 +978,13 @@
       // leaves the app's own popup standing - a click on this panel is an
       // outside-click as far as the app is concerned.
       if (!this._menu) return;
-      if (e.key === "t" || e.key === "T") {
-        this.toggleByText();
+      // The letters change what the step is about; the digits and arrows below
+      // choose what it does.
+      var scoping = { t: this.toggleByText, n: this.toggleByNth,
+                      p: this.widen, c: this.narrow };
+      var letter = scoping[String(e.key).toLowerCase()];
+      if (letter) {
+        letter.call(this);
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -909,6 +1066,9 @@
     },
 
     _track: function (e) {
+      // With a menu open the highlight belongs to it: it shows the element the
+      // menu is about, which is the only way to see what P and C just did.
+      if (this._menu) return;
       if (this._ours(e)) { this._clearHighlight(); return; }
       var el = e.target;
       if (el === this._hover) return;
@@ -946,8 +1106,7 @@
       // element rather than pressing what is under the pointer.
       e.preventDefault();
       e.stopPropagation();
-      var target = describeTarget(e.target, this._selectors);
-      this._openMenu(e.clientX, e.clientY, target);
+      this._openMenu(e.clientX, e.clientY, e.target);
     },
 
     // ------------------------------------------------------------- the menu
@@ -965,34 +1124,88 @@
       return target.selector + ':text-is("' + text.replace(/"/g, '\\"') + '")';
     },
 
-    _openMenu: function (x, y, target) {
+    _openMenu: function (x, y, el) {
       this._closeMenu();
-      this._clearHighlight();
+      this._highlight(el);
       this._menuAt = { x: x, y: y };
       this._byText = false;
-      this._renderMenu(target);
+      this._byNth = false;
+      this._pickedEl = el;
+      this._narrower = [];
+      this._renderMenu();
     },
 
-    _renderMenu: function (target) {
+    // Out to the element around this one, and back in again.
+    //
+    // A pick is whatever was under the pointer, and in a table that is always a
+    // cell: cells fill the row, so no point exists where the pointer is on the
+    // <tr> itself. Without a way to walk outwards, a step about a whole row
+    // cannot be recorded at all - only hand-written afterwards.
+    widen: function () {
+      if (!this._menu || !this._pickedEl) return;
+      var parent = around(this._pickedEl);
+      if (!parent || this._inPanel(parent)) return;
+      this._narrower.push(this._pickedEl);
+      this._pickedEl = parent;
+      this._rescope();
+    },
+
+    narrow: function () {
+      if (!this._menu || !this._narrower.length) return;
+      this._pickedEl = this._narrower.pop();
+      this._rescope();
+    },
+
+    _rescope: function () {
+      // The text of a container is every label inside it, which is nobody's idea
+      // of a selector, so widening drops back to matching on what it is.
+      this._byText = false;
+      this._highlight(this._pickedEl);
+      this._renderMenu();
+    },
+
+    toggleByNth: function () {
+      if (!this._menu || !this._nth) return;
+      this._byNth = !this._byNth;
+      this._renderMenu();
+    },
+
+    // What the step will actually say, in whichever of the three ways the menu
+    // is currently set to.
+    _selectorFor: function (target) {
+      if (this._byText) return this._textSelector(target);
+      if (this._byNth && this._nth) return this._nth.selector;
+      return target.selector;
+    },
+
+    _renderMenu: function () {
       var wasOpen = !!this._menu;
       if (wasOpen && this._menu.parentNode) this._menu.parentNode.removeChild(this._menu);
+      var target = describeTarget(this._pickedEl, this._selectors);
+      this._pickedTarget = target;
+      this._nth = nthSelector(this._pickedEl);
+      if (!this._nth) this._byNth = false;    // nothing to count after a widen
+      var byNth = this._byNth && !!this._nth;
       var menu = elem("div", "menu");
 
       var head = elem("div", "menu-head");
       head.textContent = target.tag + (target.text ? ' "' + target.text + '"' : "");
       var sel = elem("span", "menu-sel");
-      sel.textContent = this._byText
-        ? this._textSelector(target)
+      sel.textContent = (this._byText || byNth)
+        ? this._selectorFor(target)
         : (target.name ? target.name + "  (selectors.yaml)" : target.selector);
       head.appendChild(sel);
       this._menuSelEl = sel;
       this._menuBaseSel = sel.textContent;
-      if (!this._byText && !target.unique) {
+      if (!this._byText && !byNth && !target.unique) {
         // Loud, because a step that matches several elements acts on whichever
         // Playwright reaches first - which is not a thing to discover later.
+        var narrows = [];
+        if ((target.text || "").trim()) narrows.push("T narrows it by text");
+        if (this._nth) narrows.push((narrows.length ? "N" : "N narrows it") + " by count");
         var warn = elem("div", "menu-warn");
         warn.textContent = "matches more than one element"
-          + ((target.text || "").trim() ? " - T narrows it by text" : "");
+          + (narrows.length ? " - " + narrows.join(", ") : "");
         head.appendChild(warn);
         this._menuWarnEl = warn;
       }
@@ -1023,23 +1236,37 @@
         self._menuEls.push(item);
       });
 
+      // Everything below the actions changes what the step is about rather than
+      // what it does, so none of it joins _menuEls: 1-9 and the arrows stay on
+      // the actions, and these keep their own letters.
+      var outer = around(this._pickedEl);
+      if (outer && !this._inPanel(outer)) {
+        this._toggleRow(menu, "P",
+                        "select the " + (outer.tagName || "").toLowerCase()
+                          + " around it",
+                        "the parent", this.widen);
+      }
+      if (this._narrower.length) {
+        var back = this._narrower[this._narrower.length - 1];
+        this._toggleRow(menu, "C",
+                        "back to the " + (back.tagName || "").toLowerCase(),
+                        "the child again", this.narrow);
+      }
+      if (this._nth) {
+        this._toggleRow(menu, "N",
+                        byNth ? "match by what it is instead" : "match by its position",
+                        byNth ? "back to the structural selector"
+                              : "the " + ordinal(this._nth.index) + " of "
+                                + this._nth.total,
+                        this.toggleByNth);
+      }
       if ((target.text || "").trim()) {
-        var byText = elem("div", "menu-item menu-toggle");
-        var tkey = elem("span", "key"); tkey.textContent = "T";
-        var tlabel = elem("span");
-        tlabel.textContent = this._byText ? "match by position instead"
-                                          : "match by its exact text";
-        var twhy = elem("span", "why");
-        twhy.textContent = this._byText ? "back to the structural selector"
-                                        : "for a data value, not a label";
-        byText.appendChild(tkey);
-        byText.appendChild(tlabel);
-        byText.appendChild(twhy);
-        byText.addEventListener("click", function (ev) {
-          ev.stopPropagation();
-          self.toggleByText();
-        });
-        menu.appendChild(byText);
+        this._toggleRow(menu, "T",
+                        this._byText ? "match by position instead"
+                                     : "match by its exact text",
+                        this._byText ? "back to the structural selector"
+                                     : "for a data value, not a label",
+                        this.toggleByText);
       }
 
       var cancel = elem("div", "menu-item menu-cancel");
@@ -1051,7 +1278,7 @@
       menu.appendChild(cancel);
 
       var foot = elem("div", "menu-foot");
-      foot.textContent = "1-9 or ↑↓ + Enter · T text · Esc cancels";
+      foot.textContent = "1-9 or ↑↓ + Enter · P parent · N count · T text · Esc cancels";
       menu.appendChild(foot);
 
       this._shadow.appendChild(menu);
@@ -1060,10 +1287,28 @@
       this._moveMenu(0);
     },
 
+    // One row of the menu that changes what the step is about. Same shape as an
+    // action row and deliberately not one: it re-renders instead of recording.
+    _toggleRow: function (menu, key, label, why, fn) {
+      var self = this;
+      var row = elem("div", "menu-item menu-toggle");
+      var k = elem("span", "key"); k.textContent = key;
+      var l = elem("span"); l.textContent = label;
+      var w = elem("span", "why"); w.textContent = why;
+      row.appendChild(k);
+      row.appendChild(l);
+      row.appendChild(w);
+      row.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        fn.call(self);
+      });
+      menu.appendChild(row);
+    },
+
     toggleByText: function () {
-      if (!this._pickedTarget) return;
+      if (!this._menu || !this._pickedEl) return;
       this._byText = !this._byText;
-      this._renderMenu(this._pickedTarget);
+      this._renderMenu();
     },
 
     // Put the menu where it fits, which is not always where it was asked for.
@@ -1129,6 +1374,10 @@
       this._menuWarnEl = null;
       this._valueInput = null;
       this._menuIndex = 0;
+      this._pickedEl = null;
+      this._narrower = [];
+      this._nth = null;
+      this._byNth = false;
     },
 
     //: Actions that need a value the element cannot answer for itself.
@@ -1197,9 +1446,9 @@
 
     _targetFor: function (target) {
       // A name the tree already has, so the recording reads like the flows
-      // beside it - unless this step is being matched on a data value, which no
-      // name can stand for.
-      if (this._byText) return this._textSelector(target);
+      // beside it - unless this step is being matched on a data value or a
+      // position, which no name can stand for.
+      if (this._byText || (this._byNth && this._nth)) return this._selectorFor(target);
       return target.name || target.selector;
     },
 
@@ -1211,9 +1460,8 @@
         action: action,
         target: override || this._targetFor(target),
         // What Python performs against: the exact element that was picked.
-        selector: override
-          || (this._byText ? this._textSelector(target) : target.selector),
-        named: !!target.name && !this._byText && !override
+        selector: override || this._selectorFor(target),
+        named: !!target.name && !this._byText && !(this._byNth && this._nth) && !override
       };
       if (value !== undefined) step.value = value;
       // Disarm first: performing the step may navigate, and an armed recorder
