@@ -16,6 +16,57 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-25
+
+### Added
+- **A whole row can be recorded, and named by its number.** Two things were missing
+  and neither works without the other.
+
+  `P` selects the element *around* the one you picked, and `C` goes back in. A pick is
+  whatever was under the pointer, and in a table that is always a cell — cells fill the
+  row, so there is no point on screen where the pointer is on the `<tr>`. A step about
+  a whole line could not be recorded at all, only hand-written afterwards. The menu
+  names what it will move to (*select the tr around it*), and the highlight now stays
+  on whatever the menu is about, so `P` is something you watch rather than guess at.
+
+  `N` writes the selector as `:nth-match(base, index)` — offered whenever the element
+  is one of several, with the count in the menu (*the 3rd of 12*). This is the one that
+  needs Playwright's own selector engine: `:nth-of-type()` counts siblings of a tag
+  inside one parent, so from a cell it counts the **columns** beside it. A recording
+  that means "the third line" came out as `[name="shipment_number"]:nth-of-type(4)`,
+  which is the fourth *field*, matches one cell in every row, and acts on the first.
+  `:nth-match(tr.o_data_row, 3)` counts matches, which is what "the third line" means.
+
+  Together: hover a cell in the third row, `P` to the row, `N` to count it, `1` to
+  click. The `matches more than one element` warning now says which key narrows it.
+
+### Fixed
+- **A cell in a list row is a cell, not the row's checkbox.** Picking anything in an
+  Odoo list came back as that row's record selector: the menu offered *check it IS
+  selected*, *wait until it becomes selected* and a *select it* that recorded the
+  checkbox — and `click`, the one step wanted, was not offered at all.
+
+  The recorder looks around the element it was given on purpose, because a radio is a
+  13px circle and people click the label beside it, which in Odoo is the input's
+  *sibling*. What it used to accept was "the only checkbox in some ancestor", and
+  every row of a list holds exactly one. Now an input found that way counts only when
+  the picked element is what **labels** it — `for`, a wrapping `<label>`, or
+  `aria-labelledby`. An option is a control and its name drawn as one thing; a record
+  selector has no name, so it is reached the honest way, by picking the input. The
+  same bound applies inwards: a checkbox inside what was picked has to be within a
+  few generations of it, so a panel that happens to contain one somewhere is not that
+  checkbox either.
+
+  Whatever was picked can now also be clicked as itself. Clicking the cell a record
+  selector sits in is not ticking the record selector, and both are offered — except
+  on the input itself, where *select it* is already that click. Which of the two leads
+  depends on how far in the control sits: a cell drawn around a checkbox *is* that
+  checkbox and leads with it, while a row two levels out is a row and leads with
+  itself.
+- **`checkbox-comp-2` is not a name.** Owl numbers its components in render order, so
+  an id of that shape is green once and by luck. Recognised as a render counter now,
+  the same way `o_field_12` and bare numbers already were.
+
 ## [0.10.0] - 2026-08-21
 
 ### Added
