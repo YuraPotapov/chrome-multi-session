@@ -849,11 +849,11 @@ class ServiceProcess(QObject):
         if status == self._status:
             return
         self._status = status
-        # Once nothing is running there is nothing for the log to be saying. A
-        # green "start" beside a stopped service is a claim about a run that is
-        # over, and beside a failed one it contradicts the row it sits in.
-        if status in (STOPPED, FAILED):
-            self._reset_criteria()
+        # Deliberately NOT cleared here. Stopping is when what the log said
+        # matters most: a service whose whole job was one run has finished by
+        # the time anybody looks at it, and clearing on stop would throw the
+        # answer away at exactly that moment. The tags describe the last run
+        # until the next one starts, which is what start() resets them for.
         self.status_changed.emit(status)
 
     def wait_for_stop(self, timeout_ms=SHUTDOWN_WAIT_MS):

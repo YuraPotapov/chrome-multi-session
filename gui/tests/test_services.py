@@ -762,9 +762,13 @@ def test_a_detached_services_output_reaches_its_criteria(qapp, tmp_path, state,
     assert _pump(qapp, lambda: (service.poll(), _lit(service, "start"))[1] is True)
 
 
-def test_stopping_clears_what_the_run_lit(qapp, tmp_path, state, stopper):
-    # A green "start" beside a stopped service is a claim about a run that is
-    # over, and there is nothing running for the log to be saying anything about.
+def test_stopping_keeps_what_the_run_lit(qapp, tmp_path, state, stopper):
+    """Stopping is when what the log said matters most.
+
+    A service whose whole job was one run has finished by the time anybody looks
+    at it, so clearing on stop would throw the answer away at exactly the moment
+    it is wanted. The tags describe the last run until the next one starts.
+    """
     criterion = cr.CriterionRow(name="start", rules=[
         cr.Rule(cr.MATCH, cr.TEXT, "ready to serve")])
     row = _watching("svc", "print('ready to serve');import time;time.sleep(30)",
@@ -775,10 +779,13 @@ def test_stopping_clears_what_the_run_lit(qapp, tmp_path, state, stopper):
     assert _pump(qapp, lambda: _lit(service, "start") is True)
     service.stop()
     assert _pump(qapp, lambda: service.status == STOPPED)
-    assert _lit(service, "start") is False
+    assert _lit(service, "start") is True
 
 
-def test_a_service_that_fell_over_clears_them_too(qapp, tmp_path, state, stopper):
+def test_a_service_that_fell_over_keeps_what_it_lit(qapp, tmp_path, state, stopper):
+    # How far it got before it died is the useful half of a crash: this one
+    # reached "ready to serve" and then exited, which is a different fault from
+    # one that never started at all.
     criterion = cr.CriterionRow(name="start", rules=[
         cr.Rule(cr.MATCH, cr.TEXT, "ready to serve")])
     row = _watching("svc", "print('ready to serve');import sys;sys.exit(3)",
@@ -787,10 +794,12 @@ def test_a_service_that_fell_over_clears_them_too(qapp, tmp_path, state, stopper
     stopper.append(service)
     service.start()
     assert _pump(qapp, lambda: service.status == FAILED)
-    assert _lit(service, "start") is False
+    assert _lit(service, "start") is True
 
 
 def test_the_page_is_told_when_they_clear(qapp, tmp_path, state, stopper):
+    # Clearing happens at start, so that is when the row has to be repainted -
+    # otherwise the previous run's tags sit there through the whole of the next.
     criterion = cr.CriterionRow(name="start", rules=[
         cr.Rule(cr.MATCH, cr.TEXT, "ready to serve")])
     row = _watching("svc", "print('ready to serve');import time;time.sleep(30)",
@@ -799,11 +808,13 @@ def test_the_page_is_told_when_they_clear(qapp, tmp_path, state, stopper):
     stopper.append(service)
     service.start()
     assert _pump(qapp, lambda: _lit(service, "start") is True)
-    heard = []
-    service.criteria_changed.connect(lambda: heard.append(service.criteria_state()))
     service.stop()
     assert _pump(qapp, lambda: service.status == STOPPED)
-    assert heard and heard[-1][0][2] is False
+
+    heard = []
+    service.criteria_changed.connect(lambda: heard.append(service.criteria_state()))
+    service.start()
+    assert heard and heard[0][0][2] is False
 
 
 def test_restarting_clears_what_the_last_run_lit(qapp, tmp_path, state, stopper):

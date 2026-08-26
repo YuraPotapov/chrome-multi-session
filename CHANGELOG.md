@@ -78,9 +78,11 @@ app-agnostic, since that will break things on purpose.
   satisfied by any line at any point and stays so; a *must not contain* rule holds
   until the first line trips it, and then permanently does not. So a criterion can
   go dark again: `start` stops being true the moment a `CRITICAL` line arrives.
-  Cleared when the service starts *and* when it stops or falls over, so a tag
-  only ever describes a run that is happening — a green `start` beside a stopped
-  service is a claim about a run that is over.
+  Cleared when the service *starts*, and only then — so a tag describes the last
+  run until the next one begins. Stopping is when what the log said matters most:
+  a service whose whole job was one run has finished by the time anybody looks at
+  it, and how far a crashed one got before it died is the useful half of the
+  crash.
 
   A criterion reads the service's own output by default, or a file if you name
   one — which is what a backend started with a logfile needs, since it prints

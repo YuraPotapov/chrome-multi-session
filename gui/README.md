@@ -135,8 +135,9 @@ about what its log says. One that matches shows as a tag beside the service, in
 its colour; what has *not* matched is on the tooltip rather than in the row. The rules are about the whole log rather than one line, which is what
 `grep "started" && grep "!ERRORS"` asks — *must contain* is satisfied by any line
 and stays so, *must not contain* holds until the first line trips it. A criterion
-therefore goes dark again when a `CRITICAL` line arrives, and is cleared whenever
-the service starts or stops, so it only ever describes a run that is happening. It reads the service's own
+therefore goes dark again when a `CRITICAL` line arrives, and is cleared when the
+service *starts* - so it describes the last run until the next one begins, which
+is what makes it still there to read once the thing has stopped. It reads the service's own
 output, or a file if one is named. It changes nothing: STATUS goes on meaning the
 process, and this means the log.
 
