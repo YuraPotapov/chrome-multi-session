@@ -498,7 +498,10 @@ machine usually serves several logs:
 
 One connection serves every log on a machine, so a stand with three logs opens
 **one** ssh connection, not three. Copy `logsources.example.json` to get started,
-or edit it on the GUI's **Log sources** page.
+or edit it on the GUI's **Services & Logs** page — which also groups each log
+under the stack it belongs to, and starts and stops the backends those logs come
+from. That grouping is one optional `project` key per log, ignored by everything
+here; the CLI reads the file exactly as it always has.
 
 ```json
 {
@@ -531,6 +534,8 @@ python3 session_launcher.py --env=staging --server-log=all
 python3 session_launcher.py --server-log=list                     # what is configured
 python3 session_launcher.py --server-log-show=nginx               # read it
 python3 session_launcher.py --server-log-show=nginx --server-log-lines=all
+python3 session_launcher.py --log-sources=~/ChromeMultiSession/logsources.json \
+                           --server-log=list          # read it from elsewhere
 ```
 
 `--server-log-show=NAME` reads a configured log and answers JSON — the last 500
@@ -539,6 +544,14 @@ find out a connection works, and a better answer than a yes: an unknown host key
 a stopped container is survivable during a run (that log is marked unavailable and
 the rest carry on), which is exactly what makes it easy to miss. The GUI's **Open
 Tail** / **Open Full** buttons are this command.
+
+**Starting the backends themselves is the GUI's job, not the CLI's.** The same page
+also holds the *services* each project is made of — a Python script, a shell command,
+a Docker container, a Compose file — with live status, a console, and a per-service
+**Detach allowed** deciding whether it survives closing the window. Those live in `services.json`, under
+`~/ChromeMultiSession` by default and settable in the GUI's **Settings**; copy
+`services.example.json` to get started. The launcher neither reads that file nor
+needs to: nothing about a run changed.
 
 **In the report.** Under `--run-tests`, every scenario keeps the lines written
 while *it* ran, one file per log — always, pass or fail, whatever `--report-*`

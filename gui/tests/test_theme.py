@@ -193,3 +193,67 @@ def test_scoped_style_does_not_reach_children(qapp):
     widgets.scoped_style(box, "background: #123456;")
     assert box.styleSheet().startswith("#")          # scoped by object name
     assert "#123456" not in button.styleSheet()
+
+
+# ----------------------------------------------------- tables that read as tables
+def _table_tones(qapp):
+    """(page, header, selected row) as actually painted, in the current mode."""
+    from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+
+    table = QTableWidget(2, 2)
+    table.setHorizontalHeaderLabels(["One", "Two"])
+    table.verticalHeader().setVisible(False)
+    table.setProperty("rows", "quiet")
+    for row in range(2):
+        for column in range(2):
+            table.setItem(row, column, QTableWidgetItem(""))
+    table.resize(240, 120)
+    table.selectRow(0)
+    table.show()
+    qapp.processEvents()
+    image = table.grab().toImage()
+    header = table.horizontalHeader().height()
+    return (theme.BG,
+            image.pixelColor(120, header // 2).name(),
+            image.pixelColor(120, header + table.rowHeight(0) // 2).name())
+
+
+def test_a_table_header_is_a_band_rather_than_the_page(qapp):
+    """Painted in the page's own colour it is not a band at all.
+
+    It is small grey text floating above some rows, and a page carrying four
+    tables then reads as one undifferentiated field with words scattered
+    through it.
+    """
+    page, header, _selected = _table_tones(qapp)
+    assert header != page
+
+
+def test_a_selected_row_is_never_mistaken_for_a_header(qapp):
+    # Both are a tint off the page, so they have to be different tints - a
+    # selection that looked like a header would put the confusion back.
+    page, header, selected = _table_tones(qapp)
+    assert len({page, header, selected}) == 3
+
+
+def test_the_header_and_the_selection_step_away_from_the_page_in_both_modes(qapp):
+    """The ramp inverts with the mode, so the ordering does rather than the values.
+
+    Light: the page is lightest and each tint is darker. Dark: the page is
+    darkest and each tint is lighter. What must hold either way is that the
+    selection is one step further out than the header.
+    """
+    from PySide6.QtGui import QColor
+
+    for dark in (False, True):
+        theme.set_dark_mode(dark)
+        qapp.setStyleSheet(theme.stylesheet())
+        try:
+            page, header, selected = _table_tones(qapp)
+            levels = [QColor(name).lightness()
+                      for name in (page, header, selected)]
+            assert levels == sorted(levels, reverse=not dark), (
+                "%s mode: %s" % ("dark" if dark else "light", levels))
+        finally:
+            theme.set_dark_mode(False)
+            qapp.setStyleSheet(theme.stylesheet())

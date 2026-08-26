@@ -546,7 +546,8 @@ def resolve_server_logs(env_values, requested, path=None):
         return []
 
 
-def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
+def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None,
+             log_sources_path=None):
     """Everything a front-end needs to populate its pickers, as one dict.
 
     ``--describe`` prints this as JSON and exits. It exists so a GUI never has to
@@ -622,7 +623,7 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
     except ImportError as exc:
         warnings.append("scenarios unavailable (%s); install the 'flows' extra." % exc)
 
-    log_sources, log_sources_error = server_log_inventory()
+    log_sources, log_sources_error = server_log_inventory(log_sources_path)
     if log_sources_error:
         warnings.append("server logs unavailable (%s)" % log_sources_error)
 
@@ -656,7 +657,9 @@ def describe(config_path, flows_dir=None, sessions_dir=None, reports_dir=None):
         # One row per (log, environment) pair, so a front-end can filter its
         # --server-log picker by the environment chosen without parsing
         # logsources.json itself. Empty when none are configured.
-        "log_sources_path": runtime_paths.logsources_path(),
+        # What was actually read, so a front-end showing the path shows the one
+        # in force rather than the default it may have been told to ignore.
+        "log_sources_path": log_sources_path or runtime_paths.logsources_path(),
         "log_sources": log_sources,
         "tags": sorted({tag for s in scenarios for tag in s["tags"]}),
         "envs": envs,
@@ -2612,6 +2615,10 @@ Editing scenarios (answer with JSON on stdout, then exit):
                             --server-log-lines=N|all changes that. Also how you
                             find out an ssh host or a container works, before a
                             run depends on it.
+  --log-sources=FILE        Where logsources.json is (default: beside the rest of
+                            the config). Applies to every --server-log* flag and
+                            to --describe, so the file you edit and the file a
+                            run reads are the same one.
   --selectors-show          The named-target map as JSON: every name, what it
                             resolves to, and whether it is yours or the app's.
   --selectors-save --from=F Replace your selectors.yaml from the JSON document
@@ -2715,6 +2722,15 @@ def main():
     log_level = os.environ.get("OPEN_USERS_LOG_LEVEL", "INFO")
     bad_option = None     # unusable option we saw, reported once argv is fully parsed
     positional = []
+    # Read ahead for this one, because --server-log=list answers and exits from
+    # inside the loop below: parsed in order, "--server-log=list --log-sources=X"
+    # would have listed the wrong file. Everything else that reads logsources.json
+    # waits until argv is fully parsed and does not care.
+    log_sources_path = None
+    for arg in sys.argv[1:]:
+        if arg.startswith("--log-sources="):
+            log_sources_path = os.path.abspath(
+                os.path.expanduser(arg.split("=", 1)[1].strip()))
     for arg in sys.argv[1:]:
         if arg in ("--help", "-h"):
             _print_help()   # prints all parameters and exits 0
@@ -2784,7 +2800,7 @@ def main():
             value = arg.split("=", 1)[1].strip() if given_value else ""
             server_log_given = True
             if value == _SERVER_LOG_LIST:
-                print(format_server_logs())
+                print(format_server_logs(log_sources_path))
                 sys.exit(0)
             elif not given_value or value == _SERVER_LOG_DEFAULT:
                 server_log = None
@@ -2864,6 +2880,8 @@ def main():
             sessions_dir = os.path.abspath(os.path.expanduser(arg.split("=", 1)[1].strip()))
         elif arg.startswith("--config="):
             config_path = os.path.abspath(os.path.expanduser(arg.split("=", 1)[1].strip()))
+        elif arg.startswith("--log-sources="):
+            pass          # already read above, before anything could answer with it
         elif arg.startswith("--flows-dir="):
             # Lets the scenarios live in their own repo, separate from the engine.
             flows_dir = os.path.abspath(os.path.expanduser(arg.split("=", 1)[1].strip()))
@@ -2968,7 +2986,8 @@ def main():
         from engine import serverlog as _serverlog
         wanted = (_serverlog.READ_TAIL_LINES if server_log_lines is None
                   else (server_log_lines or None))
-        json.dump(show_server_log(server_log_show, lines=wanted), sys.stdout,
+        json.dump(show_server_log(server_log_show, lines=wanted,
+                                  path=log_sources_path), sys.stdout,
                   indent=2, ensure_ascii=False, default=str)
         print()
         sys.exit(0)
@@ -2977,7 +2996,8 @@ def main():
         # program, and an exit code plus a plain-text message would leave it
         # parsing error strings.
         try:
-            payload = describe(config_path, flows_dir=flows_dir,
+            payload = describe(config_path, log_sources_path=log_sources_path,
+                               flows_dir=flows_dir,
                                sessions_dir=sessions_dir, reports_dir=reports_dir)
         except Exception as exc:  # noqa: BLE001 - the report IS the error report
             json.dump({"error": "%s: %s" % (type(exc).__name__, exc)}, sys.stdout,
@@ -3216,7 +3236,8 @@ def main():
     # exactly the moment the session begins.
     log_hub = None
     if server_log_given:
-        chosen = resolve_server_logs(sorted({u.env for u in users}), server_log)
+        chosen = resolve_server_logs(sorted({u.env for u in users}), server_log,
+                                     path=log_sources_path)
         if chosen:
             from engine import serverlog
             log_hub = serverlog.ServerLogHub(chosen, on_lines=_emit_server_lines)

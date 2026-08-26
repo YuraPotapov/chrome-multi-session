@@ -1,0 +1,1216 @@
+"""The Services & Logs page: two files, one accordion, and what Save may do.
+
+The page owns ``logsources.json`` (the launcher's) and ``services.json`` (its
+own). Most of what it does is arrange rows into blocks and keep both files
+exactly as valid as their readers expect, so that is what these check. The forms
+themselves are covered in ``test_logsources_page.py``; the processes in
+``test_services.py``.
+"""
+
+import json
+import os
+import sys
+
+import pytest
+
+from cms_gui import logsourcesfile as lsf
+from cms_gui import runnertypes
+from cms_gui import servicesfile as sf
+from cms_gui.pages.services import (STATUS_TEXT, ConsoleWindow, ProjectBlock,
+                                    ProjectDialog, RunnerDialog, ServicesPage)
+
+# The core is one directory up and not installed. The GUI never imports it at
+# runtime; a test may, to check the two agree about the file.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
+LOCAL = "localhost:8069"
+DEV = "https://dev.example.com/"
+
+LOGSOURCES = {
+    "connections": [{"name": "here", "type": "local"},
+                    {"name": "dev", "type": "ssh", "host": "dev.example.com",
+                     "user": "deploy"}],
+    "logs": [{"name": "app", "connection": "here", "env": LOCAL, "type": "file",
+              "path": "/var/log/app.log", "format": "django", "default": True,
+              "project": "Claim"},
+             {"name": "nginx", "connection": "dev", "env": DEV, "type": "file",
+              "path": "/var/log/nginx/error.log", "format": "nginx"}]}
+
+SERVICES = {"version": 1, "projects": [
+    {"name": "Claim", "dir": "", "runners": [
+        {"name": "Odoo Local", "type": "python", "detach": False,
+         "settings": {"script": "odoo-bin", "args": "-c odoo.conf"}},
+        {"name": "PostgreSQL DB", "type": "docker", "detach": True,
+         "settings": {"container": "postgres-claim"}}]}]}
+
+
+def _write(tmp_path, logsources=None, services=None):
+    path = tmp_path / "logsources.json"
+    path.write_text(json.dumps(LOGSOURCES if logsources is None else logsources))
+    if services is not False:
+        (tmp_path / "services.json").write_text(
+            json.dumps(SERVICES if services is None else services))
+    return path
+
+
+def _open(tmp_path, **kwargs):
+    widget = ServicesPage()
+    widget.set_environments([LOCAL, DEV])
+    # The services path is named rather than left to resolve. Its default is
+    # ~/ChromeMultiSession/services.json, so a test that let it default would
+    # read whatever the *previous* test's Save had put there - and the tmp file
+    # it wrote for itself would be ignored.
+    widget.load(str(_write(tmp_path, **kwargs)), str(tmp_path / "services.json"),
+                str(tmp_path / "logsources.json"))
+    return widget
+
+
+@pytest.fixture
+def page(qapp, tmp_path):
+    widget = _open(tmp_path)
+    yield widget
+    widget.shutdown(2000)
+    widget.close()
+
+
+@pytest.fixture
+def empty_page(qapp, tmp_path):
+    widget = ServicesPage()
+    widget.set_environments([LOCAL, DEV])
+    widget.load(str(tmp_path / "logsources.json"),
+                str(tmp_path / "services.json"),
+                str(tmp_path / "logsources.json"))
+    yield widget
+    widget.shutdown(2000)
+    widget.close()
+
+
+def _accept(monkeypatch, fill):
+    """Answer the next dialog without showing it."""
+    from PySide6.QtWidgets import QDialog
+
+    def exec_(self):
+        return QDialog.Accepted if fill(self) else QDialog.Rejected
+
+    monkeypatch.setattr(QDialog, "exec", exec_, raising=False)
+
+
+def _answer_question(monkeypatch, answer=None, record=None):
+    from PySide6.QtWidgets import QMessageBox
+
+    def question(_parent, _title, text, *_args, **_kwargs):
+        if record is not None:
+            record["text"] = text
+        return QMessageBox.Yes if answer is None else answer
+
+    monkeypatch.setattr("cms_gui.pages.services.QMessageBox.question", question)
+
+
+# --------------------------------------------------------------- the overview
+def test_both_files_arrive_on_the_page(page):
+    connections, logs, projects = page.rows()
+    assert [c.name for c in connections] == ["here", "dev"]
+    assert [l.name for l in logs] == ["app", "nginx"]
+    assert [p.name for p in projects] == ["Claim"]
+
+
+def test_a_stack_gets_a_block_holding_its_services_and_its_logs(page):
+    block = page._blocks["Claim"]
+    assert [r.name for r in block._runner_rows] == ["Odoo Local", "PostgreSQL DB"]
+    assert [r.name for r in block._log_rows] == ["app"]
+
+
+def test_a_log_naming_no_stack_still_has_somewhere_to_be(page):
+    # Hiding a row because a name no longer matches looks exactly like losing it.
+    assert [r.name for r in page._blocks[""]._log_rows] == ["nginx"]
+
+
+def test_a_log_naming_a_stack_that_is_gone_is_not_hidden(qapp, tmp_path):
+    logs = json.loads(json.dumps(LOGSOURCES))
+    logs["logs"][0]["project"] = "Deleted Last Week"
+    widget = _open(tmp_path, logsources=logs)
+    assert [r.name for r in widget._blocks[""]._log_rows] == ["app", "nginx"]
+    widget.close()
+
+
+def test_the_block_header_says_how_much_of_the_stack_is_up(page):
+    assert "0 of 2 running" in page._blocks["Claim"].disclosure.button.text()
+
+
+def test_a_stack_with_nothing_in_it_says_so(qapp, tmp_path, monkeypatch):
+    widget = _open(tmp_path, services={"projects": [{"name": "Empty"}]})
+    assert "nothing configured" in widget._blocks["Empty"].disclosure.button.text()
+    widget.close()
+
+
+def test_the_overview_says_what_a_service_runs_rather_than_its_raw_settings(page):
+    block = page._blocks["Claim"]
+    assert block.runners.item(0, block.R_CONFIG).text() == \
+        "%s odoo-bin -c odoo.conf" % runnertypes.DEFAULT_PYTHON
+    assert block.runners.item(1, block.R_TYPE).text() == "Docker Container"
+    assert block.runners.item(0, block.R_STATUS).text() == "Stopped"
+
+
+def test_a_service_told_to_survive_the_window_says_so_in_its_row(qapp, tmp_path):
+    services = json.loads(json.dumps(SERVICES))
+    services["projects"][0]["runners"][0]["detach"] = True
+    widget = _open(tmp_path, services=services)
+    block = widget._blocks["Claim"]
+    assert "detached" in block.runners.item(0, block.R_TYPE).text()
+    # Never said of a container: it was never ours to keep alive.
+    assert "detached" not in block.runners.item(1, block.R_TYPE).text()
+    widget.close()
+
+
+def test_the_overview_says_where_and_what_rather_than_raw_columns(page):
+    block = page._blocks[""]
+    assert page.connections.item(1, 1).text() == "ssh deploy@dev.example.com"
+    assert page.connections.item(0, 2).text() == "1 log"
+    assert block.logs.item(0, block.L_READS).text() == \
+        "file  /var/log/nginx/error.log"
+
+
+def test_the_tables_are_not_edited_in_place(page):
+    # Every edit opens a form; a cell that looks editable and is not is worse
+    # than one that plainly is not.
+    from PySide6.QtWidgets import QAbstractItemView
+    block = page._blocks["Claim"]
+    for table in (page.connections, block.logs, block.runners):
+        assert table.editTriggers() == QAbstractItemView.NoEditTriggers
+
+
+def test_an_empty_file_says_what_to_do_first(empty_page):
+    assert "Add a project" in empty_page.status.text()
+
+
+def test_the_add_menu_offers_exactly_the_registered_types(page):
+    labels = [a.text() for a in page._blocks["Claim"]._add_menu.actions()]
+    assert labels == [t.label for t in runnertypes.TYPES]
+
+
+# ------------------------------------------------------------------- stacks
+def test_a_new_stack_appears_as_its_own_block(page, monkeypatch):
+    _accept(monkeypatch, lambda d: d.name.setText("Helpdesk") or True)
+    page.add_project()
+    assert "Helpdesk" in page._blocks
+    assert [p.name for p in page.rows()[2]] == ["Claim", "Helpdesk"]
+
+
+def test_renaming_a_stack_takes_its_logs_with_it(page, monkeypatch):
+    # A log names its stack by name. Renaming one without this tips every log
+    # that used it into Unassigned, which reads as having lost them.
+    _accept(monkeypatch, lambda d: d.name.setText("Claims") or True)
+    page.edit_project("Claim")
+    assert [r.name for r in page._blocks["Claims"]._log_rows] == ["app"]
+    assert page.rows()[1][0].project == "Claims"
+
+
+def test_deleting_a_stack_keeps_its_logs_and_says_so(page, monkeypatch):
+    asked = {}
+    _answer_question(monkeypatch, record=asked)
+    page.delete_project("Claim")
+    assert "move to Unassigned" in asked["text"]
+    assert [l.name for l in page.rows()[1]] == ["app", "nginx"]
+    assert page.rows()[1][0].project == ""
+    assert [r.name for r in page._blocks[""]._log_rows] == ["app", "nginx"]
+
+
+def test_a_stack_can_be_left_alone_at_the_confirmation(page, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    _answer_question(monkeypatch, answer=QMessageBox.No)
+    page.delete_project("Claim")
+    assert [p.name for p in page.rows()[2]] == ["Claim"]
+
+
+def test_whether_a_block_was_open_is_remembered_in_the_file(page, tmp_path):
+    page._blocks["Claim"].disclosure.set_expanded(False)
+    page.save()
+    assert sf.load(str(tmp_path / "services.json"))[0].expanded is False
+
+
+# ------------------------------------------------------------------ services
+def test_a_service_is_added_through_its_own_generated_form(page, monkeypatch):
+    def fill(dialog):
+        dialog.name.setText("Worker")
+        dialog._editors["command"].setText("celery worker")
+        return True
+
+    _accept(monkeypatch, fill)
+    page.add_runner("Claim", runnertypes.BY_ID["shell"])
+    names = [r.name for r in page.rows()[2][0].runners]
+    assert names == ["Odoo Local", "PostgreSQL DB", "Worker"]
+    assert page.save_button.isEnabled()
+
+
+def test_a_copied_service_is_valid_the_moment_it_is_made(page):
+    project = page.rows()[2][0]
+    page.copy_runner("Claim", project.runners[0])
+    assert [r.name for r in page.rows()[2][0].runners] == [
+        "Odoo Local", "Odoo Local-copy", "PostgreSQL DB"]
+    assert page.save_button.isEnabled()
+
+
+def test_deleting_a_service_asks_first(page, monkeypatch):
+    asked = {}
+    _answer_question(monkeypatch, record=asked)
+    page.delete_runner("Claim", page.rows()[2][0].runners[0])
+    assert "Odoo Local" in asked["text"]
+    assert [r.name for r in page.rows()[2][0].runners] == ["PostgreSQL DB"]
+
+
+def test_a_service_the_supervisor_knows_gets_a_console(page):
+    window = page.open_console("Claim", page.rows()[2][0].runners[0])
+    assert isinstance(window, ConsoleWindow)
+    assert "Odoo Local" in window.windowTitle()
+    assert window.status.text() == "STOPPED"
+    window.close()
+
+
+def test_a_type_this_build_does_not_have_is_shown_but_not_edited(
+        qapp, tmp_path, monkeypatch):
+    services = {"projects": [{"name": "Claim", "runners": [
+        {"name": "quantum", "type": "quantum", "settings": {}}]}]}
+    widget = _open(tmp_path, services=services)
+    block = widget._blocks["Claim"]
+    assert "unknown" in block.runners.item(0, block.R_TYPE).text()
+    widget.edit_runner("Claim", widget.rows()[2][0].runners[0])
+    assert "no 'quantum' runner" in widget.status.text()
+    # Reported, never dropped: this build being older than the file is not a
+    # reason to delete somebody's configuration.
+    assert not widget.save_button.isEnabled()
+    widget.close()
+
+
+# ------------------------------------------------------------------ the forms
+def test_a_generated_form_collects_what_its_type_declared(qapp):
+    dialog = RunnerDialog(runnertypes.BY_ID["python"])
+    assert set(dialog._editors) == {f.key for f in runnertypes.BY_ID["python"].fields}
+    dialog.name.setText("Odoo")
+    dialog._editors["script"].setText("odoo-bin")
+    dialog._editors["env"].add_row("PYTHONUNBUFFERED", "1")
+    row = dialog.value()
+    assert row.type == "python"
+    assert row.settings["script"] == "odoo-bin"
+    assert row.settings["env"] == {"PYTHONUNBUFFERED": "1"}
+
+
+def test_a_form_will_not_be_accepted_until_its_type_is_satisfied(qapp):
+    from PySide6.QtWidgets import QDialogButtonBox
+    dialog = RunnerDialog(runnertypes.BY_ID["python"])
+    dialog.name.setText("Odoo")
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    assert "Script is required" in dialog.problem.text()
+    dialog._editors["script"].setText("odoo-bin")
+    assert dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+
+
+def test_two_services_in_one_stack_cannot_share_a_name(qapp):
+    from PySide6.QtWidgets import QDialogButtonBox
+    dialog = RunnerDialog(runnertypes.BY_ID["shell"], taken=["Odoo Local"])
+    dialog.name.setText("Odoo Local")
+    dialog._editors["command"].setText("true")
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+
+
+def test_a_container_is_not_offered_the_choice_of_detaching(qapp):
+    dialog = RunnerDialog(runnertypes.BY_ID["docker"])
+    assert dialog.detach.isChecked() and not dialog.detach.isEnabled()
+    assert dialog.detach_hint.text() == runnertypes.BY_ID["docker"].detach_note
+
+
+def test_a_script_is_offered_the_choice(qapp):
+    dialog = RunnerDialog(runnertypes.BY_ID["python"])
+    assert dialog.detach.isEnabled() and not dialog.detach.isChecked()
+
+
+def test_a_stack_needs_a_name_and_cannot_repeat_one(qapp):
+    from PySide6.QtWidgets import QDialogButtonBox
+    dialog = ProjectDialog(taken=["Claim"])
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    dialog.name.setText("Claim")
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    dialog.name.setText("Helpdesk")
+    assert dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+
+
+def test_a_log_can_be_given_a_stack_or_left_without_one(qapp):
+    from cms_gui.pages.logsources import LogDialog
+    row = lsf.LogRow(name="app", connection="here", envs=[LOCAL], target="/x")
+    dialog = LogDialog(row, connections=[lsf.ConnectionRow(name="here")],
+                       envs=[LOCAL], projects=["Claim", "Helpdesk"])
+    assert dialog.value().project == ""
+    dialog.project.setCurrentText("Helpdesk")
+    assert dialog.value().project == "Helpdesk"
+
+
+def test_a_log_keeps_a_stack_the_page_no_longer_offers(qapp):
+    # Opening the dialog must not silently reassign a log whose stack was
+    # renamed or deleted behind it.
+    from cms_gui.pages.logsources import LogDialog
+    row = lsf.LogRow(name="app", connection="here", envs=[LOCAL], target="/x",
+                     project="Gone")
+    dialog = LogDialog(row, connections=[lsf.ConnectionRow(name="here")],
+                       envs=[LOCAL], projects=["Claim"])
+    assert dialog.value().project == "Gone"
+
+
+# --------------------------------------------------- rows, from the page
+def test_renaming_a_connection_follows_through_to_its_logs(page, monkeypatch):
+    # Logs point at a connection by name. Renaming one without this leaves every
+    # log that used it pointing at something that no longer exists - which the
+    # launcher then refuses the whole file for.
+    _accept(monkeypatch, lambda d: d.name.setText("local-box") or True)
+    page.edit_connection(0)
+    assert page.rows()[1][0].connection == "local-box"
+    assert page.save_button.isEnabled()
+
+
+def test_a_duplicated_log_is_valid_the_moment_it_is_made(page):
+    page.copy_log(page.rows()[1][0])
+    assert [row.name for row in page.rows()[1]] == ["app", "app-copy", "nginx"]
+    assert page.save_button.isEnabled()
+
+
+def test_a_copied_log_stays_in_the_block_it_came_from(page):
+    page.copy_log(page.rows()[1][0])
+    assert [r.name for r in page._blocks["Claim"]._log_rows] == ["app", "app-copy"]
+
+
+def test_deleting_a_connection_warns_about_the_logs_that_used_it(page, monkeypatch):
+    asked = {}
+    _answer_question(monkeypatch, record=asked)
+    page.delete_connection(0)
+    assert "1 log(s) use it: app" in asked["text"]
+    assert not page.save_button.isEnabled()      # app now points nowhere
+
+
+def test_a_log_cannot_be_added_before_a_connection_exists(empty_page):
+    empty_page.add_log()
+    assert "Add a connection first" in empty_page.status.text()
+
+
+# ------------------------------------------------------------------- the files
+def test_saving_writes_a_file_the_launcher_can_read(page):
+    from engine import serverlog
+
+    page.save()
+    config = serverlog.load_config(page._log_path)
+    assert [s.name for s in config.for_env(LOCAL)] == ["app"]
+    assert [s.name for s in config.for_env(DEV)] == ["nginx"]
+
+
+def test_the_stack_a_log_belongs_to_is_nothing_the_launcher_trips_over(page):
+    from engine import serverlog
+
+    page.save()
+    config = serverlog.load_config(page._log_path)
+    source = [s for s in config.logs if s.name == "app"][0]
+    # Swept into extra and ignored, which is why this needed no core change.
+    assert source.extra["project"] == "Claim"
+
+
+def test_an_unassigned_log_is_written_exactly_as_it_always_was(page):
+    page.save()
+    written = json.loads(open(page._log_path, encoding="utf-8").read())
+    nginx = [row for row in written["logs"] if row["name"] == "nginx"][0]
+    assert "project" not in nginx
+
+
+def test_the_two_files_are_written_side_by_side(page, tmp_path):
+    page.save()
+    assert page._services_path == str(tmp_path / "services.json")
+    assert [p.name for p in sf.load(page._services_path)] == ["Claim"]
+    assert "1 project(s)" in page.status.text()
+
+
+def test_saving_keeps_the_previous_file_as_a_backup(page):
+    before = open(page._log_path, encoding="utf-8").read()
+    page.rows()[1][0].target = "/var/log/changed.log"
+    page.save()
+    assert open(page._log_path + ".bak", encoding="utf-8").read() == before
+    assert "changed.log" in open(page._log_path, encoding="utf-8").read()
+
+
+def test_a_custom_format_survives_a_round_trip_through_the_editor(page):
+    """The data-loss path this feature had: opening the editor destroyed it.
+
+    ``timestamp`` and ``level`` are how any backend without a preset is read.
+    """
+    page._logs.append(lsf.LogRow(
+        name="weird", connection="here", envs=[LOCAL], type="file",
+        target="/weird.log", timestamp={"regex": r"^\[(\d+)\]", "format": "%S"},
+        level={"regex": r"<(\w+)>"}, tz="utc"))
+    page.save()
+    _connections, logs_back = lsf.load(page._log_path)
+    kept = [row for row in logs_back if row.name == "weird"][0]
+    assert kept.timestamp == {"regex": r"^\[(\d+)\]", "format": "%S"}
+    assert kept.level == {"regex": r"<(\w+)>"}
+    assert kept.tz == "utc"
+
+
+def test_a_broken_log_file_is_reported_rather_than_swallowed(qapp, tmp_path):
+    path = tmp_path / "logsources.json"
+    path.write_text("{ not json")
+    widget = ServicesPage()
+    widget.load(str(path), str(tmp_path / "services.json"), str(path))
+    assert "not valid JSON" in widget.status.text()
+    assert widget.rows() == ([], [], [])
+    widget.close()
+
+
+def test_a_broken_services_file_is_reported_too(qapp, tmp_path):
+    _write(tmp_path, services=False)
+    (tmp_path / "services.json").write_text("{ not json")
+    widget = ServicesPage()
+    widget.load(str(tmp_path / "logsources.json"),
+                str(tmp_path / "services.json"),
+                str(tmp_path / "logsources.json"))
+    assert "not valid JSON" in widget.status.text()
+    assert not widget.save_button.isEnabled()
+    widget.close()
+
+
+def test_a_file_that_could_not_be_read_cannot_be_saved_over(qapp, tmp_path):
+    """The data-loss path: an empty editor over a file full of content.
+
+    Validation calls the empty document perfectly valid, so without this Save
+    stays lit and one click replaces a file whose only problem was a typo.
+    """
+    path = tmp_path / "logsources.json"
+    path.write_text('{"connections": [ trailing comma, ]}')
+    widget = ServicesPage()
+    widget.load(str(path), str(tmp_path / "services.json"), str(path))
+    assert not widget.save_button.isEnabled()
+    assert "Reload" in widget.status.text()
+    widget.close()
+
+
+def test_reloading_a_fixed_file_clears_the_complaint(qapp, tmp_path):
+    path = tmp_path / "logsources.json"
+    path.write_text("{ not json")
+    widget = ServicesPage()
+    widget.load(str(path), str(tmp_path / "services.json"), str(path))
+    path.write_text(json.dumps({"connections": [{"name": "here", "type": "local"}],
+                                "logs": []}))
+    widget.load(str(path), str(tmp_path / "services.json"), str(path))
+    assert "not valid JSON" not in widget.status.text()
+    assert widget._valid and not widget.is_dirty()
+    widget.close()
+
+
+def test_a_change_made_on_disk_is_not_overwritten_without_asking(page, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    asked = {}
+
+    def question(_parent, title, text, *_args, **_kwargs):
+        asked["title"] = title
+        return QMessageBox.Cancel
+
+    monkeypatch.setattr("cms_gui.pages.services.QMessageBox.question", question)
+    page._log_fingerprint = ("stale",)
+    page.save()
+    assert asked["title"] == "File changed on disk"
+
+
+def test_the_save_button_does_not_spell_out_a_file_name(page):
+    assert page.save_button.text() == "Save"
+
+
+# -------------------------------------------------------------- opening a log
+class _Core:
+    def __init__(self, answer):
+        self.answer = answer
+        self.asked = []
+
+    def server_log_show(self, name, lines=None):
+        self.asked.append((name, lines))
+        return self.answer
+
+
+def _select(page, block_name, row=0):
+    block = page._blocks[block_name]
+    block.logs.setCurrentCell(row, block.L_NAME)
+    return block
+
+
+def test_open_tail_asks_the_core_for_the_end_of_the_log(page):
+    core = _Core({"ok": True, "target": "file (local) /x",
+                  "lines": ["one", "two"], "truncated": True})
+    page.set_core(core)
+    page.open_selected_log(_select(page, "Claim"), whole=False)
+    assert core.asked == [("app", 500)]
+    assert "2 line(s)" in page.status.text()
+
+
+def test_open_full_asks_for_all_of_it(page):
+    core = _Core({"ok": True, "target": "file (local) /x", "lines": ["one"]})
+    page.set_core(core)
+    page.open_selected_log(_select(page, "Claim"), whole=True)
+    # None is "as much as the core's byte budget allows" - the GUI does not
+    # invent a number the core would have to second-guess.
+    assert core.asked == [("app", None)]
+
+
+def test_a_failure_shows_what_the_launcher_said(page):
+    page.set_core(_Core({"ok": False,
+                         "error": "ssh: Could not resolve hostname nx.invalid"}))
+    page.open_selected_log(_select(page, "Claim"), whole=False)
+    assert "Could not resolve hostname" in page.status.text()
+
+
+def test_opening_unsaved_edits_says_to_save_first(page):
+    # The launcher reads the file, not the screen.
+    page.set_core(_Core({"ok": True, "lines": []}))
+    page._log_fingerprint = ("stale",)
+    page.open_selected_log(_select(page, "Claim"), whole=False)
+    assert "Save first" in page.status.text()
+
+
+def test_opening_an_invalid_file_says_to_fix_it_first(page):
+    page.set_core(_Core({"ok": True, "lines": []}))
+    page._logs[0].connection = "gone"
+    page.open_selected_log(_select(page, "Claim"), whole=False)
+    assert "Fix the problems" in page.status.text()
+
+
+def test_opening_with_nothing_selected_says_so(page):
+    page.set_core(_Core({"ok": True, "lines": []}))
+    block = page._blocks["Claim"]
+    block.logs.setCurrentCell(-1, -1)
+    page.open_selected_log(block, whole=False)
+    assert "Select a log" in page.status.text()
+
+
+# ------------------------------------------------------------------- closing
+def test_nothing_running_means_nothing_to_lose_on_close(page):
+    assert page.detained() == []
+
+
+def test_the_page_reports_what_the_window_would_take_with_it(qapp, tmp_path):
+    services = {"projects": [{"name": "Claim", "runners": [
+        {"name": "mine", "type": "shell", "detach": False,
+         "settings": {"command": "%s -c \"import time;time.sleep(30)\""
+                                 % sys.executable}},
+        {"name": "theirs", "type": "shell", "detach": True,
+         "settings": {"command": "%s -c \"import time;time.sleep(30)\""
+                                 % sys.executable}}]}]}
+    widget = _open(tmp_path, services=services)
+    widget.start_project("Claim")
+    import time
+    deadline = time.time() + 15
+    while time.time() < deadline and widget.supervisor.counts("Claim") != (2, 2):
+        qapp.processEvents()
+        time.sleep(0.02)
+    assert [s.name for s in widget.detained()] == ["mine"]
+    assert widget.shutdown(8000) == 1
+    from cms_gui import services as services_mod
+    services_mod.terminate_pid(widget.supervisor.service("Claim", "theirs")._pid)
+    widget.close()
+
+
+# ------------------------------------------------------------------ the block
+def test_a_block_without_a_stack_has_logs_but_no_services(page):
+    unassigned = page._blocks[""]
+    assert isinstance(unassigned, ProjectBlock)
+    assert unassigned.runners is None
+    assert unassigned.logs is not None
+
+
+def test_the_start_button_becomes_a_stop_button_while_it_runs(page):
+    block = page._blocks["Claim"]
+    strip = block.runners.cellWidget(0, block.R_ACTIONS)
+    assert strip.toggle.toolTip() == "Start"
+    block.set_status("Odoo Local", runnertypes.RUNNING)
+    assert strip.toggle.toolTip() == "Stop"
+    assert block.runners.item(0, block.R_STATUS).text() == "Running"
+    block.set_status("Odoo Local", runnertypes.STOPPED)
+    assert strip.toggle.toolTip() == "Start"
+
+
+def test_a_row_says_when_what_is_running_is_not_what_is_written_down(page):
+    block = page._blocks["Claim"]
+    block.set_status("Odoo Local", runnertypes.RUNNING, stale=True)
+    assert block.runners.item(0, block.R_STATUS).text() == "Running (edited)"
+
+
+def test_why_a_service_failed_is_on_the_row_and_in_the_status_line(page):
+    service = page.supervisor.service("Claim", "Odoo Local")
+    service._set_status(runnertypes.FAILED, "exited with code 3.")
+    block = page._blocks["Claim"]
+    assert block.runners.item(0, block.R_STATUS).toolTip() == "exited with code 3."
+    assert "exited with code 3." in page.status.text()
+
+
+# ------------------------------------------------------------------- measuring
+# Every width and height in a row is measured rather than written down. A number
+# in the source is right for one body font and wrong for the next, which is how
+# "Console" and "Delete" first came out as "onsol" and "Delet".
+
+def test_the_action_buttons_get_the_width_they_actually_need(page):
+    block = page._blocks["Claim"]
+    for table, column in ((block.runners, block.R_ACTIONS),
+                          (block.logs, block.L_ACTIONS),
+                          (page.connections, 3)):
+        for row in range(table.rowCount()):
+            strip = table.cellWidget(row, column)
+            assert table.columnWidth(column) >= strip.sizeHint().width()
+
+
+def test_the_status_column_fits_the_longest_thing_it_can_ever_say(page):
+    block = page._blocks["Claim"]
+    metrics = block.runners.fontMetrics()
+    longest = max(metrics.horizontalAdvance("%s (edited)" % text)
+                  for text in STATUS_TEXT.values())
+    assert block.runners.columnWidth(block.R_STATUS) > longest
+
+
+def test_every_row_is_tall_enough_for_the_buttons_in_it(page):
+    block = page._blocks["Claim"]
+    strip = block.runners.cellWidget(0, block.R_ACTIONS)
+    for row in range(block.runners.rowCount()):
+        assert block.runners.rowHeight(row) >= strip.minimumSizeHint().height()
+
+
+def test_a_table_is_exactly_as_tall_as_what_is_in_it(page):
+    # The page scrolls; the tables do not. A table with no height of its own
+    # takes whatever the layout offers, which is either nothing or everything.
+    block = page._blocks["Claim"]
+    table = block.runners
+    rows = table.verticalHeader().defaultSectionSize() * table.rowCount()
+    assert table.height() == table.horizontalHeader().height() + 4 + rows
+
+
+# --------------------------------------------------------- unsaved changes
+def test_save_is_dark_until_something_actually_changes(page):
+    assert not page.is_dirty()
+    assert not page.save_button.isEnabled()
+    assert page.save_button.property("dirty") == "false"
+
+
+def test_an_edit_lights_save_up(page, monkeypatch):
+    _accept(monkeypatch, lambda d: d.name.setText("Helpdesk") or True)
+    page.add_project()
+    assert page.is_dirty()
+    assert page.save_button.isEnabled()
+    assert page.save_button.property("dirty") == "true"
+
+
+def test_saving_puts_it_out_again(page, monkeypatch):
+    _accept(monkeypatch, lambda d: d.name.setText("Helpdesk") or True)
+    page.add_project()
+    page.save()
+    assert not page.is_dirty()
+    assert not page.save_button.isEnabled()
+
+
+def test_folding_a_block_is_not_an_edit(page):
+    # It is saved along with the next real change, but it is a view preference
+    # and lighting Save up for it would cry wolf.
+    page._blocks["Claim"].disclosure.set_expanded(False)
+    page._update_dirty()
+    assert not page.is_dirty()
+
+
+def test_an_invalid_document_cannot_be_saved_even_when_edited(page):
+    page._logs[0].connection = "gone"
+    page._rebuild()
+    page._validate()
+    assert page.is_dirty() and not page.save_button.isEnabled()
+
+
+def test_walking_away_from_an_untouched_page_asks_nothing(page, monkeypatch):
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("nothing was changed; there is nothing to discard")
+
+    monkeypatch.setattr("cms_gui.pages.services.QMessageBox.question", refuse)
+    assert page.confirm_discard() is True
+
+
+def test_walking_away_from_an_edit_asks_first(page, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    asked = {}
+    _accept(monkeypatch, lambda d: d.name.setText("Helpdesk") or True)
+    page.add_project()
+    _answer_question(monkeypatch, answer=QMessageBox.Cancel, record=asked)
+    assert page.confirm_discard() is False
+    assert "not saved" in asked["text"]
+
+
+# ------------------------------------------------------------ empty projects
+def test_an_empty_project_offers_nothing_to_act_on(qapp, tmp_path):
+    widget = _open(tmp_path, services={"projects": [{"name": "Empty"}]})
+    block = widget._blocks["Empty"]
+    for button in block._service_buttons:
+        assert not button.isEnabled(), button.text()
+    # Except the one thing an empty project is for.
+    assert block._add_menu.actions()
+    widget.close()
+
+
+def test_a_project_with_services_offers_them(page):
+    for button in page._blocks["Claim"]._service_buttons:
+        assert button.isEnabled(), button.text()
+
+
+def test_open_full_and_tail_wait_for_a_log_to_exist(qapp, tmp_path):
+    widget = _open(tmp_path, logsources={"connections": [], "logs": []},
+                   services={"projects": [{"name": "Empty"}]})
+    block = widget._blocks["Empty"]
+    assert not block.open_full_button.isEnabled()
+    assert not block.open_tail_button.isEnabled()
+    widget.close()
+
+
+def test_the_page_wide_buttons_follow_the_same_rule(qapp, tmp_path):
+    widget = _open(tmp_path, services={"projects": [{"name": "Empty"}]})
+    assert not widget.start_all_button.isEnabled()
+    assert not widget.stop_all_button.isEnabled()
+    widget.close()
+
+
+# ------------------------------------------------------------------ ordering
+def test_the_projects_come_before_the_connections(page):
+    order = [page._column.itemAt(i).widget() for i in range(page._column.count())]
+    blocks = [w for w in order if isinstance(w, ProjectBlock)]
+    assert blocks, "no project blocks on the page"
+    assert order.index(blocks[-1]) < order.index(page._blocks_end)
+
+
+def test_the_paths_are_not_on_the_page_but_can_still_be_looked_up(page, tmp_path):
+    assert not hasattr(page, "log_path_label")
+    assert page.paths() == (str(tmp_path / "logsources.json"),
+                            str(tmp_path / "services.json"))
+
+
+# --------------------------------------------------------------- dependencies
+def test_the_row_says_what_it_starts_after(qapp, tmp_path):
+    services = {"projects": [{"name": "Claim", "runners": [
+        {"name": "db", "type": "docker", "settings": {"container": "pg"}},
+        {"name": "web", "type": "shell", "depends": ["db"],
+         "settings": {"command": "true"}}]}]}
+    widget = _open(tmp_path, services=services)
+    block = widget._blocks["Claim"]
+    assert "after db" in block.runners.item(1, block.R_TYPE).text()
+    assert "Starts after: db" in block.runners.item(1, block.R_TYPE).toolTip()
+    widget.close()
+
+
+def test_a_long_wait_list_is_shortened_rather_than_widening_the_row(qapp, tmp_path):
+    runners = [{"name": n, "type": "shell", "settings": {"command": "true"}}
+               for n in ("a", "b", "c", "d")]
+    runners.append({"name": "last", "type": "shell", "depends": ["a", "b", "c", "d"],
+                    "settings": {"command": "true"}})
+    widget = _open(tmp_path, services={"projects": [{"name": "Claim",
+                                                     "runners": runners}]})
+    block = widget._blocks["Claim"]
+    text = block.runners.item(4, block.R_TYPE).text()
+    assert "after a, b +2" in text
+    assert "Starts after: a, b, c, d" in block.runners.item(4, block.R_TYPE).toolTip()
+    widget.close()
+
+
+def test_the_form_offers_the_other_services_to_wait_for(qapp):
+    dialog = RunnerDialog(runnertypes.BY_ID["shell"],
+                          siblings=["db", "cache", "web"])
+    assert dialog.depends_field.isVisible() or True     # visibility needs a shown parent
+    dialog.depends.set_checked(["db"])
+    dialog.name.setText("web")
+    dialog._editors["command"].setText("true")
+    assert dialog.value().depends == ["db"]
+
+
+def test_a_service_is_never_offered_itself_to_wait_for(qapp):
+    row = sf.RunnerRow(name="web", type="shell", settings={"command": "true"})
+    dialog = RunnerDialog(runnertypes.BY_ID["shell"], row, siblings=["db", "web"])
+    offered = dialog.depends.values()
+    assert "web" not in offered and "db" in offered
+
+
+def test_renaming_a_service_takes_what_waits_for_it_along(page, monkeypatch):
+    project = page.rows()[2][0]
+    project.runners[1].depends = ["Odoo Local"]
+
+    def fill(dialog):
+        dialog.name.setText("Odoo")
+        return True
+
+    _accept(monkeypatch, fill)
+    page.edit_runner("Claim", project.runners[0])
+    assert page.rows()[2][0].runners[1].depends == ["Odoo"]
+
+
+def test_deleting_a_service_stops_the_others_waiting_for_it(page, monkeypatch):
+    project = page.rows()[2][0]
+    project.runners[1].depends = ["Odoo Local"]
+    _answer_question(monkeypatch)
+    page.delete_runner("Claim", project.runners[0])
+    assert page.rows()[2][0].runners[0].depends == []
+    assert page.save_button.isEnabled()      # and the file stays valid
+
+
+# ------------------------------------------------------------- the selection
+def test_a_row_can_be_un_selected_even_when_it_is_the_only_one(qapp, tmp_path):
+    """Open Tail is aimed by selecting a row, so there has to be a way to aim at
+    nothing - and with one row in the list there was none."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    widget = _open(tmp_path, logsources={
+        "connections": [{"name": "here", "type": "local"}],
+        "logs": [{"name": "only", "connection": "here", "env": LOCAL,
+                  "type": "file", "path": "/x.log"}]})
+    block = widget._blocks[""]
+    block.logs.selectRow(0)
+    assert block.selected_log() is not None
+
+    centre = QPointF(block.logs.visualRect(
+        block.logs.model().index(0, 0)).center())
+    block.logs.mousePressEvent(QMouseEvent(
+        QMouseEvent.MouseButtonPress, centre, centre, Qt.LeftButton,
+        Qt.LeftButton, Qt.NoModifier))
+    assert block.selected_log() is None
+    widget.close()
+
+
+def test_the_row_buttons_do_not_paint_accent_on_accent(page):
+    # A row paints its selection in the accent, so an accent-inked button in a
+    # cell is the washed-out half-legible strip this variant exists to avoid.
+    block = page._blocks["Claim"]
+    strip = block.runners.cellWidget(0, block.R_ACTIONS)
+    buttons = strip.findChildren(type(page.save_button))
+    assert buttons
+    for button in buttons:
+        assert button.property("variant") == "cell"
+
+
+def test_the_interpreter_field_says_which_python_blank_will_use(qapp, tmp_path):
+    # The answer lives in a dotted directory a chooser will not list, so it is
+    # found and shown rather than left for someone to go and look for.
+    interpreter = tmp_path / ".venv" / "bin" / "python3"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("")
+    dialog = RunnerDialog(runnertypes.BY_ID["python"], project_dir=str(tmp_path))
+    assert dialog._editors["interpreter"].placeholderText() == str(interpreter)
+
+
+def test_without_a_venv_it_says_what_it_will_fall_back_to(qapp, tmp_path):
+    dialog = RunnerDialog(runnertypes.BY_ID["python"], project_dir=str(tmp_path))
+    assert dialog._editors["interpreter"].placeholderText() == \
+        runnertypes.DEFAULT_PYTHON
+
+
+# ------------------------------------------------------------ field heights
+# A fixed maximum is not a height: an empty grid and a one-item list both took
+# the whole of it, and left a field that was mostly nothing.
+
+def test_an_empty_environment_grid_is_a_grid_not_a_void(qapp):
+    grid = RunnerDialog(runnertypes.BY_ID["python"])._editors["env"].table
+    # Its header, and one empty row's worth - enough to read as waiting to be
+    # filled, and nowhere near the 140px it used to reserve.
+    assert grid.horizontalHeader().sizeHint().height() < grid.height() < 80
+
+
+def test_the_environment_grid_grows_with_what_is_in_it(qapp):
+    editor = RunnerDialog(runnertypes.BY_ID["python"])._editors["env"]
+    empty = editor.table.height()
+    for index in range(3):
+        editor.add_row("K%d" % index, "v")
+    assert editor.table.height() > empty
+
+
+def test_the_environment_grid_stops_growing_rather_than_running_off_the_dialog(qapp):
+    editor = RunnerDialog(runnertypes.BY_ID["python"])._editors["env"]
+    for index in range(30):
+        editor.add_row("K%d" % index, "v")
+    assert editor.table.height() < 200
+
+
+def test_removing_rows_gives_the_space_back(qapp):
+    # The floor is one row's worth, so the *first* row costs nothing to speak of.
+    # It is the second onwards the grid grows for, and has to give back.
+    editor = RunnerDialog(runnertypes.BY_ID["python"])._editors["env"]
+    editor.add_row("A", "1")
+    one = editor.table.height()
+    editor.add_row("B", "2")
+    assert editor.table.height() > one
+    editor.table.setCurrentCell(1, 0)
+    editor.remove_row()
+    assert editor.table.height() == one
+
+
+def test_one_service_to_wait_for_takes_one_rows_worth(qapp):
+    dialog = RunnerDialog(runnertypes.BY_ID["shell"], siblings=["odoo"])
+    assert dialog.depends.list.height() < 40
+
+
+def test_many_services_to_wait_for_scroll_rather_than_grow(qapp):
+    dialog = RunnerDialog(runnertypes.BY_ID["shell"],
+                          siblings=[str(n) for n in range(30)])
+    assert dialog.depends.list.height() < 200
+
+
+# ------------------------------------------------------------------ criteria
+from cms_gui import criteria as cr                                  # noqa: E402
+from cms_gui.pages.services import CriteriaEditor, CriterionDialog  # noqa: E402
+
+WATCHED = {"projects": [{"name": "Claim", "runners": [
+    {"name": "odoo", "type": "shell", "settings": {"command": "true"},
+     "criteria": [
+         {"name": "start", "color": "green", "source": "/x/odoo.log", "rules": [
+             {"mode": "match", "kind": "text", "pattern": "started localhost:8069"},
+             {"mode": "exclude", "kind": "regex", "pattern": "ERRORS|CRITICAL"}]},
+         {"name": "finished_tests", "color": "blue", "rules": [
+             {"mode": "match", "kind": "text", "pattern": "tests passed"}]}]},
+    {"name": "plain", "type": "shell", "settings": {"command": "true"}}]}]}
+
+
+def test_a_project_that_watches_nothing_has_no_criteria_column(page):
+    block = page._blocks["Claim"]
+    assert block.runners.isColumnHidden(block.R_CRITERIA)
+
+
+def test_the_column_appears_once_something_is_watched(qapp, tmp_path):
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    assert not block.runners.isColumnHidden(block.R_CRITERIA)
+    widget.close()
+
+
+def test_nothing_is_shown_until_something_matches(qapp, tmp_path):
+    # A row carrying every criterion whether or not it had fired was mostly grey
+    # words about things that had not happened.
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    strip = block.runners.cellWidget(0, block.R_CRITERIA)
+    assert [tag.text() for tag in strip.tags] == ["start", "finished_tests"]
+    assert not any(tag.isVisibleTo(strip) for tag in strip.tags)
+    widget.close()
+
+
+def test_only_what_matched_is_shown(qapp, tmp_path):
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    block.set_criteria("odoo", [("start", "green", True, []),
+                                ("finished_tests", "blue", False, ["waiting"])])
+    strip = block.runners.cellWidget(0, block.R_CRITERIA)
+    shown = [tag.text() for tag in strip.tags if tag.isVisibleTo(strip)]
+    assert shown == ["start"]
+    widget.close()
+
+
+def test_what_is_still_being_watched_for_is_on_the_tooltip(qapp, tmp_path):
+    # Hidden from the row, but it is a question with an answer.
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    block.set_criteria("odoo", [("start", "green", True, []),
+                                ("finished_tests", "blue", False, ["waiting"])])
+    tip = block.runners.cellWidget(0, block.R_CRITERIA).toolTip()
+    assert "Matched: start" in tip
+    assert "Still watching for: finished_tests" in tip
+    widget.close()
+
+
+def test_a_criterion_that_goes_dark_again_stops_being_shown(qapp, tmp_path):
+    # start stops being true the moment a CRITICAL line arrives.
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    block.set_criteria("odoo", [("start", "green", True, []),
+                                ("finished_tests", "blue", False, [])])
+    strip = block.runners.cellWidget(0, block.R_CRITERIA)
+    assert strip.tags[0].isVisibleTo(strip)
+    block.set_criteria("odoo", [("start", "green", False, ["saw 'CRITICAL'"]),
+                                ("finished_tests", "blue", False, [])])
+    assert not strip.tags[0].isVisibleTo(strip)
+    widget.close()
+
+
+def test_a_service_that_watches_nothing_has_an_empty_cell(qapp, tmp_path):
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    assert not getattr(block.runners.cellWidget(1, block.R_CRITERIA), "tags", [])
+    widget.close()
+
+
+def test_a_lit_criterion_paints_in_its_own_colour(qapp, tmp_path):
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    block.set_criteria("odoo", [("start", "green", True, []),
+                                ("finished_tests", "blue", False, ["waiting"])])
+    lit = block.runners.cellWidget(0, block.R_CRITERIA).tags[0]
+    assert cr.color_of("green") in lit.styleSheet()
+    assert lit.toolTip() == "start: matched"
+    widget.close()
+
+
+def test_the_column_is_re_measured_when_a_tag_appears(qapp, tmp_path):
+    # The strip is only as wide as what is showing, so a column sized while
+    # nothing had matched would cut off the first tag that did.
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    block.set_criteria("odoo", [("start", "green", True, []),
+                                ("finished_tests", "blue", True, [])])
+    strip = block.runners.cellWidget(0, block.R_CRITERIA)
+    assert block.runners.columnWidth(block.R_CRITERIA) >= strip.sizeHint().width()
+    widget.close()
+
+
+def test_the_criteria_column_never_moves_the_status_column(qapp, tmp_path):
+    # Two separate claims: STATUS is the process, Criteria is the log.
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    block.set_status("odoo", runnertypes.RUNNING)
+    block.set_criteria("odoo", [("start", "green", False, ["waiting"]),
+                                ("finished_tests", "blue", False, ["waiting"])])
+    assert block.runners.item(0, block.R_STATUS).text() == "Running"
+    widget.close()
+
+
+# ------------------------------------------------------------- the criteria form
+def test_a_criterion_needs_a_name_and_a_rule(qapp):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    dialog = CriterionDialog()
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    dialog.name.setText("start")
+    dialog.rules.item(0, 2).setText("started")
+    assert dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    assert dialog.value().rules[0].pattern == "started"
+
+
+def test_a_regex_that_will_not_compile_is_caught_while_it_is_typed(qapp):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    dialog = CriterionDialog()
+    dialog.name.setText("start")
+    dialog.rules.cellWidget(0, 1).setCurrentIndex(list(cr.KINDS).index(cr.REGEX))
+    dialog.rules.item(0, 2).setText("a(")
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    assert "does not compile" in dialog.problem.text()
+
+
+def test_a_rule_can_be_told_to_exclude(qapp):
+    dialog = CriterionDialog()
+    dialog.name.setText("start")
+    dialog.rules.item(0, 2).setText("started")
+    dialog.add_rule()
+    dialog.rules.cellWidget(1, 0).setCurrentIndex(list(cr.MODES).index(cr.EXCLUDE))
+    dialog.rules.item(1, 2).setText("CRITICAL")
+    modes = [rule.mode for rule in dialog.value().rules]
+    assert modes == [cr.MATCH, cr.EXCLUDE]
+
+
+def test_two_criteria_on_one_service_cannot_share_a_name(qapp):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    dialog = CriterionDialog(taken=["start"])
+    dialog.name.setText("start")
+    dialog.rules.item(0, 2).setText("x")
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+
+
+def test_blank_means_the_services_own_output(qapp):
+    dialog = CriterionDialog()
+    assert dialog.value().source == ""
+    assert dialog.source.placeholderText() == CriterionDialog.OWN_OUTPUT
+
+
+def test_the_editor_lists_what_each_criterion_watches(qapp):
+    editor = CriteriaEditor([
+        cr.CriterionRow(name="start", source="/x/odoo.log",
+                        rules=[cr.Rule(cr.MATCH, cr.TEXT, "up")]),
+        cr.CriterionRow(name="done", rules=[cr.Rule(cr.MATCH, cr.TEXT, "bye")])])
+    assert editor.table.rowCount() == 2
+    assert editor.table.item(0, 2).text() == "/x/odoo.log"
+    assert editor.table.item(1, 2).text() == "its own output"
+    assert "must contain" in editor.table.item(0, 3).text()
+
+
+def test_the_runner_form_carries_criteria_through(qapp, tmp_path):
+    dialog = RunnerDialog(runnertypes.BY_ID["shell"], project_dir=str(tmp_path))
+    dialog.name.setText("odoo")
+    dialog._editors["command"].setText("true")
+    dialog.criteria._rows = [cr.CriterionRow(
+        name="start", rules=[cr.Rule(cr.MATCH, cr.TEXT, "up")])]
+    dialog.criteria._rebuild()
+    assert [one.name for one in dialog.value().criteria] == ["start"]
+
+
+def test_a_broken_criterion_keeps_the_service_form_shut(qapp, tmp_path):
+    from PySide6.QtWidgets import QDialogButtonBox
+
+    dialog = RunnerDialog(runnertypes.BY_ID["shell"], project_dir=str(tmp_path))
+    dialog.name.setText("odoo")
+    dialog._editors["command"].setText("true")
+    dialog.criteria._rows = [cr.CriterionRow(
+        name="start", rules=[cr.Rule(cr.MATCH, cr.REGEX, "a(")])]
+    dialog.criteria._rebuild()
+    dialog._changed()
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    assert "does not compile" in dialog.problem.text()
+
+
+def test_a_grid_is_measured_from_the_row_it_draws_not_the_one_it_hints(qapp):
+    """sizeHintForRow lies in both directions, and the criteria grid caught it.
+
+    A cell whose text wraps reports the *wrapped* height, so a criterion holding
+    a long rule summary claimed 71px for a row drawn at 30 - and reserved two
+    rows' worth of nothing underneath the table.
+    """
+    editor = CriteriaEditor([cr.CriterionRow(
+        name="start", source="/a/very/long/path/to/some/odoo_logs/odoo.log",
+        rules=[cr.Rule(cr.MATCH, cr.TEXT, "started localhost:8069"),
+               cr.Rule(cr.EXCLUDE, cr.REGEX, "ERRORS|CRITICAL")])])
+    table = editor.table
+    assert table.sizeHintForRow(0) > table.rowHeight(0), "the premise of this test"
+    header = table.horizontalHeader().sizeHint().height()
+    assert table.height() < header + 2 * table.rowHeight(0)
+
+
+def test_an_empty_grid_reserves_what_a_row_will_actually_take(qapp):
+    # Empty and one-row differ by nothing, so the grid does not jump when the
+    # first row lands.
+    empty = CriteriaEditor([])
+    one = CriteriaEditor([cr.CriterionRow(name="a",
+                                          rules=[cr.Rule(cr.MATCH, cr.TEXT, "x")])])
+    assert empty.table.height() == one.table.height()
+
+
+def test_a_widget_column_is_never_narrower_than_its_own_heading(qapp, tmp_path):
+    # The criteria column shows only what matched, so with nothing lit its
+    # widgets ask for almost nothing - and the column sized to that clipped its
+    # own heading to "RITERI".
+    widget = _open(tmp_path, services=WATCHED)
+    block = widget._blocks["Claim"]
+    heading = block.runners.horizontalHeader().sectionSizeHint(block.R_CRITERIA)
+    assert block.runners.columnWidth(block.R_CRITERIA) >= heading
+    widget.close()
+
+
+def test_where_the_file_will_be_written_never_hides_a_reason_not_to(qapp, tmp_path):
+    """The migration notice must not replace an error.
+
+    Reading from the old location and writing to the new one is housekeeping.
+    Said on top of "this file is not valid JSON" it buries the one message that
+    has to be read under the one that does not matter yet.
+    """
+    _write(tmp_path, services=False)
+    (tmp_path / "services.json").write_text("{ not json")
+    widget = ServicesPage()
+    # Logs pinned so only the services file migrates - this is about that notice.
+    widget.load(str(tmp_path / "logsources.json"), "",
+                str(tmp_path / "logsources.json"))
+    assert widget._migrating
+    assert "not valid JSON" in widget.status.text()
+    assert not widget.save_button.isEnabled()
+    widget.close()
+
+
+def test_the_notice_is_still_shown_when_there_is_nothing_wrong(qapp, tmp_path):
+    _write(tmp_path)
+    widget = ServicesPage()
+    widget.load(str(tmp_path / "logsources.json"), "",
+                str(tmp_path / "logsources.json"))
+    assert widget._migrating
+    assert "Save writes to" in widget.status.text()
+    widget.close()

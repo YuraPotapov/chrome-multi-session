@@ -196,3 +196,27 @@ def test_an_unread_inventory_says_so_without_jargon():
     from cms_gui import core as core_mod
 
     assert core_mod.Inventory().summary() == "nothing read yet"
+
+
+# ------------------------------------------------------------- --log-sources
+def test_the_log_sources_path_travels_with_every_call(tmp_path):
+    script = tmp_path / "session_launcher.py"
+    script.write_text("")
+    core = core_mod.Core(str(script), "python3", "", "/data/logsources.json")
+    assert "--log-sources=/data/logsources.json" in core.argv("--describe")
+
+
+def test_no_flag_when_nothing_is_configured(tmp_path):
+    script = tmp_path / "session_launcher.py"
+    script.write_text("")
+    core = core_mod.Core(str(script), "python3")
+    assert not [a for a in core.argv("--describe") if a.startswith("--log-sources")]
+
+
+def test_the_launchers_own_location_is_computable_without_asking_it(tmp_path):
+    # It is the one path --log-sources cannot distort, which is what makes it
+    # usable as the "read the old one" fallback.
+    script = tmp_path / "session_launcher.py"
+    script.write_text("")
+    core = core_mod.Core(str(script), "python3")
+    assert core.legacy_log_sources == str(tmp_path / "logsources.json")

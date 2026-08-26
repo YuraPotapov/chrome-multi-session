@@ -247,6 +247,17 @@ QPushButton[variant="ghost"] {{
     font-family: {body}; font-size: 12px; padding: 2px 6px;
 }}
 QPushButton[variant="ghost"]:hover {{ background: {a100}; }}
+/* A ghost button that lives INSIDE a table row. Same shape, neutral ink: a row
+   paints its selection in the accent, and accent-on-accent is the washed-out
+   half-legible strip you get when the ghost variant is used in a cell. Neutral
+   reads on the row's own background and on the selected one alike, and the
+   accent comes back on hover, where there is a hover fill behind it. */
+QPushButton[variant="cell"] {{
+    border-color: transparent; color: {n700}; background: transparent;
+    font-family: {body}; font-size: 12px; padding: 2px 6px;
+}}
+QPushButton[variant="cell"]:hover {{ background: {a100}; color: {a700}; }}
+QPushButton[variant="cell"]:disabled {{ color: {n400}; }}
 QPushButton[variant="nav"] {{
     text-align: left; border: none; border-left: 3px solid transparent;
     font-family: {body}; font-size: 13px; font-weight: 400;
@@ -399,14 +410,39 @@ QTableView, QTreeView, QListView {{
 QTableView::item, QTreeView::item {{
     padding: {cell_v}px {cell_h}px; border: none;
 }}
+/* A selected row looks the same whether or not the table has the keyboard.
+   Without this Qt paints the current cell in the active colour and the rest of
+   its row in the inactive one, so a row selected by clicking a button in it
+   came out two-tone - one bright cell and four dim ones. */
+QTableView::item:selected:!active, QTreeView::item:selected:!active {{
+    background: {a200}; color: {a900};
+}}
+/* Rows that carry their own buttons mark selection with a quiet band instead of
+   the accent flood. A widget put in a cell paints its own background and cannot
+   be told the row under it is selected, so the accent version came out as four
+   light-blue cells and one dark one with the buttons stranded on it - and any
+   ink legible on the flood is illegible off it. A band a shade off the page
+   reads as selected without deciding anything about what sits on top. */
+QTableView[rows="quiet"]::item:selected,
+QTableView[rows="quiet"]::item:selected:!active {{
+    background: {n300}; color: {text};
+}}
+/* Filled, not bare. A header painted in the page's own colour is not a band at
+   all - it is small grey text floating above some rows - and a page carrying
+   four tables then reads as one undifferentiated field with words scattered
+   through it. SURFACE is the tone for exactly this: a shade off the page, darker
+   in light mode and lighter in dark, so a header caps its table either way.
+   The selected row above sits one further step out, so the two never read as
+   each other - a selection that looked like a header would put the confusion
+   back somewhere else. */
 QHeaderView::section {{
-    background: {bg}; color: {n600};
+    background: {n200}; color: {n700};
     font-family: {heading}; font-size: 11px; font-weight: 600;
     letter-spacing: 1px; text-transform: uppercase;
     border: none; border-bottom: 1px solid {divider};
     padding: 6px 6px;
 }}
-QTableCornerButton::section {{ background: {bg}; border: none; }}
+QTableCornerButton::section {{ background: {n200}; border: none; }}
 
 /* --- containers ---------------------------------------------------------- */
 QFrame[role="panel"] {{ background: transparent; border: 1px solid {divider}; }}

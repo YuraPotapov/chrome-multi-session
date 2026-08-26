@@ -250,3 +250,45 @@ def test_fingerprint_notices_a_change_underneath_the_editor(tmp_path):
     lsf.save(str(path), [lsf.ConnectionRow(name="one", type="local"),
                          lsf.ConnectionRow(name="two", type="local")], [])
     assert lsf.fingerprint(str(path)) != before
+
+
+# ------------------------------------------------------------------ the path
+# Unlike services.json this file is *also* the launcher's, so wherever it ends up
+# the path has to travel with every call the GUI makes into the core.
+
+def test_it_defaults_under_the_users_own_directory():
+    assert lsf.default_path() == os.path.join(
+        os.path.expanduser("~"), "ChromeMultiSession", "logsources.json")
+
+
+def test_a_configured_path_wins(tmp_path):
+    chosen = tmp_path / "elsewhere.json"
+    chosen.write_text("{}")
+    assert lsf.resolve_path(str(chosen), "/old/logsources.json") == \
+        (str(chosen), str(chosen))
+
+
+def test_the_old_location_is_read_while_it_is_the_only_one(tmp_path):
+    old = tmp_path / "checkout" / "logsources.json"
+    old.parent.mkdir()
+    old.write_text("{}")
+    target = tmp_path / "new" / "logsources.json"
+    read, write = lsf.resolve_path(str(target), str(old))
+    # Read from where it is, written to where it belongs - and not moved until
+    # Save says so, because the old one is still somebody's file.
+    assert (read, write) == (str(old), str(target))
+    assert old.exists()
+
+
+def test_once_the_new_one_exists_the_old_is_left_behind(tmp_path):
+    old = tmp_path / "old.json"
+    old.write_text("{}")
+    target = tmp_path / "new.json"
+    target.write_text("{}")
+    assert lsf.resolve_path(str(target), str(old)) == (str(target), str(target))
+
+
+def test_with_neither_there_it_still_answers_where_it_would_go(tmp_path):
+    target = tmp_path / "nothing-here.json"
+    assert lsf.resolve_path(str(target), str(tmp_path / "also-not.json")) == \
+        (str(target), str(target))

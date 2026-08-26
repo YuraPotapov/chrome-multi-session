@@ -50,8 +50,17 @@ class Splash(QSplashScreen):
     def drawContents(self, painter):
         band = QRect(0, self.height() - SPLASH_BAND_PX,
                      self.width(), SPLASH_BAND_PX)
-        painter.fillRect(band, QColor(theme.TEXT))
-        painter.setPen(QColor(theme.BG))
+        # The page's own colours, not their negative. This used to fill with the
+        # ink and write in the background, which made the strip the opposite of
+        # whatever the application was about to open as: a light bar under a dark
+        # window, and a dark one under a light window. The first thing anybody
+        # sees should not be a contradiction of the second.
+        painter.fillRect(band, QColor(theme.BG))
+        # A hairline where it meets the artwork, since the fill no longer
+        # separates them by sheer contrast - the same divider the rest uses.
+        painter.setPen(QColor(theme.DIVIDER))
+        painter.drawLine(band.topLeft(), band.topRight())
+        painter.setPen(QColor(theme.TEXT))
         painter.drawText(band.adjusted(18, 0, -18, 0),
                          Qt.AlignVCenter | Qt.AlignLeft, self.message())
 

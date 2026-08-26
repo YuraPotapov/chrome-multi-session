@@ -171,7 +171,8 @@ class Core:
     settings change rather than mutating a shared object.
     """
 
-    def __init__(self, script=None, interpreter=None, config=None):
+    def __init__(self, script=None, interpreter=None, config=None,
+                 log_sources=None):
         auto_script, auto_python = autodetect()
         self.script = script or auto_script
         if not needs_interpreter(self.script):
@@ -182,6 +183,21 @@ class Core:
         else:
             self.interpreter = interpreter or auto_python or sys.executable
         self.config = config or ""
+        # Passed on every call rather than left to the core's own default. The
+        # GUI edits this file, so the one it edits and the one a run reads have
+        # to be the same one - see Settings -> Log sources.
+        self.log_sources = log_sources or ""
+
+    @property
+    def legacy_log_sources(self):
+        """Where the launcher looks for logsources.json when nobody says.
+
+        Its own data root, mirrored by :attr:`root` rather than imported. Read
+        when the new default under the user's directory is not there yet, so an
+        upgrade does not look like having lost the file - and computed without
+        --describe, so it is the one path the --log-sources flag cannot distort.
+        """
+        return os.path.join(self.root, "logsources.json") if self.root else ""
 
     # -- shape of a command ---------------------------------------------------
     @property
@@ -230,12 +246,14 @@ class Core:
                     and (not self.interpreter or os.path.isfile(self.interpreter)))
 
     def argv(self, *args):
-        """Full command line: the program, --config, then ``args``."""
+        """Full command line: the program, the global flags, then ``args``."""
         if not self.script:
             raise CoreError("No core script configured (Settings -> Core script).")
         command = list(self.prefix)
         if self.config:
             command.append("--config=" + self.config)
+        if self.log_sources:
+            command.append("--log-sources=" + self.log_sources)
         command.extend(a for a in args if a)
         return command
 

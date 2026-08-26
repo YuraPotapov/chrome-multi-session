@@ -122,3 +122,88 @@ def test_a_control_on_the_title_line_does_not_narrow_the_body(qapp):
     assert in_section(beside, lambda r: r.topRight()).x() >= section.width() - 1
     assert (in_section(beside, lambda r: r.bottomLeft()).y()
             <= in_section(inner, lambda r: r.topLeft()).y())
+
+
+# --------------------------------------------------------------- file chooser
+# A chooser does not list dotted directories, and every path this application
+# asks for lives in one - a project's interpreter is .venv/bin/python, an ssh key
+# is in ~/.ssh. Opening *inside* one does show its contents, because those are
+# not themselves hidden, so where the chooser starts is the whole answer.
+
+def test_a_chooser_opens_inside_the_dotted_directory_it_was_pointed_at(tmp_path):
+    venv = tmp_path / ".venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "python3").write_text("")
+    assert widgets.start_dir(str(venv / "python3")) == str(venv)
+
+
+def test_a_directory_of_its_own_is_where_it_starts(tmp_path):
+    assert widgets.start_dir(str(tmp_path)) == str(tmp_path)
+
+
+def test_a_path_that_is_not_there_falls_back_rather_than_opening_nowhere(tmp_path):
+    assert widgets.start_dir("/no/such/place/at/all", str(tmp_path)) == str(tmp_path)
+
+
+def test_nothing_at_all_still_opens_somewhere_usable():
+    assert widgets.start_dir("") == os.path.expanduser("~")
+
+
+# ----------------------------------------------------------- empty tables
+def _empty_table(qapp, rows=0):
+    from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+
+    table = QTableWidget(rows, 1)
+    for row in range(rows):
+        table.setItem(row, 0, QTableWidgetItem("x"))
+    table.resize(200, 120)
+    return table
+
+
+def test_a_table_with_nothing_in_it_says_so(qapp):
+    """Otherwise it is a header and a blank band, which reads as something that
+    failed to load rather than as something not configured yet."""
+    table = _empty_table(qapp)
+    note = widgets.empty_note(table, "No services yet.")
+    table.show()
+    qapp.processEvents()
+    assert note.isVisible()
+    assert note.text() == "No services yet."
+
+
+def test_a_table_with_rows_says_nothing(qapp):
+    table = _empty_table(qapp, rows=2)
+    note = widgets.empty_note(table, "No services yet.")
+    table.show()
+    qapp.processEvents()
+    assert not note.isVisible()
+
+
+def test_the_note_follows_the_table_rather_than_being_told(qapp):
+    # Whoever fills the table has one less thing to remember, which is the only
+    # way this stays true.
+    from PySide6.QtWidgets import QTableWidgetItem
+
+    table = _empty_table(qapp)
+    note = widgets.empty_note(table, "Nothing yet.")
+    table.show()
+    qapp.processEvents()
+    assert note.isVisible()
+
+    table.insertRow(0)
+    table.setItem(0, 0, QTableWidgetItem("something"))
+    qapp.processEvents()
+    assert not note.isVisible()
+
+    table.removeRow(0)
+    qapp.processEvents()
+    assert note.isVisible()
+
+
+def test_the_note_takes_its_colour_from_the_theme_not_from_a_literal(qapp):
+    # A colour captured when it was built would go on painting the light palette
+    # after dark mode was set.
+    table = _empty_table(qapp)
+    note = widgets.empty_note(table, "Nothing yet.")
+    assert note.property("role") == "hint"
+    assert not note.styleSheet()

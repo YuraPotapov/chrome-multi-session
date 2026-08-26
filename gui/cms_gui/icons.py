@@ -261,6 +261,28 @@ def _more(painter, ink):
         painter.drawRect(QRectF(10.5, y, 3, 3))
 
 
+def _services(painter, ink):
+    """Stacked lines with a play mark: the log page's rows, now startable.
+
+    Deliberately a variation on the log mark rather than a new subject - the page
+    is the old one with the other half of the job added, and the rail should say
+    so at a glance.
+    """
+    _stroke(painter, ink)
+    painter.drawLine(QPointF(3.5, 6.5), QPointF(20.5, 6.5))
+    painter.drawLine(QPointF(3.5, 12.5), QPointF(11.5, 12.5))
+    painter.drawLine(QPointF(3.5, 18.5), QPointF(11.5, 18.5))
+    _fill(painter, ink)
+    painter.drawPolygon(QPolygonF([QPointF(14.5, 11), QPointF(21, 15.5),
+                                   QPointF(14.5, 20)]))
+
+
+def _dot(painter, ink):
+    """A filled disc. The status light beside a service, drawn in its colour."""
+    _fill(painter, ink)
+    painter.drawEllipse(QRectF(7.5, 7.5, 9, 9))
+
+
 def _plus(painter, ink):
     _stroke(painter, ink)
     painter.drawLine(QPointF(12, 5.5), QPointF(12, 18.5))
@@ -288,6 +310,8 @@ DRAWINGS = {
     "history": _history,
     "developer": _developer,
     "log": _log,
+    "services": _services,
+    "dot": _dot,
     "artifacts": _artifacts,
     "pass": _pass,
     "check": _pass,

@@ -24,7 +24,7 @@ import re
 CONNECTION_KEYS = ("name", "type", "host", "user", "identity", "port", "options")
 LOG_KEYS = ("name", "connection", "envs", "env", "type", "path", "container",
             "unit", "url", "headers", "format", "timestamp", "level", "tz",
-            "default")
+            "default", "project")
 
 CONNECTION_TYPES = ("local", "ssh")
 LOG_TYPES = ("file", "docker", "journal", "http")
@@ -134,7 +134,7 @@ class LogRow:
 
     def __init__(self, name="", connection="", envs=(), type="file", target="",
                  format="iso", default=False, headers=None, timestamp=None,
-                 level=None, tz="", extra=None):
+                 level=None, tz="", project="", extra=None):
         self.name = name
         self.connection = connection
         self.envs = list(envs)
@@ -155,6 +155,13 @@ class LogRow:
         # questions and only the second changes per deployment - a backend logging
         # UTC on a machine that is not is the commonest reason nothing matches.
         self.tz = tz or ""
+        # Which project this log belongs to on the Services & Logs page. The
+        # launcher has never heard of it and does not need to: engine.serverlog
+        # sweeps every key it does not know into LogSource.extra and ignores it,
+        # so a log grouped here is still exactly the log --server-log reads.
+        # Blank is not a gap to be filled - a log that belongs to no project is a
+        # perfectly ordinary log, and shows under "Unassigned".
+        self.project = project or ""
         self.extra = dict(extra or {})
 
     @property
@@ -185,6 +192,7 @@ class LogRow:
                    timestamp=entry.get("timestamp"),
                    level=entry.get("level"),
                    tz=entry.get("tz", "") or "",
+                   project=entry.get("project", "") or "",
                    extra={k: v for k, v in entry.items() if k not in LOG_KEYS})
 
     def to_entry(self):
@@ -207,6 +215,10 @@ class LogRow:
             entry["level"] = dict(self.level)
         if self.tz and self.tz != "local":
             entry["tz"] = self.tz
+        # Only when set: an unassigned log should read the same in the file as it
+        # did before this page existed.
+        if self.project:
+            entry["project"] = self.project
         return entry
 
     def envs_text(self):
@@ -217,7 +229,7 @@ class LogRow:
                       self.target, self.format, self.default, dict(self.headers),
                       dict(self.timestamp) if self.timestamp else None,
                       dict(self.level) if self.level else None,
-                      self.tz, dict(self.extra))
+                      self.tz, self.project, dict(self.extra))
 
 
 def load(path):
@@ -381,3 +393,42 @@ def fingerprint(path):
         return (stat.st_mtime_ns, stat.st_size)
     except OSError:
         return None
+
+
+#: The user's own directory, the same one ``services.json`` defaults into.
+USER_DIR_NAME = "ChromeMultiSession"
+
+
+def default_path():
+    """Where ``logsources.json`` goes when nobody has said otherwise.
+
+    Under the user's own directory rather than wherever the launcher happens to
+    resolve its config to. From a source checkout that is the checkout itself,
+    which is how this file ended up needing a ``.gitignore`` entry to stay out of
+    somebody's commit - the same reason ``services.json`` moved.
+
+    Unlike that one, this file is *not* the GUI's alone: ``--server-log`` reads
+    it. So wherever it ends up, the path has to travel with every call the GUI
+    makes into the core (``--log-sources``), or the file being edited and the
+    file being read come apart.
+    """
+    return os.path.join(os.path.expanduser("~"), USER_DIR_NAME, "logsources.json")
+
+
+def resolve_path(configured, reported=""):
+    """(path to read, path to write). They differ only while migrating.
+
+    Settings wins; otherwise the default. ``reported`` is what ``--describe``
+    said the core resolved to - read when there is nothing at the new location,
+    so an upgrade does not look like having lost the file. The next Save writes
+    the new one; the old is left alone rather than deleted, because it is still
+    somebody's file and nothing here has to destroy it to be correct.
+    """
+    target = os.path.expanduser((configured or "").strip() or default_path())
+    if os.path.exists(target):
+        return target, target
+    old = os.path.expanduser((reported or "").strip())
+    if old and os.path.abspath(old) != os.path.abspath(target) \
+            and os.path.exists(old):
+        return old, target
+    return target, target

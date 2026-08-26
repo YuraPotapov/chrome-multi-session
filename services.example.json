@@ -1,0 +1,78 @@
+{
+  "_comment": "Copy this file to services.json (git-ignored) and describe your own projects, or build them on the GUI's Services & Logs page. This file is the GUI's alone - the launcher neither reads it nor needs to. A project groups the services that make one thing work; the logs those services write stay in logsources.json and name the project they belong to.",
+
+  "version": 1,
+
+  "projects": [
+    {
+      "_comment": "dir is where the project lives. Every service in it starts there unless it names a directory of its own; a relative one is read against this. It does not have to exist yet. expanded is only whether the block is open on the page.",
+      "name": "Example App",
+      "dir": "~/projects/example-app",
+      "expanded": true,
+
+      "runners": [
+        {
+          "_criteria_comment": "What to watch this service's log for. Each entry is a name you choose, a colour (green/amber/red/blue/grey), an optional file to read instead of the service's own output, and rules. The rules are about the WHOLE log, not one line: mode 'match' is satisfied by any line at any point and stays so, mode 'exclude' holds until the first line trips it and then permanently does not - so a criterion can go dark again. Cleared when the service starts. Display only: it never changes the status, holds anything up, or stops anything.",
+          "criteria": [
+            {
+              "name": "start",
+              "color": "green",
+              "source": "~/projects/example-app/logs/app.log",
+              "rules": [
+                {"mode": "match", "kind": "text", "pattern": "listening on 0.0.0.0:8000"},
+                {"mode": "exclude", "kind": "regex", "pattern": "ERRORS|CRITICAL"}
+              ]
+            },
+            {
+              "name": "finished_tests",
+              "color": "blue",
+              "rules": [{"mode": "match", "kind": "text", "pattern": "tests passed"}]
+            }
+          ],
+
+          "_comment": "A script this application starts and owns: its status IS the process's status, and its output comes back on a pipe. detach false means it is a child of the window - closing the application names it and asks before stopping it. Set detach true to let it keep running on its own; it is then started detached and found again by its pid next time.",
+          "name": "App Server",
+          "type": "python",
+          "detach": false,
+          "_depends_comment": "Other services in this project that have to be up first. Start waits until each of them reports running and Stop takes them down in the reverse order. A name not in this project, a service waiting for itself, or a ring of them waiting for each other are all refused.",
+          "depends": ["Database", "Queue"],
+          "settings": {
+            "interpreter": "",
+            "script": "manage.py",
+            "args": "runserver 0.0.0.0:8000",
+            "dir": "",
+            "env": {"PYTHONUNBUFFERED": "1"}
+          }
+        },
+        {
+          "_comment": "Anything else with a command line. It is split the way a shell would split it and run directly - so no pipes, no redirection, no &&.",
+          "name": "Front End",
+          "type": "shell",
+          "detach": true,
+          "settings": {
+            "command": "npm run dev",
+            "dir": "web",
+            "env": {}
+          }
+        },
+        {
+          "_comment": "A container that already exists: this starts and stops it, it does not create it. detach is always true and cannot be turned off - the container belongs to the Docker daemon, not to this application, so closing the window never stops one. Its status is asked for with `docker inspect` rather than assumed, because `docker start` returns the moment the daemon has the job.",
+          "name": "Database",
+          "type": "docker",
+          "detach": true,
+          "settings": {"container": "example-postgres"}
+        },
+        {
+          "_comment": "docker compose up -d / down against one file. Leave services empty to mean everything in it, or name them separated by spaces.",
+          "name": "Queue",
+          "type": "compose",
+          "detach": true,
+          "settings": {
+            "file": "~/projects/example-app/docker-compose.yml",
+            "services": "redis"
+          }
+        }
+      ]
+    }
+  ]
+}

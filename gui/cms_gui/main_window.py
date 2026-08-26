@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QInputDialog, QLab
                                QToolButton, QVBoxLayout, QWidget)
 
 from . import (commands, core as core_mod, history as history_mod, icon, icons,
-               launch as launch_mod, load as load_mod, theme, widgets)
+               launch as launch_mod, load as load_mod,
+               logsourcesfile as lsf, theme, widgets)
 from .loader import LoaderThread
 from . import version as gui_version
 from .runner import LauncherProcess, RunState
@@ -31,7 +32,7 @@ from .settings import Settings
 from .pages.artifacts import ArtifactsPage
 from .pages.command import CommandPage
 from .pages.credentials import CredentialsPage
-from .pages.logsources import LogSourcesPage
+from .pages.services import ServicesPage
 from .pages.environments import EnvironmentsPage
 from .pages.history import HistoryPage
 from .pages.launch import LaunchSessionsPage
@@ -43,7 +44,7 @@ from .pages.settings_dialog import SettingsDialog
 # (page key, label, icon name painted by icons.icon)
 CONFIGURE = [("environments", "Environments", "environments"),
              ("credentials", "Credentials", "credentials"),
-             ("logsources", "Log sources", "log"),
+             ("logsources", "Services & Logs", "services"),
              ("scenarios", "Scenarios", "scenarios"),
              ("commands", "Command", "command"),
              ("launch", "Launch Sessions", "launch")]
@@ -85,6 +86,11 @@ CLOSE_WAIT_MS = 20000
 SPLASH_READY_MS = 800
 SPLASH_MAX_MS = 15000
 
+# How many running services the footer names before it starts counting instead.
+# The status bar shares its line with the machine's load and the worker limit,
+# so a stack of eight would push both off the end.
+SERVICES_IN_FOOTER = 3
+
 
 def _run_label(text):
     """RUN. The menu's arrow is drawn by Qt in the button's own arrow half."""
@@ -121,6 +127,7 @@ class MainWindow(QMainWindow):
         self.settings = Settings()
         self.core = core_mod.Core(self.settings.core_script, self.settings.interpreter,
                                   self.settings.config)
+        self._aim_log_sources()
         self.inventory = core_mod.Inventory()
         self.run_state = RunState(self)
         self.process = LauncherProcess(self)
@@ -154,6 +161,15 @@ class MainWindow(QMainWindow):
         # Two labels rather than one string: the machine is read on a timer, the
         # worker count arrives on the event stream, and neither should have to
         # wait for the other's cadence to show what it knows.
+        # What is up right now, wherever you are in the application. A service
+        # started on one page and then left behind is the thing this exists for:
+        # nothing else in the window would say it is still running.
+        self.services_label = QLabel("")
+        self.services_label.setStyleSheet("padding: 0 10px;")
+        self.statusBar().addPermanentWidget(self.services_label)
+        self.services.supervisor.status_changed.connect(self._update_services)
+        self._update_services()
+
         self.workers_label = QLabel("")
         self.workers_label.setStyleSheet("padding: 0 10px;")
         self.statusBar().addPermanentWidget(self.workers_label)
@@ -239,7 +255,9 @@ class MainWindow(QMainWindow):
         items_menu = view_menu.addMenu("Sidebar &items")
         hidden = set(self.settings.hidden_nav_items())
         for key, label, _mark in CONFIGURE + OBSERVE:
-            action = QAction(label, self)
+            # Doubled for the same reason as the rail's buttons: a menu entry
+            # parses a single ampersand as its mnemonic.
+            action = QAction(label.replace("&", "&&"), self)
             action.setCheckable(True)
             # Set before connecting: setChecked emits toggled, and a menu still
             # being built has no rail to apply it to.
@@ -401,7 +419,12 @@ class MainWindow(QMainWindow):
                 # rail's marks would slide left and right with the length of the
                 # word beside them. Text-beside-icon on a tool button is the one
                 # arrangement Qt keeps flush left.
-                button = icons.button(QToolButton(), mark, label)
+                # Doubled ampersand: a button parses a single one as a keyboard
+                # mnemonic and draws the next letter underlined instead, which is
+                # how "Services & Logs" came out of the rail as "Services _Logs".
+                # Only what is drawn is escaped - _nav_labels keeps the real name,
+                # so the collapsed rail's tooltip still reads properly.
+                button = icons.button(QToolButton(), mark, label.replace("&", "&&"))
                 button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
                 button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 button.setProperty("variant", "nav")
@@ -426,8 +449,8 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.environments = EnvironmentsPage(self.settings)
         self.credentials = CredentialsPage()
-        self.logsources = LogSourcesPage()
-        self.logsources.set_core(self.core)
+        self.services = ServicesPage()
+        self.services.set_core(self.core)
         self.scenarios = ScenariosPage(self.settings)
         self.command = CommandPage(self.settings)
         self.launch = LaunchSessionsPage(self.settings)
@@ -440,7 +463,7 @@ class MainWindow(QMainWindow):
         self.log.set_history(self.history)
         self.artifacts.set_history(self.history)
         self._pages = {"environments": self.environments, "credentials": self.credentials,
-                       "logsources": self.logsources,
+                       "logsources": self.services,
                        "scenarios": self.scenarios,
                        "commands": self.command, "launch": self.launch,
                        "run": self.run, "log": self.log,
@@ -456,7 +479,7 @@ class MainWindow(QMainWindow):
         self.credentials.saved.connect(self.refresh_inventory)
         # A new log source changes what --server-log can pick, and the
         # Launch page builds its picker from the inventory.
-        self.logsources.saved.connect(self.refresh_inventory)
+        self.services.saved.connect(self.refresh_inventory)
         # Writing a scenario changes what --run-tests can run, so the inventory
         # every other page reads has to be re-read.
         self.scenarios.saved.connect(self.refresh_inventory)
@@ -471,12 +494,13 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         # --- status bar ------------------------------------------------------
-        self.status_core = QLabel("")
-        self.status_python = QLabel("")
+        # Which core and which interpreter are settings, not state: they are
+        # decided once in Settings, they are on About, and the status bar is for
+        # what is happening now. The config file stays - it is the one of the
+        # three that changes what a run reads.
         self.status_config = QLabel("")
         self.status_state = QLabel("idle")
-        for label in (self.status_core, self.status_python, self.status_config,
-                      self.status_state):
+        for label in (self.status_config, self.status_state):
             label.setStyleSheet("font-family: %s; font-size: 11px; color: %s;"
                                 % (theme.MONO_CSS, theme.NEUTRAL[700]))
             self.statusBar().addWidget(label)
@@ -818,10 +842,13 @@ class MainWindow(QMainWindow):
             _splash_msg("Loading credentials...")
             self.credentials.load(self.inventory.config_path or self.core.config_path)
 
-            _splash_msg("Loading log sources...")
-            self.logsources.set_environments([env.get("value", "")
-                                              for env in self.inventory.envs])
-            self.logsources.load(self.inventory.log_sources_path)
+            _splash_msg("Loading services and logs...")
+            self.services.set_environments([env.get("value", "")
+                                            for env in self.inventory.envs])
+            self.services.load(self.core.legacy_log_sources
+                               or self.inventory.log_sources_path,
+                               self.settings.services_path,
+                               self.settings.log_sources_path)
             
             _splash_msg("Finalizing UI...")
             self.describe_label.setText(self.inventory.summary())
@@ -870,10 +897,12 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         dialog = SettingsDialog(self.settings, self)
+        dialog.set_paths(*self.services.paths())
         if dialog.exec() == QDialog.Accepted:
             dialog.apply()
             self.core = core_mod.Core(self.settings.core_script,
                                       self.settings.interpreter, self.settings.config)
+            self._aim_log_sources()
             self.refresh_inventory()
 
     def one_shot(self, title, args):
@@ -1238,19 +1267,14 @@ class MainWindow(QMainWindow):
 
     # -- chrome ---------------------------------------------------------------
     def _update_status(self):
-        """Name the three things in play, without the full paths.
-
-        These are absolute paths, and a status-bar QLabel is as wide as its text:
-        spelling them out here set the window's minimum width to the length of the
-        longest one. The file name says which, and the tooltip has the rest.
-        """
-        for label, prefix, path in ((self.status_core, "core", self.core.script),
-                                    (self.status_python, "python",
-                                     self.core.interpreter),
-                                    (self.status_config, "config",
-                                     self.core.config_path)):
-            label.setText("%s: %s" % (prefix, os.path.basename(path or "") or "—"))
-            label.setToolTip(path or "")
+        """Name the config file in play, without its full path."""
+        path = self.core.config_path
+        self.status_config.setText("config: %s"
+                                   % (os.path.basename(path or "") or "—"))
+        # The full path on the tooltip: this is an absolute one, and a status-bar
+        # QLabel is as wide as its text, so spelling it out here would set the
+        # window's minimum width to the length of it.
+        self.status_config.setToolTip(path or "")
 
     def about(self):
         """Who both halves are, and where the core half was found.
@@ -1313,6 +1337,74 @@ class MainWindow(QMainWindow):
         box.exec()
         return box.clickedButton() is stop
 
+    def _aim_log_sources(self):
+        """Tell the core which logsources.json is in force.
+
+        The GUI edits it and the launcher reads it, so they have to be the same
+        file or the page's own Open buttons read something else. Resolved here
+        rather than in either of them: the setting wins, then the default under
+        the user's own directory, and the launcher's own location is read while
+        it is still the only one there - and until Save moves it, that is the one
+        the core is pointed at too.
+        """
+        read_from, _target = lsf.resolve_path(self.settings.log_sources_path,
+                                              self.core.legacy_log_sources)
+        self.core.log_sources = read_from
+
+    def _confirm_close_with_services(self):
+        """Ask before closing on top of services that cannot outlive us.
+
+        A service is either allowed to detach or it is not, and one that is not
+        is a child of this process: PySide6 binds no ``setChildProcessModifier``,
+        so there is no PR_SET_PDEATHSIG to catch it if this window goes first.
+        Confirming here and stopping them below is the whole mechanism, which is
+        why it is a warning and why the buttons say what they do. Services set to
+        detach are not mentioned at all - nothing is about to happen to them.
+        """
+        doomed = self.services.detained()
+        if not doomed:
+            return True
+        names = ", ".join("%s · %s" % (s.project, s.name) for s in doomed[:6])
+        if len(doomed) > 6:
+            names += ", and %d more" % (len(doomed) - 6)
+        box = QMessageBox(self)
+        box.setWindowTitle("Services are running")
+        box.setIcon(QMessageBox.Warning)
+        box.setText("%d service(s) stop when this window closes." % len(doomed))
+        box.setInformativeText(
+            "%s\n\nThey were not set to detach, so they cannot keep running "
+            "without this application. Tick \"Detach allowed\" on a service to "
+            "let it stay up." % names)
+        stop = box.addButton("Stop them and close", QMessageBox.AcceptRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(stop)
+        box.exec()
+        return box.clickedButton() is stop
+
+    def _update_services(self, *_args):
+        """The footer's line about services: `odoo: running`.
+
+        Read off the supervisor rather than tallied here, so there is one answer
+        to what is up and the page and the footer cannot disagree. Only what is
+        actually running is named: a footer listing every configured service and
+        its state would be the page again, in less room.
+        """
+        running = self.services.supervisor.running()
+        if not running:
+            self.services_label.setText("")
+            self.services_label.setToolTip("")
+            return
+        names = ["%s: running" % service.name for service in running]
+        shown = " · ".join(names[:SERVICES_IN_FOOTER])
+        if len(names) > SERVICES_IN_FOOTER:
+            shown += " · +%d" % (len(names) - SERVICES_IN_FOOTER)
+        self.services_label.setText(shown)
+        # The rest, with the project each belongs to - two services can share a
+        # name across projects, and the footer has no room to say which is which.
+        self.services_label.setToolTip("\n".join(
+            "%s · %s: running" % (service.project, service.name)
+            for service in running))
+
     def closeEvent(self, event):
         if self.process.is_running():
             if not self._confirm_close_during_run():
@@ -1327,6 +1419,26 @@ class MainWindow(QMainWindow):
                 # its cookies. Cutting that short is what loses a login.
                 self.process._proc.waitForFinished(CLOSE_WAIT_MS)
             finally:
+                QApplication.restoreOverrideCursor()
+        # Asked before the services question: losing an edit is the one thing
+        # closing can do that cannot be undone afterwards.
+        if not self.services.confirm_discard():
+            event.ignore()
+            return
+        if not self._confirm_close_with_services():
+            event.ignore()
+            return
+        # Always, not only when something is running: shutdown also lets go of
+        # any status probe still in flight, which Qt otherwise complains about
+        # while the window is being destroyed underneath it.
+        stopping = bool(self.services.detained())
+        if stopping:
+            self.status_right.setText("stopping services before closing…")
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.services.shutdown()
+        finally:
+            if stopping:
                 QApplication.restoreOverrideCursor()
         self._closing = True
         self._metrics_timer.stop()

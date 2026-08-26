@@ -7,11 +7,13 @@ layout rather than as widget configuration.
 """
 
 import itertools
+import os
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QPushButton, QSizePolicy, QSpinBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel,
+                               QLineEdit, QListWidget, QListWidgetItem,
+                               QPushButton, QSizePolicy, QSpinBox, QVBoxLayout,
+                               QWidget)
 
 from . import icons, theme
 
@@ -419,6 +421,18 @@ class Disclosure(QWidget):
         self._header.layout().addWidget(widget, 0, Qt.AlignTop)
         return widget
 
+    def set_title(self, title):
+        """Change the title in place, keeping the chevron's state.
+
+        A section whose header carries a running tally has to be able to say a
+        new one without being rebuilt - rebuilding it would fold it shut and drop
+        whatever was selected inside.
+        """
+        self._title = title
+        icons.button(self.button,
+                     "disclosure_open" if self.is_expanded() else "disclosure_closed",
+                     title)
+
     def set_expanded(self, expanded):
         self.button.setChecked(bool(expanded))
 
@@ -453,6 +467,90 @@ def scoped_style(widget, css):
     widget.setObjectName(name)
     widget.setStyleSheet("#%s { %s }" % (name, css))
     return widget
+
+
+class EmptyNote(QLabel):
+    """What a table says when there is nothing in it.
+
+    A table with no rows is otherwise a header and a blank band, which reads as
+    something that failed to load rather than as something not configured yet -
+    and a page carrying four of them is four unanswered questions.
+
+    It lives on the table's viewport so it scrolls and clips with the rows, and
+    follows the model rather than being told: whoever fills the table has one
+    less thing to remember, which is the only way this stays true.
+    """
+
+    def __init__(self, table, text):
+        super().__init__(text, table.viewport())
+        self._table = table
+        self.setAlignment(Qt.AlignCenter)
+        self.setWordWrap(True)
+        # The role, not a colour: a literal captured here would go on painting
+        # the light palette after dark mode was set.
+        self.setProperty("role", "hint")
+        table.viewport().installEventFilter(self)
+        model = table.model()
+        for signal in (model.rowsInserted, model.rowsRemoved, model.modelReset,
+                       model.layoutChanged):
+            signal.connect(self.sync)
+        self.sync()
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Resize:
+            self.sync()
+        return False
+
+    def sync(self, *_args):
+        self.setGeometry(self._table.viewport().rect())
+        self.setVisible(self._table.model().rowCount() == 0)
+
+
+def empty_note(table, text):
+    """Say what an empty table means. Returns the note, which follows the table."""
+    return EmptyNote(table, text)
+
+
+def start_dir(hint, fallback="~"):
+    """Where a chooser should open, given whatever the field says now.
+
+    The reason this is worth a function: the paths this application asks for live
+    in dotted directories - a project's interpreter is ``.venv/bin/python``, an
+    ssh key is in ``~/.ssh`` - and a file chooser does not list those. Opening
+    *inside* one does show its contents, though, because they are not themselves
+    hidden. So a chooser that starts where the answer already is asks nobody to
+    know about Ctrl+H.
+    """
+    for candidate in (hint, fallback):
+        path = os.path.expanduser((candidate or "").strip())
+        if not path:
+            continue
+        if os.path.isdir(path):
+            return path
+        parent = os.path.dirname(path)
+        if os.path.isdir(parent):
+            return parent
+    return os.path.expanduser("~")
+
+
+def pick_path(parent, title, start="", directory=False, save=False):
+    """The platform's own file chooser, opened where the answer is likely to be.
+
+    Native on purpose: Qt's own dialog is the only one whose hidden-file filter
+    can be set, but under the Fusion style it draws its toolbar marks from an
+    icon theme that is not there, and it looks nothing like the rest of the
+    desktop. :func:`start_dir` solves the dotted-directory problem without it.
+    """
+    where = start_dir(start)
+    if directory:
+        return QFileDialog.getExistingDirectory(parent, title, where) or ""
+    if save:
+        name = os.path.basename(os.path.expanduser((start or "").strip()))
+        chosen, _filter = QFileDialog.getSaveFileName(
+            parent, title, os.path.join(where, name) if name else where)
+        return chosen or ""
+    chosen, _filter = QFileDialog.getOpenFileName(parent, title, where)
+    return chosen or ""
 
 
 def heading(text, role="h1"):

@@ -100,8 +100,12 @@ GROUPS = [GENERAL, FLOW, REPORTS]
 GUI_OWNED = ("--config", "--events", "--control", "--describe", "--init-users-json",
              "--flow-show", "--flow-save", "--flow-delete", "--flow-import",
              "--selectors-show", "--selectors-save", "--from",
-             # The Log sources page's "Open" buttons, not launch options.
+             # The Services & Logs page's "Open" buttons, not launch options.
              "--server-log-show", "--server-log-lines",
+             # Where logsources.json is. A setting the GUI passes on every call
+             # so the file it edits and the file a run reads are the same one -
+             # not something anyone builds a command line out of by hand.
+             "--log-sources",
              # RUN ▾ -> "With Recorder" adds this; it is a mode, not a form field.
              "--recorder",
              "--help", "-h", "--version", "-V")

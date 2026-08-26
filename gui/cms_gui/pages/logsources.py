@@ -1,40 +1,43 @@
-"""Log sources page: connections and logs for ``--server-log``.
+"""The forms behind ``logsources.json``: connections, logs, and reading one.
 
-Two tables, because the file has two levels and conflating them is what makes a
-flat list of "sources" unusable. A **connection** says *where* to run a reader -
-this machine, or one ssh hop away - and a **log** says *what* to read there. One
-connection serves every log on a machine, so a stand with three logs opens one
-ssh connection rather than three.
+The file has two levels and conflating them is what makes a flat list of
+"sources" unusable. A **connection** says *where* to run a reader - this machine,
+or one ssh hop away - and a **log** says *what* to read there. One connection
+serves every log on a machine, so a stand with three logs opens one ssh
+connection rather than three.
 
-**Rows are created in a dialog, not in the grid.** An inline row means typing
-eight narrow columns in a fixed order with nothing saying what each one wants, and
-the fields that matter depend on choices made in the same row - an ssh connection
+**Rows are created in a dialog, not in a grid.** An inline row means typing eight
+narrow columns in a fixed order with nothing saying what each one wants, and the
+fields that matter depend on choices made in the same row - an ssh connection
 needs a host and a local one must not have one; a log's target is a path, a
 container, a unit or a URL depending on its type. A form can show exactly the
-fields that apply and explain them; a table cannot. So the tables are a readable
-overview and every edit opens :class:`ConnectionDialog` or :class:`LogDialog`.
+fields that apply and explain them; a table cannot. So the tables that show these
+rows are a readable overview, and every edit opens :class:`ConnectionDialog` or
+:class:`LogDialog`.
 
 **Nothing here is coupled to one backend.** Format presets are named after the
 *shape* of a line (`iso`, `slash`, `clf`, `syslog`, `none`), with application names
 offered as aliases, and "custom" takes your own timestamp/level patterns for a
 backend no preset describes.
 
-The file is the launcher's, so this page keeps it exactly as valid as the CLI
+The file is the launcher's, so these forms keep it exactly as valid as the CLI
 expects: every rule in ``logsourcesfile.validate`` mirrors one in
-``engine.serverlog``, and Save is disabled until they all hold. Test asks the
-*core* whether a log can really be read (``--server-log-test``) - the GUI never
-imports the engine, so it has no ssh, no docker and no tail of its own.
+``engine.serverlog``. The GUI never imports the engine, so it has no ssh, no
+docker and no tail of its own - :class:`LogViewerDialog` shows what the *core*
+read when asked.
+
+The tables, the file and the Save button live on the Services & Logs page
+(:mod:`cms_gui.pages.services`), which owns these dialogs. They stayed here
+because they are about one file's shape, and that page is about two.
 """
 
 import os
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
-                               QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-                               QHeaderView, QLabel, QLineEdit, QMessageBox,
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
+                               QDialogButtonBox, QLabel, QLineEdit, QMessageBox,
                                QPlainTextEdit, QPushButton, QScrollArea,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout,
-                               QWidget)
+                               QVBoxLayout, QWidget)
 
 from .. import logsourcesfile as lsf
 from .. import theme, widgets
@@ -62,7 +65,7 @@ def _form(parent):
     return column
 
 
-class _RowDialog(QDialog):
+class RowDialog(QDialog):
     """Shared shell: a scrolling form, a live problem line, and OK gated on validity.
 
     The form scrolls because the log form grows: revealing the custom-format
@@ -76,6 +79,7 @@ class _RowDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumWidth(580)
+        self._settled = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -113,6 +117,33 @@ class _RowDialog(QDialog):
         available = screen.availableGeometry().height() if screen else 900
         self.resize(self.width() or 580, min(wanted, int(available * 0.9)))
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Once the form has real geometry, take back whatever it did not need.
+        # Every hint under a field is a word-wrapped QLabel, and one of those
+        # reports a sizeHint for a width it has not been given - always more
+        # lines than it will actually take. _fit can only add those up, so a form
+        # opened with several hints stood a band of nothing under its last field.
+        if not self._settled:
+            self._settled = True
+            QTimer.singleShot(0, self._settle)
+
+    def _settle(self):
+        """Shrink to what is actually laid out. Never grows, never scrolls away."""
+        content = 0
+        for index in range(self.column.count()):
+            widget = self.column.itemAt(index).widget()
+            if widget is not None and widget.isVisible():
+                content = max(content, widget.geometry().bottom() + 1)
+        if content <= 0:
+            return
+        slack = self._body.height() - (content
+                                       + self.column.contentsMargins().bottom())
+        # At the screen cap the body is already scrolling and there is no slack
+        # to take; a couple of pixels is rounding, not a band.
+        if slack > 2:
+            self.resize(self.width(), self.height() - slack)
+
     def show_problems(self, problems):
         """Report what is still wrong and gate OK on it. Returns True when valid."""
         # Only the row being edited: validate() reports on the whole file, and a
@@ -124,7 +155,7 @@ class _RowDialog(QDialog):
         return not problems
 
 
-class ConnectionDialog(_RowDialog):
+class ConnectionDialog(RowDialog):
     """Create or edit one connection: where readers run."""
 
     def __init__(self, row=None, taken=(), parent=None):
@@ -188,9 +219,10 @@ class ConnectionDialog(_RowDialog):
         self._type_changed(self.type.currentText())
 
     def _pick_identity(self):
-        start = os.path.expanduser("~/.ssh")
-        path, _ = QFileDialog.getOpenFileName(self, "Private key",
-                                              start if os.path.isdir(start) else "")
+        # Starting inside ~/.ssh rather than above it: a chooser does not list a
+        # dotted directory, but it does show what is in one it opens in.
+        start = self.identity.text().strip() or "~/.ssh"
+        path = widgets.pick_path(self, "Private key", start)
         if path:
             self.identity.setText(path)
 
@@ -224,11 +256,15 @@ class ConnectionDialog(_RowDialog):
             extra=dict(self._row.extra))
 
 
-class LogDialog(_RowDialog):
+class LogDialog(RowDialog):
     """Create or edit one log: what to read, where it belongs, how to parse it."""
 
+    #: What the project combo calls "belongs to no stack". Never written to the
+    #: file - an unassigned log carries no project key at all.
+    NO_PROJECT = "(none)"
+
     def __init__(self, row=None, connections=(), envs=(), siblings=(),
-                 developer=False, parent=None):
+                 developer=False, projects=(), parent=None):
         super().__init__("Log" if row else "New log", parent)
         self._row = (row or lsf.LogRow()).copy()
         self._connections = [c.name for c in connections if c.name]
@@ -245,6 +281,21 @@ class LogDialog(_RowDialog):
             "How %s refers to it. Unique per environment, so the same name may "
             "repeat on another stand."
             % ("--server-log" if self._developer else "a run")))
+
+        self.project = QComboBox()
+        self.project.addItem(self.NO_PROJECT)
+        known_projects = list(projects)
+        # A log whose stack has since been renamed or deleted keeps its own answer
+        # in the list, so opening the dialog cannot silently reassign it.
+        if self._row.project and self._row.project not in known_projects:
+            known_projects.append(self._row.project)
+        self.project.addItems(known_projects)
+        self.project.setCurrentText(self._row.project or self.NO_PROJECT)
+        self.project.currentTextChanged.connect(self._changed)
+        self.column.addWidget(widgets.field(
+            "Stack", self.project,
+            "Which block on this page the log appears under. It groups the "
+            "display and nothing else - a run streams it either way."))
 
         self.connection = QComboBox()
         self.connection.addItems(self._connections or [self._row.connection])
@@ -370,7 +421,8 @@ class LogDialog(_RowDialog):
 
     # -- reactions ---------------------------------------------------------
     def _pick_target(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Log file", "/var/log")
+        path = widgets.pick_path(self, "Log file", self.target.text().strip()
+                                 or "/var/log")
         if path:
             self.target.setText(path)
 
@@ -431,6 +483,8 @@ class LogDialog(_RowDialog):
             default=self.default.isChecked(), headers=dict(self._row.headers),
             timestamp=timestamp, level=level,
             tz=self.tz.currentText().strip() or "local",
+            project=("" if self.project.currentText() == self.NO_PROJECT
+                     else self.project.currentText()),
             extra=dict(self._row.extra))
 
 
@@ -500,9 +554,8 @@ class LogViewerDialog(QDialog):
         bar.setValue(bar.maximum())          # a log is read from its end
 
     def _save(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save log", "%s.log"
-                                              % self.windowTitle().split(" - ")[0],
-                                              "Log files (*.log);;All files (*)")
+        path = widgets.pick_path(self, "Save log", "%s.log"
+                                 % self.windowTitle().split(" - ")[0], save=True)
         if not path:
             return
         try:
@@ -510,434 +563,3 @@ class LogViewerDialog(QDialog):
                 fh.write("\n".join(self._visible()))
         except OSError as exc:
             QMessageBox.warning(self, "Save log", str(exc))
-
-
-class LogSourcesPage(QWidget):
-    """Edit, validate and save the backend logs --server-log can stream."""
-
-    saved = Signal()
-
-    CONN_HEADERS = ["Name", "Runs on", "Used by", ""]
-    C_NAME, C_WHERE, C_USED, C_ACTIONS = range(4)
-
-    LOG_HEADERS = ["Name", "Environments", "Reads", "Over", "Format", "Default", ""]
-    (L_NAME, L_ENVS, L_READS, L_CONN, L_FORMAT, L_DEFAULT, L_ACTIONS) = range(7)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._path = ""
-        self._connections = []
-        self._logs = []
-        self._fingerprint = None
-        # Set when the file on disk could not be read at all. Kept until a load
-        # succeeds, because the alternative is an empty editor over a file full
-        # of content: validation would then call the empty document fine and Save
-        # would quietly replace whatever could not be parsed.
-        self._load_error = ""
-        self._envs = []          # from --describe, so environments are picked not typed
-        self._core = None
-        self._viewers = []       # open log windows, kept from being collected
-        self._developer = False  # which register this page and its dialogs use
-
-        column = QVBoxLayout(self)
-        column.setContentsMargins(24, 20, 24, 20)
-        column.setSpacing(6)
-
-        self.reload_button = QPushButton("Reload")
-        self.reload_button.clicked.connect(lambda: self.load(self._path))
-        self.save_button = QPushButton("Save")
-        self.save_button.setProperty("variant", "primary")
-        self.save_button.clicked.connect(self.save)
-        column.addWidget(widgets.row(widgets.heading("Log sources"), None,
-                                     self.reload_button, self.save_button))
-
-        self.path_label = widgets.mono("")
-        column.addWidget(self.path_label)
-        self.wording = widgets.Phrasing()
-        _tail = ("connection is where to run a reader; a log is what to read there, "
-                 "and which environments it belongs to. One connection serves every "
-                 "log on that machine. Works with any backend - the format presets "
-                 "are named after the shape of a line, and \"custom\" takes your own "
-                 "patterns.")
-        column.addWidget(self.wording.text(
-            widgets.lede(""),
-            "Backend logs a run can stream into each session's panel. A " + _tail,
-            "Backend logs --server-log can stream into each session's panel. A " + _tail))
-        column.addSpacing(12)
-
-        self.add_connection_button = QPushButton("+ Add connection")
-        self.add_connection_button.clicked.connect(self.add_connection)
-        column.addWidget(widgets.row(widgets.kicker("Connections"), None,
-                                     self.add_connection_button))
-        self.connections = self._table(self.CONN_HEADERS, self.C_ACTIONS,
-                                       stretch=self.C_WHERE)
-        self.connections.doubleClicked.connect(
-            lambda index: self.edit_connection(index.row()))
-        column.addWidget(self._panel(self.connections), 1)
-        column.addSpacing(10)
-
-        self.open_tail_button = QPushButton("Open Tail")
-        self.open_tail_button.clicked.connect(lambda: self.open_selected_log(False))
-        self.open_tail_button.setToolTip("The last few hundred lines of the "
-                                         "selected log, read through the launcher.")
-        self.open_full_button = QPushButton("Open Full")
-        self.open_full_button.clicked.connect(lambda: self.open_selected_log(True))
-        self.open_full_button.setToolTip("As much of the selected log as is sane "
-                                         "to move and to render.")
-        self.add_log_button = QPushButton("+ Add log")
-        self.add_log_button.clicked.connect(self.add_log)
-        column.addWidget(widgets.row(widgets.kicker("Logs"), None,
-                                     self.open_full_button, self.open_tail_button,
-                                     self.add_log_button))
-        self.logs = self._table(self.LOG_HEADERS, self.L_ACTIONS,
-                                stretch=self.L_READS)
-        self.logs.doubleClicked.connect(lambda index: self.edit_log(index.row()))
-        column.addWidget(self._panel(self.logs), 2)
-
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
-        column.addWidget(self.status)
-        self._validate()
-
-    # -- construction helpers -------------------------------------------------
-    def _table(self, headers, actions_col, stretch):
-        table = QTableWidget(0, len(headers))
-        table.setHorizontalHeaderLabels(headers)
-        table.verticalHeader().setVisible(False)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
-        # Read-only: every edit goes through a dialog, so a cell that looks
-        # editable and is not would be worse than one that plainly is not.
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(stretch, QHeaderView.Stretch)
-        header.setSectionResizeMode(actions_col, QHeaderView.Fixed)
-        table.setColumnWidth(actions_col, 180)
-        return table
-
-    @staticmethod
-    def _panel(table):
-        panel = widgets.BlueprintPanel(padding=(1, 1, 1, 1))
-        panel.layout().addWidget(table)
-        return panel
-
-    # -- wiring ---------------------------------------------------------------
-    def set_core(self, core):
-        """The core runner, for Test. Without one the button reports as much."""
-        self._core = core
-
-    def set_environments(self, envs):
-        """The env values from --describe, so a log is bound by picking not typing."""
-        self._envs = [e for e in envs if e]
-
-    def set_developer_mode(self, enabled):
-        # Kept as well as applied: the row dialogs are built when they open,
-        # and they have to open in the register the rest of the page is in.
-        self._developer = bool(enabled)
-        self.wording.apply(enabled)
-
-    # -- loading / saving -----------------------------------------------------
-    def load(self, path):
-        self._path = path or ""
-        self.path_label.setText(self._path or "(no log sources path configured)")
-        self._load_error = ""
-        try:
-            self._connections, self._logs = lsf.load(self._path)
-        except lsf.LogSourcesFileError as exc:
-            self._connections, self._logs = [], []
-            self._load_error = str(exc)
-        self._fingerprint = lsf.fingerprint(self._path)
-        self._rebuild()
-        self._validate()
-
-    def save(self):
-        if not self._path:
-            self._show_problem("No log sources path configured.")
-            return
-        current = lsf.fingerprint(self._path)
-        if self._fingerprint is not None and current != self._fingerprint:
-            answer = QMessageBox.question(
-                self, "File changed on disk",
-                "%s changed since it was loaded here.\n\nOverwrite it with what is "
-                "on screen?" % self._path,
-                QMessageBox.Save | QMessageBox.Cancel, QMessageBox.Cancel)
-            if answer != QMessageBox.Save:
-                return
-        try:
-            lsf.save(self._path, self._connections, self._logs)
-        except lsf.LogSourcesFileError as exc:
-            self._show_problem(str(exc))
-            return
-        self._fingerprint = lsf.fingerprint(self._path)
-        self._show_ok("Saved %d connection(s) and %d log(s) to %s (previous kept "
-                      "as .bak)." % (len(self._connections), len(self._logs),
-                                     self._path))
-        self.saved.emit()
-
-    # -- connections ----------------------------------------------------------
-    def add_connection(self):
-        dialog = ConnectionDialog(taken=[c.name for c in self._connections],
-                                  parent=self)
-        if dialog.exec() == QDialog.Accepted:
-            self._connections.append(dialog.value())
-            self._rebuild()
-            self._validate()
-
-    def edit_connection(self, index):
-        if not (0 <= index < len(self._connections)):
-            return
-        previous = self._connections[index].name
-        dialog = ConnectionDialog(self._connections[index],
-                                  taken=[c.name for c in self._connections],
-                                  parent=self)
-        if dialog.exec() != QDialog.Accepted:
-            return
-        self._connections[index] = dialog.value()
-        # Logs refer to a connection by name; renaming one behind their back
-        # would orphan every log that used it.
-        renamed = self._connections[index].name
-        if previous and renamed != previous:
-            for log_row in self._logs:
-                if log_row.connection == previous:
-                    log_row.connection = renamed
-        self._rebuild()
-        self._validate()
-
-    def duplicate_connection(self, index):
-        if not (0 <= index < len(self._connections)):
-            return
-        clone = self._connections[index].copy()
-        clone.name = self._unique(clone.name, [c.name for c in self._connections])
-        self._connections.insert(index + 1, clone)
-        self._rebuild()
-        self._validate()
-
-    def delete_connection(self, index):
-        if not (0 <= index < len(self._connections)):
-            return
-        row = self._connections[index]
-        used = [log.name for log in self._logs if log.connection == row.name]
-        extra = ("\n\n%d log(s) use it: %s. They will have no connection until you "
-                 "point them somewhere else." % (len(used), ", ".join(used))
-                 if used else "")
-        if QMessageBox.question(
-                self, "Delete connection",
-                "Remove connection %r?%s" % (row.name or "(unnamed)", extra),
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-            return
-        del self._connections[index]
-        self._rebuild()
-        self._validate()
-
-    # -- logs -----------------------------------------------------------------
-    def add_log(self):
-        if not self._connections:
-            self._show_problem("Add a connection first - a log has to be read over "
-                               "one.")
-            return
-        seed = lsf.LogRow(connection=self._connections[0].name,
-                          envs=self._envs[:1], type="file")
-        dialog = LogDialog(seed, connections=self._connections, envs=self._envs,
-                           siblings=self._logs, developer=self._developer,
-                           parent=self)
-        if dialog.exec() == QDialog.Accepted:
-            self._logs.append(dialog.value())
-            self._rebuild()
-            self._validate()
-
-    def edit_log(self, index):
-        if not (0 <= index < len(self._logs)):
-            return
-        others = [row for i, row in enumerate(self._logs) if i != index]
-        dialog = LogDialog(self._logs[index], connections=self._connections,
-                           envs=self._envs, siblings=others,
-                           developer=self._developer, parent=self)
-        if dialog.exec() == QDialog.Accepted:
-            self._logs[index] = dialog.value()
-            self._rebuild()
-            self._validate()
-
-    def duplicate_log(self, index):
-        if not (0 <= index < len(self._logs)):
-            return
-        clone = self._logs[index].copy()
-        clone.name = self._unique(clone.name, [row.name for row in self._logs])
-        self._logs.insert(index + 1, clone)
-        self._rebuild()
-        self._validate()
-
-    def delete_log(self, index):
-        if not (0 <= index < len(self._logs)):
-            return
-        row = self._logs[index]
-        if QMessageBox.question(
-                self, "Delete log", "Remove log %r?" % (row.name or "(unnamed)"),
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-            return
-        del self._logs[index]
-        self._rebuild()
-        self._validate()
-
-    @staticmethod
-    def _unique(name, taken):
-        """A copy's name, so a duplicate is valid the moment it is made."""
-        candidate, n = "%s-copy" % (name or "log"), 2
-        while candidate in taken:
-            candidate, n = "%s-copy-%d" % (name or "log", n), n + 1
-        return candidate
-
-    # -- rendering ------------------------------------------------------------
-    def _rebuild(self):
-        self._rebuild_connections()
-        self._rebuild_logs()
-
-    def _rebuild_connections(self):
-        table = self.connections
-        table.setRowCount(len(self._connections))
-        for index, row in enumerate(self._connections):
-            used = sum(1 for log in self._logs if log.connection == row.name)
-            self._set(table, index, self.C_NAME, row.name or "(unnamed)", mono=True)
-            self._set(table, index, self.C_WHERE, row.describe(), mono=True)
-            self._set(table, index, self.C_USED,
-                      "%d log%s" % (used, "" if used == 1 else "s"))
-            table.setCellWidget(index, self.C_ACTIONS, self._actions(
-                self.edit_connection, self.duplicate_connection,
-                self.delete_connection, index))
-        self._fit_columns(table, self.C_ACTIONS)
-
-    def _rebuild_logs(self):
-        table = self.logs
-        table.setRowCount(len(self._logs))
-        for index, row in enumerate(self._logs):
-            self._set(table, index, self.L_NAME, row.name or "(unnamed)", mono=True)
-            self._set(table, index, self.L_ENVS, row.envs_text() or "(none)",
-                      mono=True)
-            self._set(table, index, self.L_READS,
-                      "%s  %s" % (row.type, row.target or "—"), mono=True)
-            self._set(table, index, self.L_CONN, row.connection or "(none)",
-                      mono=True)
-            self._set(table, index, self.L_FORMAT, row.format_label())
-            self._set(table, index, self.L_DEFAULT, "yes" if row.default else "")
-            table.setCellWidget(index, self.L_ACTIONS, self._actions(
-                self.edit_log, self.duplicate_log, self.delete_log, index))
-        self._fit_columns(table, self.L_ACTIONS)
-
-    def _actions(self, edit, duplicate, delete, index):
-        buttons = []
-        for label, handler in (("Edit", edit), ("Copy", duplicate),
-                               ("Delete", delete)):
-            button = QPushButton(label)
-            button.setProperty("variant", "ghost")
-            button.clicked.connect(lambda _c=False, h=handler, i=index: h(i))
-            buttons.append(button)
-        return widgets.row(*buttons, None, spacing=2)
-
-    @staticmethod
-    def _fit_columns(table, actions_col, cap=360):
-        """Size to content, but never let one long value squeeze out the rest.
-
-        A name or a path can be arbitrarily long, and sizing purely to content
-        hands it the whole width - leaving the column that says what the row
-        actually reads truncated to an ellipsis. The full value is still there on
-        hover and in the dialog.
-        """
-        table.resizeColumnsToContents()
-        for index in range(table.columnCount()):
-            if index == actions_col:
-                continue
-            table.setColumnWidth(index, min(table.columnWidth(index), cap))
-        table.setColumnWidth(actions_col, 180)
-
-    def _set(self, table, row, col, text, mono=False):
-        item = QTableWidgetItem(text)
-        if mono:
-            item.setFont(theme.mono_font(9))
-        item.setToolTip(text)      # columns are capped, so a long value can clip
-        table.setItem(row, col, item)
-
-    # -- opening a log --------------------------------------------------------
-    def open_selected_log(self, whole):
-        """Show what the selected log holds - the whole of it, or its tail."""
-        index = self.logs.currentRow()
-        if not (0 <= index < len(self._logs)):
-            self._show_problem("Select a log to open.")
-            return
-        row = self._logs[index]
-        if not row.name:
-            self._show_problem("Give the log a name first.")
-            return
-        if self._core is None:
-            self._show_problem("No core configured (Settings).")
-            return
-        if lsf.validate(self._connections, self._logs):
-            self._show_problem("Fix the problems below and save first - the "
-                               "launcher reads the file, not the screen.")
-            return
-        if self._fingerprint != lsf.fingerprint(self._path):
-            self._show_problem("Save first: the launcher reads what is in the file.")
-            return
-        self._show_ok("Opening %s…" % row.name)
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            result = self._core.server_log_show(row.name,
-                                                lines=None if whole else 500)
-        finally:
-            QApplication.restoreOverrideCursor()
-        if not result.get("ok"):
-            self._show_problem("%s: %s" % (row.name, result.get("error")
-                                           or "could not be read"))
-            return
-        self._show_ok("%s: %d line(s) from %s" % (row.name,
-                                                  len(result.get("lines") or []),
-                                                  result.get("target", "")))
-        self._show_viewer(row.name, result, whole)
-
-    def _show_viewer(self, name, result, whole):
-        """Open the viewer, non-modally, and keep it alive.
-
-        Not modal: comparing two logs, or reading one while fixing the config that
-        points at it, is the normal thing to want. A window with no reference held
-        would be collected the moment this returns, so they are kept until closed.
-        """
-        viewer = LogViewerDialog(name, result, whole, parent=self)
-        self._viewers.append(viewer)
-        viewer.finished.connect(lambda _code, v=viewer: self._viewers.remove(v)
-                                if v in self._viewers else None)
-        viewer.show()
-        viewer.raise_()
-        return viewer
-
-    # -- validation -----------------------------------------------------------
-    def _validate(self):
-        if self._load_error:
-            # Never offer to save over a file that could not be read: an empty
-            # editor validates perfectly, and saving it would throw the content
-            # away. Reload once the file is fixed.
-            self._show_problem("%s\n\nFix the file and press Reload - saving now "
-                               "would replace it with an empty one."
-                               % self._load_error)
-            self.save_button.setEnabled(False)
-            return False
-        problems = lsf.validate(self._connections, self._logs)
-        if problems:
-            self._show_problem("\n".join(problems[:6]))
-        elif not self._connections and not self._logs:
-            self._show_ok("Nothing configured yet. Add a connection, then a log on "
-                          "it - there is nothing to stream until you do.")
-        else:
-            self._show_ok("%d connection(s) · %d log(s) · every log has a connection, "
-                          "an environment and a target · names unique per environment"
-                          % (len(self._connections), len(self._logs)))
-        self.save_button.setEnabled(not problems)
-        return not problems
-
-    def _show_problem(self, message):
-        self.status.setText(message)
-        self.status.setStyleSheet("color: %s; font-size: 12px;" % theme.BAD)
-
-    def _show_ok(self, message):
-        self.status.setText(message)
-        self.status.setStyleSheet("color: %s; font-size: 12px;" % theme.NEUTRAL[700])
-
-    def rows(self):
-        return list(self._connections), list(self._logs)

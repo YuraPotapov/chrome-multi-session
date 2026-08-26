@@ -20,6 +20,10 @@ users.json
 # logsources.example.json
 logsources.json
 
+# The stacks on the Services & Logs page: absolute paths into somebody's own
+# checkouts, and the container names beside them - copy services.example.json
+services.json
+
 # Run artifacts: screenshots and full-page DOM dumps of whatever the flows visited,
 # so they carry the app's data. Regenerated on every --run-tests run.
 reports/

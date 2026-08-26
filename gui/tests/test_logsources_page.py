@@ -1,9 +1,10 @@
-"""The Log sources page: connections and logs for --server-log.
+"""The forms behind logsources.json: connections, logs, and reading one.
 
-Rows are created and edited in a dialog, so most of these drive
+A row is created and edited in a dialog, not in a grid, so these drive
 :class:`ConnectionDialog` / :class:`LogDialog` directly - that is where the fields
-live, and where a half-filled row is caught. The page's own cases are about the
-overview, the file, and what Save is allowed to do.
+live, and where a half-filled row is caught. What the page around them does with
+the file is in ``test_services_page.py``, because that page owns two files and
+these dialogs only describe one.
 """
 
 import json
@@ -14,7 +15,7 @@ import pytest
 
 from cms_gui import logsourcesfile as lsf
 from cms_gui.pages.logsources import (ConnectionDialog, LogDialog,
-                                      LogSourcesPage, LogViewerDialog)
+                                      LogViewerDialog)
 
 # The core is one directory up and not installed. The GUI never imports it at
 # runtime; a test may, to check the two agree about the file.
@@ -23,63 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
 
 LOCAL = "localhost:8069"
 DEV = "https://dev.example.com/"
-
-
-@pytest.fixture
-def page(qapp, tmp_path):
-    path = tmp_path / "logsources.json"
-    path.write_text(json.dumps({
-        "connections": [{"name": "here", "type": "local"},
-                        {"name": "dev", "type": "ssh", "host": "dev.example.com",
-                         "user": "deploy"}],
-        "logs": [{"name": "app", "connection": "here", "env": LOCAL,
-                  "type": "file", "path": "/var/log/app.log", "format": "django",
-                  "default": True},
-                 {"name": "nginx", "connection": "dev", "env": DEV, "type": "file",
-                  "path": "/var/log/nginx/error.log", "format": "nginx"}]}))
-    widget = LogSourcesPage()
-    widget.set_environments([LOCAL, DEV])
-    widget.load(str(path))
-    yield widget
-    widget.close()
-
-
-@pytest.fixture
-def empty_page(qapp, tmp_path):
-    widget = LogSourcesPage()
-    widget.set_environments([LOCAL, DEV])
-    widget.load(str(tmp_path / "logsources.json"))
-    yield widget
-    widget.close()
-
-
-# ------------------------------------------------------------------- overview
-def test_the_file_arrives_in_both_tables(page):
-    connections, logs = page.rows()
-    assert [c.name for c in connections] == ["here", "dev"]
-    assert [l.name for l in logs] == ["app", "nginx"]
-    assert page.connections.rowCount() == 2 and page.logs.rowCount() == 2
-
-
-def test_the_overview_says_where_and_what_rather_than_raw_columns(page):
-    assert page.connections.item(1, page.C_WHERE).text() == "ssh deploy@dev.example.com"
-    assert page.connections.item(0, page.C_USED).text() == "1 log"
-    assert page.logs.item(0, page.L_READS).text() == "file  /var/log/app.log"
-    assert page.logs.item(0, page.L_DEFAULT).text() == "yes"
-
-
-def test_the_tables_are_not_edited_in_place(page):
-    from PySide6.QtWidgets import QAbstractItemView
-
-    # Every edit goes through a dialog; a cell that looks editable and is not
-    # would be worse than one that plainly is not.
-    assert page.connections.editTriggers() == QAbstractItemView.NoEditTriggers
-    assert page.logs.editTriggers() == QAbstractItemView.NoEditTriggers
-
-
-def test_an_empty_file_says_what_to_do_first(empty_page):
-    assert "Add a connection" in empty_page.status.text()
-    assert empty_page.save_button.isEnabled()
 
 
 # --------------------------------------------------------- connection dialog
@@ -214,12 +158,6 @@ def test_a_name_already_used_in_the_same_environment_is_caught(qapp):
     dialog.close()
 
 
-def test_a_log_cannot_be_added_before_a_connection_exists(empty_page):
-    empty_page.add_log()
-    assert "Add a connection first" in empty_page.status.text()
-    assert empty_page.rows()[1] == []
-
-
 # ------------------------------------------------------ formats: any backend
 def test_the_format_picker_offers_shapes_aliases_and_custom(qapp):
     dialog = LogDialog(connections=_connections(), envs=[LOCAL])
@@ -321,26 +259,6 @@ def test_a_custom_pattern_without_a_capturing_group_is_caught(qapp):
     dialog.close()
 
 
-def test_a_custom_format_survives_a_round_trip_through_the_editor(page, tmp_path):
-    """The data-loss path this feature had: opening the editor destroyed it.
-
-    ``timestamp`` and ``level`` are how any backend without a preset is read. They
-    were parsed and then dropped on save, so one visit to this page silently
-    replaced a hand-written custom format with whatever preset was in the combo.
-    """
-    custom = lsf.LogRow(name="weird", connection="here", envs=[LOCAL],
-                        type="file", target="/weird.log",
-                        timestamp={"regex": r"^\[(\d+)\]", "format": "%S"},
-                        level={"regex": r"<(\w+)>"}, tz="utc")
-    page._logs.append(custom)
-    page.save()
-    _connections_back, logs_back = lsf.load(page._path)
-    kept = [row for row in logs_back if row.name == "weird"][0]
-    assert kept.timestamp == {"regex": r"^\[(\d+)\]", "format": "%S"}
-    assert kept.level == {"regex": r"<(\w+)>"}
-    assert kept.tz == "utc"
-
-
 def test_the_launcher_reads_every_format_this_page_offers(qapp):
     """The two format tables must not drift apart.
 
@@ -356,168 +274,6 @@ def test_the_launcher_reads_every_format_this_page_offers(qapp):
         if not name or name == lsf.CUSTOM_FORMAT:
             continue                       # a separator, or the escape hatch
         assert serverlog.resolve_format(name) is not None, name
-
-
-# ----------------------------------------------------------- rows, from the page
-def test_renaming_a_connection_follows_through_to_its_logs(page, monkeypatch):
-    # Logs point at a connection by name. Renaming one without this leaves every
-    # log that used it pointing at something that no longer exists - which the
-    # launcher then refuses the whole file for.
-    def rename(dialog):
-        dialog.name.setText("local-box")
-        return True
-
-    _accept(monkeypatch, rename)
-    page.edit_connection(0)
-    _connections, logs = page.rows()
-    assert logs[0].connection == "local-box"
-    assert page.save_button.isEnabled()
-
-
-def test_a_duplicated_row_is_valid_the_moment_it_is_made(page):
-    page.duplicate_log(0)
-    _connections, logs = page.rows()
-    assert [row.name for row in logs] == ["app", "app-copy", "nginx"]
-    # A copy sharing its original's name in the same environment would be invalid
-    # on arrival, which is a poor thing to hand somebody.
-    assert page.save_button.isEnabled()
-
-
-def test_deleting_a_connection_warns_about_the_logs_that_used_it(page, monkeypatch):
-    asked = {}
-
-    def question(_parent, _title, text, *_args, **_kwargs):
-        from PySide6.QtWidgets import QMessageBox
-        asked["text"] = text
-        return QMessageBox.Yes
-
-    monkeypatch.setattr("cms_gui.pages.logsources.QMessageBox.question", question)
-    page.delete_connection(0)
-    assert "1 log(s) use it: app" in asked["text"]
-    assert not page.save_button.isEnabled()      # app now points nowhere
-
-
-# ------------------------------------------------------------------- the file
-def test_saving_writes_a_file_the_launcher_can_read(page):
-    from engine import serverlog
-
-    page.save()
-    config = serverlog.load_config(page._path)
-    assert [s.name for s in config.for_env(LOCAL)] == ["app"]
-    assert [s.name for s in config.for_env(DEV)] == ["nginx"]
-
-
-def test_saving_keeps_the_previous_file_as_a_backup(page):
-    before = open(page._path, encoding="utf-8").read()
-    page._logs[0].target = "/var/log/changed.log"
-    page.save()
-    assert open(page._path + ".bak", encoding="utf-8").read() == before
-    assert "changed.log" in open(page._path, encoding="utf-8").read()
-
-
-def test_a_broken_file_is_reported_rather_than_swallowed(qapp, tmp_path):
-    path = tmp_path / "logsources.json"
-    path.write_text("{ not json")
-    widget = LogSourcesPage()
-    widget.load(str(path))
-    assert "not valid JSON" in widget.status.text()
-    assert widget.rows() == ([], [])
-    widget.close()
-
-
-def test_a_file_that_could_not_be_read_cannot_be_saved_over(qapp, tmp_path):
-    """The data-loss path: an empty editor over a file full of content.
-
-    Validation calls the empty document perfectly valid, so without this Save
-    stays lit and one click replaces a file whose only problem was a typo.
-    """
-    path = tmp_path / "logsources.json"
-    path.write_text('{"connections": [ trailing comma, ]}')
-    widget = LogSourcesPage()
-    widget.load(str(path))
-    assert not widget.save_button.isEnabled()
-    assert "Reload" in widget.status.text()
-    widget.close()
-
-
-def test_reloading_a_fixed_file_clears_the_complaint(qapp, tmp_path):
-    path = tmp_path / "logsources.json"
-    path.write_text("{ not json")
-    widget = LogSourcesPage()
-    widget.load(str(path))
-    path.write_text(json.dumps({"connections": [{"name": "here", "type": "local"}],
-                                "logs": []}))
-    widget.load(str(path))
-    assert widget.save_button.isEnabled()
-    assert "not valid JSON" not in widget.status.text()
-    widget.close()
-
-
-# ------------------------------------------------------- opening a log
-class _Core:
-    def __init__(self, answer):
-        self.answer = answer
-        self.asked = []
-
-    def server_log_show(self, name, lines=None):
-        self.asked.append((name, lines))
-        return self.answer
-
-
-def test_open_tail_asks_the_core_for_the_end_of_the_log(page):
-    core = _Core({"ok": True, "target": "file (local) /x",
-                  "lines": ["one", "two"], "truncated": True})
-    page.set_core(core)
-    page.logs.setCurrentCell(0, page.L_NAME)
-    page.open_selected_log(whole=False)
-    assert core.asked == [("app", 500)]
-    assert "2 line(s)" in page.status.text()
-
-
-def test_open_full_asks_for_all_of_it(page):
-    core = _Core({"ok": True, "target": "file (local) /x", "lines": ["one"]})
-    page.set_core(core)
-    page.logs.setCurrentCell(0, page.L_NAME)
-    page.open_selected_log(whole=True)
-    # None is "as much as the core's byte budget allows" - the GUI does not
-    # invent a number the core would have to second-guess.
-    assert core.asked == [("app", None)]
-
-
-def test_a_failure_shows_what_the_launcher_said(page):
-    page.set_core(_Core({"ok": False,
-                         "error": "ssh: Could not resolve hostname nx.invalid"}))
-    page.logs.setCurrentCell(0, page.L_NAME)
-    page.open_selected_log(whole=False)
-    assert "Could not resolve hostname" in page.status.text()
-
-
-def test_opening_unsaved_edits_says_to_save_first(page):
-    # The launcher reads the file, not the screen.
-    page.set_core(_Core({"ok": True, "lines": []}))
-    page._fingerprint = ("stale",)
-    page.logs.setCurrentCell(0, page.L_NAME)
-    page.open_selected_log(whole=False)
-    assert "Save first" in page.status.text()
-
-
-def test_opening_an_invalid_file_says_to_fix_it_first(page):
-    page.set_core(_Core({"ok": True, "lines": []}))
-    page._logs[0].connection = "gone"
-    page.logs.setCurrentCell(0, page.L_NAME)
-    page.open_selected_log(whole=False)
-    assert "Fix the problems" in page.status.text()
-
-
-def test_opening_with_nothing_selected_says_so(page):
-    page.set_core(_Core({"ok": True, "lines": []}))
-    page.logs.setCurrentCell(-1, -1)
-    page.open_selected_log(whole=False)
-    assert "Select a log" in page.status.text()
-
-
-def test_the_save_button_does_not_spell_out_the_file_name(page):
-    assert page.save_button.text() == "Save"
 
 
 # ------------------------------------------------------------------ the viewer
@@ -566,3 +322,41 @@ def _accept(monkeypatch, fill):
 
     monkeypatch.setattr(ConnectionDialog, "exec", exec_, raising=False)
     monkeypatch.setattr(LogDialog, "exec", exec_, raising=False)
+
+
+# ------------------------------------------------------- the form's own height
+def test_a_form_does_not_open_taller_than_what_is_in_it(qapp):
+    """Every hint under a field is a word-wrapped QLabel, and one of those
+    reports a sizeHint for a width it has not been given - always more lines than
+    it will take. Adding those up stood a band of nothing under the last field.
+    """
+    import time
+
+    dialog = ConnectionDialog()
+    dialog.show()
+    for _ in range(30):                     # let the one-shot settle run
+        qapp.processEvents()
+        time.sleep(0.01)
+
+    content = 0
+    for index in range(dialog.column.count()):
+        widget = dialog.column.itemAt(index).widget()
+        if widget is not None and widget.isVisible():
+            content = max(content, widget.geometry().bottom() + 1)
+    slack = dialog._body.height() - (content
+                                     + dialog.column.contentsMargins().bottom())
+    assert slack <= 2, "%dpx of nothing under the last field" % slack
+    dialog.close()
+
+
+def test_a_form_taller_than_the_screen_still_scrolls(qapp):
+    # At the cap the body is already scrolling and there is no slack to take;
+    # shrinking further would put the buttons out of reach.
+    dialog = LogDialog(connections=[lsf.ConnectionRow(name="here")], envs=[LOCAL])
+    dialog.show()
+    qapp.processEvents()
+    before = dialog.height()
+    dialog._settle()
+    assert dialog.height() <= before
+    assert dialog.buttons.isVisible()
+    dialog.close()

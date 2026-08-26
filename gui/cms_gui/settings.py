@@ -45,6 +45,35 @@ class Settings:
     def config(self, value):
         self._qs.setValue("core/config", value or "")
 
+    @property
+    def services_path(self):
+        """Where services.json lives; empty means the default beside the rest.
+
+        The GUI's own file, so unlike the three above it is nobody else's
+        business where it goes - and it has a default worth overriding: a source
+        checkout would otherwise put it in the checkout.
+        """
+        return self._qs.value("services/path", "", str)
+
+    @services_path.setter
+    def services_path(self, value):
+        self._qs.setValue("services/path", value or "")
+
+    @property
+    def log_sources_path(self):
+        """Where logsources.json lives; empty means the default under ~.
+
+        Unlike services.json this one is *also* the launcher's, so wherever it
+        goes the path travels with every call the GUI makes into the core
+        (``--log-sources``). Otherwise the file being edited here and the file a
+        run reads come apart, and the page's own Open buttons read the wrong one.
+        """
+        return self._qs.value("logsources/path", "", str)
+
+    @log_sources_path.setter
+    def log_sources_path(self, value):
+        self._qs.setValue("logsources/path", value or "")
+
     # -- window ---------------------------------------------------------------
     def geometry(self):
         return self._qs.value("window/geometry", None)

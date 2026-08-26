@@ -84,6 +84,10 @@ you are looking at moves you to the first one that is left.
 Both are remembered across restarts, and neither overrides developer mode:
 Command shows only when that mode is on *and* its entry is switched on.
 
+The status bar names whatever is running — `odoo: running` — from wherever you
+are, because a service started on the Services & Logs page and then navigated
+away from is otherwise invisible.
+
 ## The pages
 
 **Environments** — the environments `--env` can select, derived from the
@@ -96,18 +100,72 @@ per-row reveal. Validation mirrors the launcher exactly: `class`/`login`/
 `password` required, `env`+`login` unique (that pair names the profile folder),
 `tag:` not `tags:`. Saving is atomic and keeps one `.bak`.
 
-**Log sources** — a table editor over `logsources.json`: the servers the backend
-logs live on, and which log belongs to which environment. Two tables rather than
-one list, because the file has two levels - a *connection* is where to run a
-reader, a *log* is what to read there - and one connection serves every log on a
-machine. Validation mirrors `engine.serverlog` exactly, so the editor cannot write
-a file the next launch would refuse; a file that could not be *read* disables Save
-entirely, because an empty editor over a broken file validates perfectly and one
-click would replace its contents. **Open Tail** and **Open Full** read the log through the core
-(`--server-log-show`) and put it on screen - the GUI has no ssh of its own - which
-is how an unknown host key, a stopped container or simply the wrong path gets found
-before a run depends on it. The viewer filters, saves, and is not modal, so two
-logs can be compared side by side.
+**Services & Logs** — everything running on this machine, by project, and the
+backend logs a run can stream. Each **project** is a block that folds, holding its
+*runners* above its *observers*.
+
+A **runner** is something the GUI starts and stops: a Python script, a shell
+command, a Docker container, a Compose file. Each kind is one entry in
+`runnertypes.TYPES` — command lines and a field spec — and the form is generated
+from that spec, so a new kind needs no dialog. Three execution shapes, and the
+difference is not cosmetic: a *supervised* service is a `QProcess` we own, so its
+state is the process's state; a *managed* one (`docker start`) exits the moment
+the daemon has the job, so its state is polled with `docker inspect`. Each service
+carries **Detach allowed**: off, it is a child of this window and closing asks
+before stopping it; on, it is started detached and picked up again by pid next
+time. That confirmation is the whole mechanism, not a courtesy — PySide6 binds no
+`setChildProcessModifier`, so there is no `PR_SET_PDEATHSIG` to catch what it
+misses.
+
+A service may also name others it **starts after**. Start waits until each of
+them reports running — the row says *Waiting…*, and what it is waiting for — and
+Stop takes them down in the reverse order. The order is read off the dependencies
+rather than off the list, so the order services were typed in is never mistaken
+for an instruction about what to run when. A dependency that cannot start says so
+on the row that was waiting for it; a loop is refused with the ring named, and is
+broken rather than recursed into if a hand-edited file has one. Runners live in
+`services.json`, which is the GUI's own; the launcher has never heard of it.
+Both that file and `logsources.json` default to `~/ChromeMultiSession` and are
+settable in **Settings**. The second is not the GUI's alone — `--server-log`
+reads it — so wherever it goes the GUI passes `--log-sources` on every call,
+and the file being edited and the file a run reads stay the same one.
+
+A service may also be given **criteria**: a name you choose, a colour, and rules
+about what its log says. One that matches shows as a tag beside the service, in
+its colour; what has *not* matched is on the tooltip rather than in the row. The rules are about the whole log rather than one line, which is what
+`grep "started" && grep "!ERRORS"` asks — *must contain* is satisfied by any line
+and stays so, *must not contain* holds until the first line trips it. A criterion
+therefore goes dark again when a `CRITICAL` line arrives, and is cleared whenever
+the service starts or stops, so it only ever describes a run that is happening. It reads the service's own
+output, or a file if one is named. It changes nothing: STATUS goes on meaning the
+process, and this means the log.
+
+A Python service finds the project's own `.venv` without being told, and the
+Interpreter field shows what leaving it blank will run — that path lives in a
+dotted directory, which no file chooser lists. Where a chooser is still needed it
+opens *inside* such a directory rather than above it, which is the one way to see
+into one.
+
+Save is dark until something differs from what was loaded, and closing on top of
+an edit asks first. Rows that carry buttons mark selection with a quiet band
+rather than the accent flood — a widget in a cell paints its own background and
+cannot be told its row is selected — and a selected row can be un-selected by
+clicking it again, because Open Tail has to be able to aim at nothing.
+
+An **observer** is a row of `logsources.json`, unchanged. The file has two levels
+— a *connection* is where to run a reader, a *log* is what to read there — and one
+connection serves every log on a machine, which is why connections sit below the
+blocks rather than inside them. A log may now name the project it belongs to;
+`engine.serverlog` sweeps that key into `LogSource.extra` and ignores it, so this
+needed no core change and a log naming no project is still an ordinary log (it
+shows under *Unassigned*). Validation mirrors `engine.serverlog` exactly, so the editor
+cannot write a file the next launch would refuse; a file that could not be *read*
+disables Save entirely, because an empty editor over a broken file validates
+perfectly and one click would replace its contents. **Open Tail** and **Open Full**
+read the log through the core (`--server-log-show`) and put it on screen — the GUI
+has no ssh of its own — which is how an unknown host key, a stopped container or
+simply the wrong path gets found before a run depends on it. The viewer filters,
+saves, and is not modal, so two logs can be compared side by side.
 
 **Command** — every flag, grouped the way `--help` groups them. The
 flow-execution and report flags stay disabled until `--run-tests` is set,
@@ -216,6 +274,14 @@ The interface follows the *Industry* design system exported from the design
 prototype: a light blueprint surface, square corners, hairline dividers, one
 slate-blue accent, condensed headings and monospace for machine text. All of it
 lives in `cms_gui/theme.py` - retune there, not in the pages.
+
+A table gets three tints, and their *order* is the rule rather than their values,
+because the neutral ramp inverts with the mode: the page, then its headers one
+step out, then a selected row one step beyond that. So a header caps its table
+whichever mode is on — darker than the page in light, lighter in dark — and a
+selection is never mistaken for one. Headers used to be painted in the page's own
+colour, which is not a band at all, and a page carrying four tables read as one
+field with words scattered through it.
 
 The design asks for Barlow, Barlow Condensed and JetBrains Mono. They are web
 fonts, so each is declared as a stack that falls through to whatever is

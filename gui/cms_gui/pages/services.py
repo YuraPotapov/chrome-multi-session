@@ -1,0 +1,1948 @@
+"""Services & Logs: every project on this machine, what is up, and what it writes.
+
+This page is the old Log sources page with the other half of its subject added.
+That page could say which backend logs a run may stream; it could not say whether
+the backend was even running, because nothing in the application had ever started
+one. A local Odoo, its Postgres container and its log file are one thing to the
+person using them and were three unrelated facts here.
+
+So the page is organised by **project** rather than by kind. Each project is a
+block that folds, holding two tables:
+
+* **Services (runners)** - things this application starts and stops. Live status,
+  and a console for what they print. Owned by :mod:`~cms_gui.services`.
+* **Logs (observers)** - the existing ``logsources.json`` rows, unchanged in every
+  respect except that a log may now name the project it belongs to. They are
+  deliberately *not* tied to the runners: a log on a staging box has no runner and
+  never will, and a runner's console is not a parsed log.
+
+Two files back this, and they stay two files. ``logsources.json`` is the
+launcher's and is kept exactly as valid as the CLI expects; ``services.json`` is
+the GUI's own and the launcher has never heard of it. Each is loaded, fingerprinted
+and saved on its own terms, so a problem in one cannot cost the other.
+
+The projects come first and connections last. A connection serves logs across
+every project, so it cannot live inside one - but it is also the part nobody
+opens twice, and putting it above the subject of the page pushed the subject
+down the screen.
+"""
+
+import json
+import os
+
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
+                               QComboBox, QDialog, QHeaderView, QLabel,
+                               QLineEdit, QMenu, QMessageBox, QPlainTextEdit,
+                               QPushButton, QScrollArea, QTableWidget,
+                               QTableWidgetItem, QVBoxLayout, QWidget)
+
+from .. import icons
+from .. import logsourcesfile as lsf
+from .. import criteria as criteria_mod
+from .. import runnertypes
+from .. import services as svc
+from .. import servicesfile as sf
+from .. import theme, widgets
+from .logsources import ConnectionDialog, LogDialog, LogViewerDialog, RowDialog
+
+#: What each status is called, and which of the theme's colours says it. Looked up
+#: through a function rather than a module-level dict because ``theme`` rewrites
+#: its colours in place when dark mode is set - a table built at import time would
+#: keep painting the light palette forever.
+STATUS_TEXT = {
+    runnertypes.RUNNING: "Running",
+    runnertypes.WAITING: "Waiting…",
+    runnertypes.STARTING: "Starting…",
+    runnertypes.STOPPING: "Stopping…",
+    runnertypes.STOPPED: "Stopped",
+    runnertypes.FAILED: "Failed",
+}
+
+
+def status_color(status):
+    return {runnertypes.RUNNING: theme.OK,
+            runnertypes.WAITING: theme.NEUTRAL[500],
+            runnertypes.STARTING: theme.WARN,
+            runnertypes.STOPPING: theme.WARN,
+            runnertypes.FAILED: theme.BAD}.get(status, theme.NEUTRAL[500])
+
+
+class Table(QTableWidget):
+    """A table whose selected row can be un-selected by clicking it again.
+
+    Selecting a row is how Open Tail and Open Full are aimed, so there has to be
+    a way to aim at nothing. With one row in the list there was none: the first
+    click selected it and every click after that re-selected the same thing, and
+    a list of one could never be returned to having nothing chosen.
+    """
+
+    def mousePressEvent(self, event):
+        index = self.indexAt(event.position().toPoint())
+        if index.isValid() and index.row() in {i.row() for i in self.selectedIndexes()}:
+            self.clearSelection()
+            self.setCurrentIndex(self.model().index(-1, -1))
+            return
+        super().mousePressEvent(event)
+
+
+def _table(headers, actions_col, stretch):
+    """The page's one table recipe - the same one the log tables have always used."""
+    table = Table(0, len(headers))
+    table.setHorizontalHeaderLabels(headers)
+    table.verticalHeader().setVisible(False)
+    table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SingleSelection)
+    # Read-only: every edit goes through a dialog, so a cell that looks editable
+    # and is not would be worse than one that plainly is not.
+    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    # The page scrolls, the tables do not: a scrollbar inside a block inside a
+    # scrolling page is two ways to move the same rows and neither reaches the end.
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    # Every row here carries buttons, so selection is a quiet band rather than
+    # the accent flood - see the rule in theme.STYLESHEET.
+    table.setProperty("rows", "quiet")
+    header = table.horizontalHeader()
+    header.setSectionResizeMode(stretch, QHeaderView.Stretch)
+    header.setSectionResizeMode(actions_col, QHeaderView.Fixed)
+    return table
+
+
+def _fit_columns(table, actions_col, cap=320):
+    """Size to content, but never let one long value squeeze out the rest.
+
+    A name or a path can be arbitrarily long, and sizing purely to content hands
+    it the whole width - leaving the column that says what the row actually is
+    truncated to an ellipsis. The full value is still there on hover.
+    """
+    table.resizeColumnsToContents()
+    for index in range(table.columnCount()):
+        if index != actions_col:
+            table.setColumnWidth(index, min(table.columnWidth(index), cap))
+    _fit_actions(table, actions_col)
+    _fit_rows(table, actions_col)
+    _fit_height(table)
+
+
+def _fit_actions(table, column):
+    """Give a column of widgets the width they actually take, not a number.
+
+    Written down, that number is wrong the first time the body font changes -
+    which is how "Console" and "Delete" came out as "onsol" and "Delet". And
+    resizeColumnsToContents does not help: it measures *items*, and a cell
+    holding a widget has none. The strip knows its own width; ask it.
+    """
+    widest = 0
+    for row in range(table.rowCount()):
+        strip = table.cellWidget(row, column)
+        if strip is None:
+            continue
+        strip.ensurePolished()
+        widest = max(widest, strip.sizeHint().width())
+    if not widest:
+        return
+    # Never narrower than its own title. The criteria column shows only what has
+    # matched, so with nothing lit the widgets ask for almost nothing - and the
+    # column sized to that clipped its heading to "RITERI".
+    header = table.horizontalHeader().sectionSizeHint(column)
+    table.setColumnWidth(column, max(widest + 2 * theme.CELL_INSET_H, header))
+
+
+def _fit_rows(table, actions_col):
+    """Make every row tall enough for the buttons it holds.
+
+    The same measurement the Environments page makes for its inline editor: the
+    view insets a cell widget by the item padding on both sides, so a row sized
+    for text hands a 30px button less than 30px and the difference hangs across
+    the gridline below.
+    """
+    tallest = 0
+    for row in range(table.rowCount()):
+        strip = table.cellWidget(row, actions_col)
+        if strip is None:
+            continue
+        strip.ensurePolished()
+        tallest = max(tallest, strip.minimumSizeHint().height())
+    if tallest:
+        table.verticalHeader().setDefaultSectionSize(
+            tallest + 2 * theme.CELL_INSET_V)
+
+
+def _fit_height(table):
+    """Give the table exactly the height its rows need.
+
+    Inside a scrolling page a table has no natural height - it takes whatever the
+    layout offers, which is either nothing or everything. Measuring the rows is
+    what makes a block's height mean "how much is in it".
+    """
+    row_height = table.verticalHeader().defaultSectionSize()
+    height = table.horizontalHeader().height() + 4
+    height += row_height * table.rowCount() if table.rowCount() else 30
+    table.setFixedHeight(height)
+
+
+def _fit_list(view, rows, min_rows=1, max_rows=6):
+    """Give a list or grid the height its entries need, and no more.
+
+    A fixed maximum is not a height: an empty grid and a one-item list both took
+    the whole of it and left a field that is mostly nothing. Measured from the
+    rows, floored so there is somewhere for "+ Add" to land, and capped so a long
+    list scrolls rather than pushing the buttons off the bottom of the dialog.
+    """
+    # What the view will actually draw, which is not what sizeHintForRow says: a
+    # cell whose text wraps reports the wrapped height, so a criteria row holding
+    # a long rule summary claimed 71px for a row drawn at 30 and reserved two
+    # rows' worth of nothing under the table.
+    row = 0
+    if rows:
+        height_of = getattr(view, "rowHeight", None)
+        row = height_of(0) if height_of is not None else view.sizeHintForRow(0)
+    if row <= 0:
+        # Empty, so there is no row to measure - but a table still knows how tall
+        # one will be, and agreeing with that is what keeps the grid from shifting
+        # the moment its first row lands.
+        header = getattr(view, "verticalHeader", None)
+        row = header().defaultSectionSize() if header is not None else 0
+    if row <= 0:
+        row = view.fontMetrics().height() + 8
+    shown = max(min_rows, min(rows, max_rows))
+    header = getattr(view, "horizontalHeader", None)
+    # sizeHint, not height, and isHidden rather than isVisible: this runs while
+    # the dialog is still being built, and a header that has never been shown
+    # reports neither a height nor visibility - which took its own row's worth of
+    # space off the grid and left the column titles sitting on nothing.
+    extra = (header().sizeHint().height()
+             if header is not None and not header().isHidden() else 0)
+    view.setFixedHeight(shown * row + extra + 2 * view.frameWidth() + 2)
+
+
+def _status_width(table):
+    """Room for the longest thing the status column will ever say, plus its dot."""
+    metrics = table.fontMetrics()
+    widest = max(metrics.horizontalAdvance("%s (edited)" % text)
+                 for text in STATUS_TEXT.values())
+    return widest + 44
+
+
+class CriterionTag(QLabel):
+    """One criterion beside its service: its name, lit or not.
+
+    Its own class rather than widgets.Tag because that one builds its colours
+    from a dict evaluated at import, which freezes the light palette; these are
+    read from the theme every time the tag is set, so dark mode follows.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__("", parent)
+        self.setAlignment(Qt.AlignCenter)
+
+    def set_state(self, name, color, lit, outstanding=()):
+        ink = criteria_mod.color_of(color) if lit else criteria_mod.unlit_color()
+        self.setText(name or "(unnamed)")
+        self.setStyleSheet(
+            "color: %s; border: 1px solid %s; background: transparent;"
+            "font-family: %s; font-size: 10px; letter-spacing: 0.5px;"
+            "padding: 1px 6px;" % (ink, ink, theme.MONO_CSS))
+        if lit:
+            self.setToolTip("%s: matched" % (name or "criterion"))
+        else:
+            # What is keeping it dark is the useful half - "not yet" on its own
+            # says nothing about whether it ever will be.
+            self.setToolTip("%s: %s" % (name or "criterion",
+                                        "; ".join(outstanding) or "not matched yet"))
+
+
+def _criteria_strip(criteria):
+    """The cell that shows a service's criteria - the ones that have matched.
+
+    Only those. A row carrying every criterion whether or not it had fired was
+    mostly grey words about things that had not happened, which is the noise this
+    column was added to cut through. What is being watched for is a question with
+    an answer, so it goes on the tooltip rather than into the row.
+    """
+    tags = []
+    for criterion in criteria:
+        tag = CriterionTag()
+        tag.set_state(criterion.name, criterion.color, False)
+        tag.setVisible(False)
+        tags.append(tag)
+    strip = widgets.row(*tags, None, spacing=4) if tags else QWidget()
+    # Transparent, so the row's selection band shows through it - the same
+    # reason the action strips are.
+    widgets.scoped_style(strip, "background: transparent;")
+    strip.tags = tags
+    strip.setToolTip(_watching_for([(c.name, "", False, []) for c in criteria]))
+    return strip
+
+
+def _watching_for(state):
+    """What the cell says on hover: what has matched, and what has not yet."""
+    lit = [name for name, _colour, is_lit, _why in state if is_lit]
+    dark = [name for name, _colour, is_lit, _why in state if not is_lit]
+    lines = []
+    if lit:
+        lines.append("Matched: %s" % ", ".join(lit))
+    if dark:
+        lines.append("Still watching for: %s" % ", ".join(dark))
+    return "\n".join(lines)
+
+
+def _cell(table, row, column, text, mono=False, tip=None):
+    item = QTableWidgetItem(text)
+    if mono:
+        item.setFont(theme.mono_font(9))
+    item.setToolTip(tip if tip is not None else text)
+    table.setItem(row, column, item)
+    return item
+
+
+def _ghost(label, handler, tip="", variant="ghost"):
+    button = QPushButton(label)
+    button.setProperty("variant", variant)
+    if tip:
+        button.setToolTip(tip)
+    button.clicked.connect(lambda _checked=False: handler())
+    return button
+
+
+def _cell_button(label, handler, tip=""):
+    """A row's own button: neutral ink, so it reads on a selected row too."""
+    return _ghost(label, handler, tip, variant="cell")
+
+
+def _actions(*buttons):
+    """The strip of buttons that goes in a row's last cell.
+
+    Transparent, so the row's own selection band shows through it. A widget put
+    in a cell paints the global QWidget background otherwise, which is how the
+    buttons ended up stranded on a rectangle of the wrong colour whenever their
+    row was selected.
+    """
+    strip = widgets.row(*buttons, None, spacing=2)
+    widgets.scoped_style(strip, "background: transparent;")
+    return strip
+
+
+def _icon_button(name, handler, tip):
+    button = QPushButton("")
+    button.setProperty("variant", "cell")
+    button.setToolTip(tip)
+    button.setFixedWidth(30)
+    icons.button(button, name, "")
+    button.clicked.connect(lambda _checked=False: handler())
+    return button
+
+
+# ----------------------------------------------------------------- environment
+class EnvEditor(QWidget):
+    """A name/value grid for a runner's extra environment variables."""
+
+    changed = Signal()
+
+    def __init__(self, values=None, parent=None):
+        super().__init__(parent)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(6)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Name", "Value"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.itemChanged.connect(lambda _item: self.changed.emit())
+        widgets.empty_note(self.table,
+                           "Nothing added - the service inherits this "
+                           "application's own environment.")
+        column.addWidget(self.table)
+        column.addWidget(widgets.row(_ghost("+ Add", self.add_row),
+                                     _ghost("Remove", self.remove_row), None))
+        self.set_values(values or {})
+
+    def add_row(self, name="", value=""):
+        index = self.table.rowCount()
+        self.table.insertRow(index)
+        self.table.setItem(index, 0, QTableWidgetItem(name))
+        self.table.setItem(index, 1, QTableWidgetItem(value))
+        self._fit()
+        self.changed.emit()
+
+    def remove_row(self):
+        index = self.table.currentRow()
+        if index >= 0:
+            self.table.removeRow(index)
+            self._fit()
+            self.changed.emit()
+
+    def set_values(self, values):
+        self.table.setRowCount(0)
+        for name in sorted(values):
+            self.add_row(name, str(values[name]))
+        self._fit()
+
+    def _fit(self):
+        # One empty row's worth when there is nothing: enough to read as a grid
+        # waiting to be filled, rather than a header with a void under it.
+        _fit_list(self.table, self.table.rowCount(), min_rows=1, max_rows=5)
+        self.setFixedHeight(self.sizeHint().height())
+
+    def values(self):
+        result = {}
+        for index in range(self.table.rowCount()):
+            name = self.table.item(index, 0)
+            value = self.table.item(index, 1)
+            key = (name.text() if name else "").strip()
+            if key:
+                result[key] = (value.text() if value else "").strip()
+        return result
+
+
+# --------------------------------------------------------------------- dialogs
+class ProjectDialog(RowDialog):
+    """Create or edit one project: what it is called and where it lives."""
+
+    def __init__(self, row=None, taken=(), parent=None):
+        super().__init__("Project" if row else "New project", parent)
+        self._row = (row or sf.ProjectRow()).copy()
+        self._taken = {name for name in taken if name != self._row.name}
+
+        self.name = QLineEdit(self._row.name)
+        self.name.setPlaceholderText("Claim, Helpdesk…")
+        self.name.textChanged.connect(self._changed)
+        self.column.addWidget(widgets.field(
+            "Name", self.name, "What the block is called, and what a log names "
+                               "to appear under it."))
+
+        self.dir = QLineEdit(self._row.dir)
+        self.dir.setPlaceholderText("~/PycharmProjects/MyProject")
+        self.dir.textChanged.connect(self._changed)
+        browse = _ghost("Browse…", self._pick_dir)
+        self.column.addWidget(widgets.field(
+            "Directory", widgets.row(self.dir, browse),
+            "Where the project lives. Every service starts here unless it names a "
+            "directory of its own. It does not have to exist yet."))
+
+        self.finish_layout()
+        self._changed()
+
+    def _pick_dir(self):
+        path = widgets.pick_path(self, "Project directory",
+                                 self.dir.text().strip() or "~", directory=True)
+        if path:
+            self.dir.setText(path)
+
+    def _changed(self, *_args):
+        self.show_problems(self._problems())
+
+    def _problems(self):
+        row = self.value()
+        problems = []
+        if not row.name.strip():
+            problems.append("A name is required.")
+        elif row.name in self._taken:
+            problems.append("There is already a project called %r." % row.name)
+        directory = row.dir.strip()
+        if directory and os.path.isfile(os.path.expanduser(directory)):
+            problems.append("%s is a file, not a directory." % directory)
+        return problems
+
+    def value(self):
+        return sf.ProjectRow(name=self.name.text().strip(),
+                             dir=self.dir.text().strip(),
+                             expanded=self._row.expanded,
+                             runners=[r.copy() for r in self._row.runners],
+                             extra=dict(self._row.extra))
+
+
+class RunnerDialog(RowDialog):
+    """Create or edit one service. The form is generated from its type.
+
+    Four hand-written editors would be four near-identical forms that drift
+    apart, and what actually distinguishes a Python service from a container is
+    its command lines, not its layout. So each type declares its fields and this
+    builds them - which also means a type added later needs no dialog at all.
+    """
+
+    def __init__(self, runner_type, row=None, taken=(), siblings=(),
+                 project_dir="", parent=None):
+        super().__init__(runner_type.label if row else "New %s"
+                         % runner_type.label.lower(), parent)
+        self._type = runner_type
+        # Where Browse opens, and where a virtualenv is looked for.
+        self._project_dir = project_dir
+        self._row = (row or sf.RunnerRow(type=runner_type.id,
+                                         settings=runner_type.default_settings())).copy()
+        self._taken = {name for name in taken if name != self._row.name}
+        self._editors = {}
+
+        self.name = QLineEdit(self._row.name)
+        self.name.setPlaceholderText("Odoo Local, PostgreSQL DB…")
+        self.name.textChanged.connect(self._changed)
+        self.column.addWidget(widgets.field(
+            "Name", self.name, "Unique within this project."))
+
+        for spec in self._type.fields:
+            self.column.addWidget(self._build(spec))
+
+        # Every other service in this project, so an order is picked rather than
+        # typed. A name that is not on the list is a name that cannot be waited
+        # for, and the checklist is the only place that knows which those are.
+        self.depends = widgets.CheckList(searchable=False)
+        self.depends.set_noun("services")
+        others = [name for name in siblings if name and name != self._row.name]
+        for name in others:
+            self.depends.add(name, name, "")
+        self.depends.set_checked([d for d in self._row.depends if d in others])
+        _fit_list(self.depends.list, len(others), min_rows=1, max_rows=6)
+        self.depends.changed.connect(self._changed)
+        self.depends_field = widgets.field(
+            "Starts after", self.depends,
+            "Start waits until each of these reports running, and Stop takes them "
+            "down in the reverse order. \"Running\" means the process is up, not "
+            "that whatever is inside it has finished booting.")
+        self.column.addWidget(self.depends_field)
+        # Nothing to depend on is not a choice worth showing an empty box for.
+        self.depends_field.setVisible(bool(others))
+
+        self.criteria = CriteriaEditor(self._row.criteria, self._project_dir)
+        self.criteria.changed.connect(self._changed)
+        self.column.addWidget(widgets.field(
+            "Criteria", self.criteria,
+            "What its own log says about where it has got to, shown beside the "
+            "service. Display only: a criterion never changes the status, never "
+            "holds anything else up, and never stops anything."))
+
+        self.detach = QCheckBox("Detach allowed - keep running when this window closes")
+        self.detach.setChecked(bool(self._row.detach))
+        self.detach.toggled.connect(self._changed)
+        self.column.addWidget(self.detach)
+        self.detach_hint = QLabel("")
+        self.detach_hint.setProperty("role", "hint")
+        self.detach_hint.setWordWrap(True)
+        self.column.addWidget(self.detach_hint)
+        if not self._type.detach_choice:
+            # Not a preference for a container: nothing here started it in a way
+            # that could be undone by closing a window.
+            self.detach.setChecked(bool(self._type.detach_default))
+            self.detach.setEnabled(False)
+            self.detach_hint.setText(self._type.detach_note)
+        else:
+            self.detach_hint.setText(
+                "Off: closing the application asks first, then stops it. On: it "
+                "keeps running on its own and is picked up again next time.")
+
+        self.finish_layout()
+        self._changed()
+
+    def _build(self, spec):
+        """One field of the generated form, by kind."""
+        if spec.kind == "env":
+            editor = EnvEditor(self._row.settings.get(spec.key) or {})
+            editor.changed.connect(self._changed)
+            self._editors[spec.key] = editor
+            return widgets.field(spec.label, editor, spec.hint)
+        if spec.kind == "check":
+            box = QCheckBox("")
+            box.setChecked(bool(self._row.settings.get(spec.key)))
+            box.toggled.connect(self._changed)
+            self._editors[spec.key] = box
+            return widgets.field(spec.label, box, spec.hint)
+        edit = QLineEdit(str(self._row.settings.get(spec.key) or ""))
+        edit.textChanged.connect(self._changed)
+        self._editors[spec.key] = edit
+        if spec.key == "interpreter":
+            # Say what leaving it blank will actually run. A detected venv is the
+            # answer most of the time, and it lives where a chooser cannot go.
+            found = runnertypes.venv_python(self._project_dir)
+            edit.setPlaceholderText(found or runnertypes.DEFAULT_PYTHON)
+        if spec.kind in ("file", "dir"):
+            browse = _ghost("Browse…", lambda s=spec: self._pick(s))
+            return widgets.field(spec.label, widgets.row(edit, browse), spec.hint)
+        return widgets.field(spec.label, edit, spec.hint)
+
+    def _pick(self, spec):
+        edit = self._editors[spec.key]
+        # A chooser does not list dotted directories, but it does show what is
+        # inside one it opens in - so start at the answer when we can guess it.
+        start = edit.text().strip()
+        if not start and spec.key == "interpreter":
+            start = runnertypes.venv_python(self._project_dir)
+        path = widgets.pick_path(self, spec.label, start or self._project_dir,
+                                 directory=(spec.kind == "dir"))
+        if path:
+            edit.setText(path)
+
+    def _changed(self, *_args):
+        self.show_problems(self._problems())
+
+    def _problems(self):
+        row = self.value()
+        problems = []
+        if not row.name.strip():
+            problems.append("A name is required.")
+        elif row.name in self._taken:
+            problems.append("There is already a service called %r in this project."
+                            % row.name)
+        problems.extend(self._type.problems(row.settings))
+        seen = set()
+        for index, one in enumerate(row.criteria, start=1):
+            where = "Criterion %d (%s)" % (index, one.name or "unnamed")
+            if one.name and one.name in seen:
+                problems.append("%s: two criteria share that name." % where)
+            seen.add(one.name)
+            problems.extend(criteria_mod.problems(one, where))
+        return problems
+
+    def value(self):
+        settings = dict(self._row.settings)
+        for spec in self._type.fields:
+            editor = self._editors[spec.key]
+            if spec.kind == "env":
+                settings[spec.key] = editor.values()
+            elif spec.kind == "check":
+                settings[spec.key] = editor.isChecked()
+            else:
+                settings[spec.key] = editor.text().strip()
+        return sf.RunnerRow(name=self.name.text().strip(), type=self._type.id,
+                            detach=self.detach.isChecked(), settings=settings,
+                            depends=list(self.depends.checked()),
+                            criteria=self.criteria.rows(),
+                            extra=dict(self._row.extra))
+
+
+# ----------------------------------------------------------------- criteria
+class CriterionDialog(RowDialog):
+    """Create or edit one criterion: what to watch for, and what to call it."""
+
+    OWN_OUTPUT = "(this service's own output)"
+
+    def __init__(self, row=None, taken=(), project_dir="", parent=None):
+        super().__init__("Criterion" if row else "New criterion", parent)
+        self._row = (row or criteria_mod.CriterionRow(
+            rules=[criteria_mod.Rule()])).copy()
+        self._taken = {name for name in taken if name != self._row.name}
+        self._project_dir = project_dir
+
+        self.name = QLineEdit(self._row.name)
+        self.name.setPlaceholderText("start, finished_tests, stopped…")
+        self.name.textChanged.connect(self._changed)
+        self.column.addWidget(widgets.field(
+            "Name", self.name,
+            "Yours to choose - it is what the tag beside the service says."))
+
+        self.color = QComboBox()
+        for name in criteria_mod.COLORS:
+            self.color.addItem(icons.icon("dot", criteria_mod.color_of(name)),
+                               name)
+        self.color.setCurrentText(self._row.color)
+        self.color.currentTextChanged.connect(self._changed)
+        self.column.addWidget(widgets.field(
+            "Colour", self.color,
+            "What it turns once it matches. Named rather than picked, so it "
+            "follows dark mode instead of being one fixed value."))
+
+        self.source = QLineEdit(self._row.source)
+        self.source.setPlaceholderText(self.OWN_OUTPUT)
+        self.source.textChanged.connect(self._changed)
+        browse = _ghost("Browse…", self._pick_source)
+        self.column.addWidget(widgets.field(
+            "Watch", widgets.row(self.source, browse),
+            "Blank reads what the service prints. Name a file for a backend that "
+            "logs to one instead - a service started with a logfile prints almost "
+            "nothing to its console."))
+
+        self.rules = QTableWidget(0, 3)
+        self.rules.setHorizontalHeaderLabels(["Condition", "Kind", "Pattern"])
+        self.rules.verticalHeader().setVisible(False)
+        self.rules.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.rules.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.rules.itemChanged.connect(lambda _item: self._changed())
+        widgets.empty_note(self.rules,
+                           "No rules, so this could never match anything.")
+        self.column.addWidget(widgets.field(
+            "Rules", self.rules,
+            "All of them have to hold, and they are about the whole log rather "
+            "than one line: \"must contain\" is satisfied by any line at any "
+            "point, \"must not contain\" stops being satisfied the moment one "
+            "matches. Case-sensitive, like grep; a regex can open with (?i)."))
+        self.column.addWidget(widgets.row(
+            _ghost("+ Add rule", self.add_rule),
+            _ghost("Remove rule", self.remove_rule), None))
+        for rule in self._row.rules or [criteria_mod.Rule()]:
+            self.add_rule(rule)
+
+        self.finish_layout()
+        self._changed()
+
+    def _pick_source(self):
+        path = widgets.pick_path(self, "Log file",
+                                 self.source.text().strip() or self._project_dir)
+        if path:
+            self.source.setText(path)
+
+    def add_rule(self, rule=None):
+        rule = rule if isinstance(rule, criteria_mod.Rule) else criteria_mod.Rule()
+        index = self.rules.rowCount()
+        self.rules.insertRow(index)
+        mode = QComboBox()
+        for value in criteria_mod.MODES:
+            mode.addItem(criteria_mod.MODE_LABELS[value], value)
+        mode.setCurrentIndex(list(criteria_mod.MODES).index(rule.mode))
+        mode.currentIndexChanged.connect(self._changed)
+        kind = QComboBox()
+        for value in criteria_mod.KINDS:
+            kind.addItem(criteria_mod.KIND_LABELS[value], value)
+        kind.setCurrentIndex(list(criteria_mod.KINDS).index(rule.kind))
+        kind.currentIndexChanged.connect(self._changed)
+        self.rules.setCellWidget(index, 0, mode)
+        self.rules.setCellWidget(index, 1, kind)
+        self.rules.setItem(index, 2, QTableWidgetItem(rule.pattern))
+        self._fit_rules()
+        self._changed()
+
+    def remove_rule(self):
+        index = self.rules.currentRow()
+        if index >= 0:
+            self.rules.removeRow(index)
+            self._fit_rules()
+            self._changed()
+
+    def _fit_rules(self):
+        self.rules.resizeColumnsToContents()
+        # The first two hold combo boxes, and resizeColumnsToContents measures
+        # items - a cell holding a widget has none, so both came out clipped to
+        # "must not contai" and "rege".
+        for column in (0, 1):
+            _fit_actions(self.rules, column)
+        self.rules.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        # And tall enough for them. A row sized for text hands a 30px combo the
+        # 24px left after the cell inset; it renders at its own 30 regardless and
+        # the difference hangs across the gridline below - which is the lopsided
+        # row rather than anything about the two combos differing.
+        _fit_rows(self.rules, 0)
+        _fit_list(self.rules, self.rules.rowCount(), min_rows=1, max_rows=6)
+        self._fit()
+
+    def _changed(self, *_args):
+        self.show_problems(self._problems())
+
+    def _problems(self):
+        row = self.value()
+        found = []
+        if row.name and row.name in self._taken:
+            found.append("There is already a criterion called %r." % row.name)
+        found.extend(criteria_mod.problems(row, "This criterion"))
+        return found
+
+    def value(self):
+        rules = []
+        for index in range(self.rules.rowCount()):
+            mode = self.rules.cellWidget(index, 0)
+            kind = self.rules.cellWidget(index, 1)
+            pattern = self.rules.item(index, 2)
+            rules.append(criteria_mod.Rule(
+                mode.currentData(), kind.currentData(),
+                (pattern.text() if pattern else "").strip(),
+                dict(self._row.rules[index].extra)
+                if index < len(self._row.rules) else None))
+        return criteria_mod.CriterionRow(
+            name=self.name.text().strip(), color=self.color.currentText(),
+            source=self.source.text().strip(), rules=rules,
+            extra=dict(self._row.extra))
+
+
+class CriteriaEditor(QWidget):
+    """The criteria table inside a service's own form."""
+
+    changed = Signal()
+
+    def __init__(self, criteria=(), project_dir="", parent=None):
+        super().__init__(parent)
+        self._rows = [one.copy() for one in criteria]
+        self._project_dir = project_dir
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(6)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Name", "Colour", "Watches", "Rules"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.doubleClicked.connect(lambda index: self.edit(index.row()))
+        widgets.empty_note(self.table,
+                           "Nothing watched for. Add one to have this service "
+                           "say where it has got to.")
+        column.addWidget(self.table)
+        column.addWidget(widgets.row(_ghost("+ Add criterion", self.add),
+                                     _ghost("Edit", self.edit),
+                                     _ghost("Remove", self.remove), None))
+        self._rebuild()
+
+    def rows(self):
+        return [one.copy() for one in self._rows]
+
+    def add(self):
+        dialog = CriterionDialog(taken=[one.name for one in self._rows],
+                                 project_dir=self._project_dir, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            self._rows.append(dialog.value())
+            self._rebuild()
+            self.changed.emit()
+
+    def edit(self, index=None):
+        index = self.table.currentRow() if index is None or index is False else index
+        if not (0 <= index < len(self._rows)):
+            return
+        dialog = CriterionDialog(self._rows[index],
+                                 taken=[one.name for one in self._rows],
+                                 project_dir=self._project_dir, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            self._rows[index] = dialog.value()
+            self._rebuild()
+            self.changed.emit()
+
+    def remove(self):
+        index = self.table.currentRow()
+        if 0 <= index < len(self._rows):
+            del self._rows[index]
+            self._rebuild()
+            self.changed.emit()
+
+    def _rebuild(self):
+        self.table.setRowCount(len(self._rows))
+        for index, one in enumerate(self._rows):
+            _cell(self.table, index, 0, one.name or "(unnamed)", mono=True)
+            item = QTableWidgetItem(one.color)
+            item.setIcon(icons.icon("dot", criteria_mod.color_of(one.color)))
+            self.table.setItem(index, 1, item)
+            _cell(self.table, index, 2, one.watches(), mono=True)
+            _cell(self.table, index, 3, one.summary() or "(no rules)")
+        self.table.resizeColumnsToContents()
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        _fit_list(self.table, len(self._rows), min_rows=1, max_rows=5)
+        self.setFixedHeight(self.sizeHint().height())
+
+
+class ConsoleWindow(QDialog):
+    """What one service is printing, live, and what it printed before.
+
+    Not modal and not tied to the row it came from: watching a service while
+    fixing the configuration that starts it is the ordinary thing to want.
+    """
+
+    VISIBLE_LINES = 5000
+
+    def __init__(self, service, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("%s · %s" % (service.project, service.name))
+        self.resize(880, 520)
+        self._service = service
+
+        column = QVBoxLayout(self)
+        column.setContentsMargins(16, 14, 16, 14)
+        column.setSpacing(8)
+        self.status = widgets.Tag("", "neutral")
+        column.addWidget(widgets.row(
+            widgets.heading("%s · %s" % (service.project, service.name), "h2"),
+            self.status, None,
+            _ghost("Open log file", self._open_file,
+                   "The whole file, in whatever opens .log here."),
+            _ghost("Clear", self._clear, "Clears this view, not the file.")))
+        self.path = widgets.elided_mono(service.log_path)
+        column.addWidget(self.path)
+
+        self.view = QPlainTextEdit()
+        self.view.setReadOnly(True)
+        self.view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.view.setMaximumBlockCount(self.VISIBLE_LINES)
+        self.view.setStyleSheet("font-family: %s; font-size: 12px;" % theme.MONO_CSS)
+        column.addWidget(self.view, 1)
+
+        self.view.setPlainText("\n".join(service.console()))
+        self._scroll_to_end()
+        service.output.connect(self._append)
+        service.status_changed.connect(self._status_changed)
+        self._status_changed(service.status)
+
+    def _append(self, line):
+        self.view.appendPlainText(line)
+
+    def _clear(self):
+        self.view.clear()
+
+    def _scroll_to_end(self):
+        bar = self.view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _status_changed(self, status):
+        variant = {runnertypes.RUNNING: "accent",
+                   runnertypes.STARTING: "outline",
+                   runnertypes.STOPPING: "outline",
+                   runnertypes.FAILED: "bad"}.get(status, "neutral")
+        self.status.set(STATUS_TEXT.get(status, status).upper(), variant)
+
+    def _open_file(self):
+        if os.path.exists(self._service.log_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._service.log_path))
+
+
+# ----------------------------------------------------------------------- block
+class ProjectBlock(QWidget):
+    """One project, folded or open: its services above its logs.
+
+    Built on :class:`widgets.Disclosure`, which already is the accordion - a
+    header line that can carry controls, and a body that folds away. The project's
+    own buttons go on that header line rather than beside the whole block, so
+    they read as belonging to the title and not to the tables.
+    """
+
+    RUNNER_HEADERS = ["Name", "Type", "Config", "Status", "Criteria", ""]
+    (R_NAME, R_TYPE, R_CONFIG, R_STATUS, R_CRITERIA, R_ACTIONS) = range(6)
+
+    LOG_HEADERS = ["Name", "Environments", "Reads", "Over", "Format", "Default", ""]
+    (L_NAME, L_ENVS, L_READS, L_CONN, L_FORMAT, L_DEFAULT, L_ACTIONS) = range(7)
+
+    def __init__(self, page, project, parent=None):
+        super().__init__(parent)
+        self.page = page
+        #: The :class:`servicesfile.ProjectRow`, or None for the block that holds
+        #: the logs belonging to no project.
+        self.project = project
+        self.name = project.name if project is not None else ""
+        self._runner_rows = []
+        self._log_rows = []
+        self._service_buttons = []
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        panel = widgets.BlueprintPanel(padding=(14, 12, 14, 14))
+        outer.addWidget(panel)
+
+        title = self.name or "Unassigned"
+        self.disclosure = widgets.Disclosure(
+            title, expanded=(project.expanded if project is not None else True))
+        self.disclosure.toggled.connect(self._remember_expanded)
+        panel.layout().addWidget(self.disclosure)
+        self._title = title
+
+        if project is not None:
+            self._add_project_buttons()
+        body = self.disclosure.body()
+
+        if project is not None:
+            body.addWidget(widgets.row(widgets.kicker("Services (runners)"), None))
+            self.runners = _table(self.RUNNER_HEADERS, self.R_ACTIONS,
+                                  stretch=self.R_CONFIG)
+            self.runners.doubleClicked.connect(
+                lambda index: self._console_at(index.row()))
+            widgets.empty_note(self.runners,
+                               "No services yet - Add Configuration builds one.")
+            body.addWidget(self._panel(self.runners))
+        else:
+            self.runners = None
+            note = widgets.lede(
+                "Logs that name no project, or one that is no longer configured. "
+                "They stream exactly as they always have - give one a project in "
+                "its Edit dialog to move it into a block above.")
+            body.addWidget(note)
+
+        self.open_full_button = _ghost(
+            "Open Full", lambda: self.page.open_selected_log(self, True),
+            "As much of the selected log as is sane to move and to render.")
+        self.open_tail_button = _ghost(
+            "Open Tail", lambda: self.page.open_selected_log(self, False),
+            "The last few hundred lines of the selected log.")
+        body.addWidget(widgets.row(
+            widgets.kicker("Logs (observers)"), None, self.open_full_button,
+            self.open_tail_button,
+            _ghost("+ Add log", lambda: self.page.add_log(self.name))))
+        self.logs = _table(self.LOG_HEADERS, self.L_ACTIONS, stretch=self.L_READS)
+        self.logs.doubleClicked.connect(
+            lambda index: self._edit_log_at(index.row()))
+        # The unassigned block's empty state is a different claim from a
+        # project's: there, nothing has been added yet; here, nothing is stray.
+        widgets.empty_note(self.logs,
+                           "No logs in this project yet."
+                           if project is not None else
+                           "No logs without a project.")
+        body.addWidget(self._panel(self.logs))
+        self.update_buttons()
+
+    @staticmethod
+    def _panel(table):
+        panel = widgets.BlueprintPanel(padding=(1, 1, 1, 1))
+        panel.layout().addWidget(table)
+        return panel
+
+    def _add_project_buttons(self):
+        add = QPushButton("+ Add Configuration")
+        add.setProperty("variant", "primary")
+        add.setProperty("hasmenu", "true")
+        menu = QMenu(add)
+        for runner_type in runnertypes.TYPES:
+            action = menu.addAction(icons.icon(runner_type.icon), runner_type.label)
+            action.triggered.connect(
+                lambda _checked=False, t=runner_type: self.page.add_runner(self.name, t))
+        add.setMenu(menu)
+        self._add_menu = menu           # kept alive with the button
+
+        # These three act on the services, so an empty project has nothing for
+        # them to do. Add Configuration is deliberately not among them: it is the
+        # one thing an empty project is for.
+        self._service_buttons = [
+            _ghost("Start", lambda: self.page.start_project(self.name),
+                   "Start every service in this project that is not up, waiting "
+                   "where one service waits for another."),
+            _ghost("Stop", lambda: self.page.stop_project(self.name),
+                   "Stop them all, in the reverse of the order they start."),
+            _ghost("Restart", lambda: self.page.restart_project(self.name)),
+        ]
+        for widget in self._service_buttons + [
+                _ghost("Edit", lambda: self.page.edit_project(self.name),
+                       "Rename this project, or point it at another directory."),
+                _ghost("Delete", lambda: self.page.delete_project(self.name)),
+                add]:
+            self.disclosure.add_to_header(widget)
+
+    def update_buttons(self):
+        """Nothing offers to act on rows that are not there."""
+        for button in self._service_buttons:
+            button.setEnabled(bool(self._runner_rows))
+        for button in (self.open_full_button, self.open_tail_button):
+            button.setEnabled(bool(self._log_rows))
+
+    def _remember_expanded(self, expanded):
+        if self.project is not None:
+            self.project.expanded = bool(expanded)
+
+    # -- runners --------------------------------------------------------------
+    def _runner_at(self, index):
+        return self._runner_rows[index] if 0 <= index < len(self._runner_rows) else None
+
+    def _console_at(self, index):
+        row = self._runner_at(index)
+        if row is not None:
+            self.page.open_console(self.name, row)
+
+    def set_runners(self, rows):
+        self._runner_rows = list(rows)
+        table = self.runners
+        if table is None:
+            return
+        table.setRowCount(len(rows))
+        for index, row in enumerate(rows):
+            kind = row.runner_type
+            label = runnertypes.label_of(row.type)
+            if kind is not None and kind.detach_choice and row.detach:
+                label += " · detached"
+            if row.depends:
+                # Two names and a count: a service waiting on five others would
+                # otherwise push the column to its cap and take the width off
+                # what the row actually runs. The full list is on the tooltip.
+                shown = ", ".join(row.depends[:2])
+                if len(row.depends) > 2:
+                    shown += " +%d" % (len(row.depends) - 2)
+                label += " · after %s" % shown
+            _cell(table, index, self.R_NAME, row.name or "(unnamed)", mono=True)
+            _cell(table, index, self.R_TYPE, label,
+                  tip=("%s\nStarts after: %s" % (runnertypes.label_of(row.type),
+                                                 ", ".join(row.depends))
+                       if row.depends else label))
+            _cell(table, index, self.R_CONFIG, row.summary() or "—", mono=True)
+            _cell(table, index, self.R_STATUS, "")
+            table.setCellWidget(index, self.R_CRITERIA, _criteria_strip(row.criteria))
+            table.setCellWidget(index, self.R_ACTIONS, self._runner_actions(row))
+        # A project that watches nothing looks exactly as it did before criteria
+        # existed - an always-present empty column would be a standing question
+        # about a feature most services never use.
+        table.setColumnHidden(self.R_CRITERIA,
+                              not any(row.criteria for row in rows))
+        self.update_buttons()
+        _fit_columns(table, self.R_ACTIONS)
+        _fit_actions(table, self.R_CRITERIA)
+        # After the content pass: the status cells are filled in later, by
+        # set_status, so sizing this one to what is in it now would size it to
+        # an empty string and clip every word it is about to hold.
+        table.setColumnWidth(self.R_STATUS, _status_width(table))
+
+    def _runner_actions(self, row):
+        name = row.name
+        toggle = _icon_button("run", lambda: self.page.toggle_runner(self.name, name),
+                              "Start")
+        restart = _icon_button("refresh",
+                               lambda: self.page.restart_runner(self.name, name),
+                               "Restart")
+        strip = _actions(
+            toggle, restart,
+            _cell_button("Console", lambda: self.page.open_console(self.name, row),
+                         "What this service is printing."),
+            _cell_button("Edit", lambda: self.page.edit_runner(self.name, row)),
+            _cell_button("Copy", lambda: self.page.copy_runner(self.name, row)),
+            _cell_button("Delete", lambda: self.page.delete_runner(self.name, row)))
+        strip.toggle = toggle
+        return strip
+
+    def set_status(self, runner_name, status, detail="", stale=False):
+        """Repaint one row's status without rebuilding the table.
+
+        Rebuilding on every status change would drop the selection and flicker
+        the whole page every three seconds, which is how often the poll runs.
+        """
+        table = self.runners
+        if table is None:
+            return
+        for index, row in enumerate(self._runner_rows):
+            if row.name != runner_name:
+                continue
+            item = table.item(index, self.R_STATUS)
+            if item is None:
+                return
+            text = STATUS_TEXT.get(status, status)
+            if stale:
+                # What is up is not what is written down: the settings changed
+                # while it was running, and only a restart picks them up.
+                text += " (edited)"
+            item.setText(text)
+            item.setIcon(icons.icon("dot", status_color(status)))
+            item.setToolTip(detail or text)
+            strip = table.cellWidget(index, self.R_ACTIONS)
+            toggle = getattr(strip, "toggle", None)
+            if toggle is not None:
+                running = status in (runnertypes.RUNNING, runnertypes.STARTING,
+                                     runnertypes.STOPPING)
+                icons.button(toggle, "stop" if running else "run", "")
+                toggle.setToolTip("Stop" if running else "Start")
+            return
+
+    def set_criteria(self, runner_name, state):
+        """Repaint one row's criteria. Never a rebuild - the poll is every 3 s."""
+        table = self.runners
+        if table is None:
+            return
+        for index, row in enumerate(self._runner_rows):
+            if row.name != runner_name:
+                continue
+            strip = table.cellWidget(index, self.R_CRITERIA)
+            tags = getattr(strip, "tags", None)
+            if not tags or len(tags) != len(state):
+                return          # the configuration moved under it; a rebuild follows
+            for tag, (name, color, lit, outstanding) in zip(tags, state):
+                tag.set_state(name, color, lit, outstanding)
+                tag.setVisible(lit)
+            strip.setToolTip(_watching_for(state))
+            # The strip is only as wide as what is showing, so the column has to
+            # be re-measured when a tag appears or the one that just lit is cut
+            # off by a width decided when nothing had.
+            _fit_actions(table, self.R_CRITERIA)
+            return
+
+    def set_summary(self, running, total):
+        """The count in the block's own title: `Claim (3 of 5 running)`."""
+        if self.project is None:
+            return
+        self.disclosure.set_title(
+            "%s  (%d of %d running)" % (self._title, running, total) if total
+            else "%s  (nothing configured)" % self._title)
+
+    # -- logs -----------------------------------------------------------------
+    def selected_log(self):
+        index = self.logs.currentRow()
+        return self._log_rows[index] if 0 <= index < len(self._log_rows) else None
+
+    def _edit_log_at(self, index):
+        if 0 <= index < len(self._log_rows):
+            self.page.edit_log(self._log_rows[index])
+
+    def set_logs(self, rows):
+        self._log_rows = list(rows)
+        table = self.logs
+        table.setRowCount(len(rows))
+        for index, row in enumerate(rows):
+            _cell(table, index, self.L_NAME, row.name or "(unnamed)", mono=True)
+            _cell(table, index, self.L_ENVS, row.envs_text() or "(none)", mono=True)
+            _cell(table, index, self.L_READS,
+                  "%s  %s" % (row.type, row.target or "—"), mono=True)
+            _cell(table, index, self.L_CONN, row.connection or "(none)", mono=True)
+            _cell(table, index, self.L_FORMAT, row.format_label())
+            _cell(table, index, self.L_DEFAULT, "yes" if row.default else "")
+            table.setCellWidget(index, self.L_ACTIONS, _actions(
+                _cell_button("Edit", lambda r=row: self.page.edit_log(r)),
+                _cell_button("Copy", lambda r=row: self.page.copy_log(r)),
+                _cell_button("Delete", lambda r=row: self.page.delete_log(r))))
+        self.update_buttons()
+        _fit_columns(table, self.L_ACTIONS)
+
+
+# ------------------------------------------------------------------------ page
+class ServicesPage(QWidget):
+    """The page: two files, one accordion, and a supervisor watching the lot."""
+
+    saved = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._log_path = ""
+        self._services_path = ""
+        self._connections = []
+        self._logs = []
+        self._projects = []
+        self._log_fingerprint = None
+        self._services_fingerprint = None
+        # Set when a file on disk could not be read at all. Kept until a load
+        # succeeds, because the alternative is an empty editor over a file full
+        # of content: validation would call the empty document fine and Save
+        # would quietly replace whatever could not be parsed.
+        self._load_error = ""
+        self._services_error = ""
+        self._envs = []
+        self._core = None
+        self._viewers = []          # open log windows, kept from being collected
+        self._consoles = []         # ditto, for service consoles
+        self._developer = False
+        self._migrating = False     # reading the old path, writing the new one
+        self._configured_services = ""   # what Settings says, "" for the default
+        self._blocks = {}           # project name ("" = unassigned) -> ProjectBlock
+        # Save is for changes, not for re-writing the same file: it stays dark
+        # until something on screen differs from what was loaded.
+        self._baseline = None
+        self._dirty = False
+        self._valid = True
+
+        self.supervisor = svc.ServiceSupervisor(self)
+        self.supervisor.status_changed.connect(self._status_changed)
+        self.supervisor.criteria_changed.connect(self._criteria_changed)
+
+        column = QVBoxLayout(self)
+        column.setContentsMargins(24, 20, 24, 20)
+        column.setSpacing(6)
+
+        self.start_all_button = _ghost(
+            "Start All", lambda: self.start_project(None),
+            "Start every service on this page that is not already up.")
+        self.stop_all_button = _ghost("Stop All", lambda: self.stop_project(None))
+        self.add_project_button = QPushButton("+ Add Project")
+        self.add_project_button.clicked.connect(self.add_project)
+        self.reload_button = QPushButton("Reload")
+        self.reload_button.clicked.connect(
+            lambda: self.load(self._log_path, self._configured_services))
+        self.save_button = QPushButton("Save")
+        self.save_button.setProperty("variant", "primary")
+        self.save_button.clicked.connect(self.save)
+        column.addWidget(widgets.row(
+            widgets.heading("Services & Logs"), None, self.start_all_button,
+            self.stop_all_button, self.add_project_button, self.reload_button,
+            self.save_button))
+
+        self.wording = widgets.Phrasing()
+        _tail = ("project groups the services that make one thing work and the logs "
+                 "they write. A service is started and stopped here; a log is read "
+                 "wherever it lives, whether or not anything here started it.")
+        column.addWidget(self.wording.text(
+            widgets.lede(""),
+            "Everything running on this machine, by project. A " + _tail,
+            "Everything running on this machine, by project, plus the logs "
+            "--server-log can stream. A " + _tail))
+        column.addSpacing(10)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inner = QWidget()
+        self._column = QVBoxLayout(inner)
+        self._column.setContentsMargins(0, 0, 6, 0)
+        self._column.setSpacing(12)
+        scroll.setWidget(inner)
+        column.addWidget(scroll, 1)
+
+        # The projects go here, at the top - they are the page. Everything below
+        # is added once and stays put, so the blocks are rebuilt by replacing the
+        # run of widgets between the top and this marker.
+        self._blocks_from = 0
+        self._blocks_end = self._make_connections()
+
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        column.addWidget(self.status)
+        # Built empty rather than bare: the inventory arrives from --describe on
+        # a thread, so between the window opening and that answer there is a
+        # stretch with no load() yet - and a page showing only a Connections
+        # header reads as broken rather than as empty.
+        self._rebuild()
+        self._validate()
+
+    def _make_connections(self):
+        """The connections fold, under the projects rather than over them.
+
+        A connection serves logs across every project, so it cannot live inside
+        one. It is also the part nobody opens twice - and above the projects it
+        pushed the subject of the page down the screen for no one's benefit.
+        """
+        self.connections_fold = widgets.Disclosure("Connections", expanded=False)
+        self.connections_fold.add_to_header(
+            _ghost("+ Add connection", self.add_connection))
+        self.connections = _table(["Name", "Runs on", "Used by", ""], 3, stretch=1)
+        self.connections.doubleClicked.connect(
+            lambda index: self.edit_connection(index.row()))
+        widgets.empty_note(self.connections,
+                           "No connections yet - a log is read over one, local "
+                           "for this machine or ssh for anywhere else.")
+        self.connections_fold.body().addWidget(ProjectBlock._panel(self.connections))
+        holder = widgets.BlueprintPanel(padding=(14, 12, 14, 14))
+        holder.layout().addWidget(self.connections_fold)
+        self._column.addWidget(holder)
+        self._column.addStretch(1)
+        return holder
+
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        column.addWidget(self.status)
+        # Built empty rather than bare: the inventory arrives from --describe on
+        # a thread, so between the window opening and that answer there is a
+        # stretch with no load() yet - and a page showing only a Connections
+        # header reads as broken rather than as empty.
+        self._rebuild()
+        self._validate()
+
+    # -- wiring ---------------------------------------------------------------
+    def set_core(self, core):
+        """The core runner, for opening a log. Without one the button says so."""
+        self._core = core
+
+    def set_environments(self, envs):
+        """The env values from --describe, so a log is bound by picking not typing."""
+        self._envs = [e for e in envs if e]
+
+    def set_developer_mode(self, enabled):
+        self._developer = bool(enabled)
+        self.wording.apply(enabled)
+
+    def project_names(self):
+        return [p.name for p in self._projects if p.name]
+
+    def rows(self):
+        return list(self._connections), list(self._logs), list(self._projects)
+
+    def paths(self):
+        """The two files this page edits. Shown in Settings, not on the page."""
+        return self._log_path, self._services_path
+
+    # -- loading / saving -----------------------------------------------------
+    def load(self, path, services_path="", log_sources_path=""):
+        """Read both files.
+
+        ``path`` is what the core reported reading. Both of the others are
+        settings and may be blank, in which case each falls back to its own
+        default under the user's own directory - and each reads the older
+        location once more, so an upgrade never looks like having lost the file.
+        """
+        read_logs, self._log_path = lsf.resolve_path(log_sources_path, path)
+        self._migrating_logs = read_logs != self._log_path
+        self._configured_services = services_path or ""
+        read_from, self._services_path = sf.resolve_path(services_path,
+                                                         self._log_path)
+        self._migrating = read_from != self._services_path
+        self._load_error = self._services_error = ""
+        try:
+            self._connections, self._logs = lsf.load(read_logs)
+        except lsf.LogSourcesFileError as exc:
+            self._connections, self._logs = [], []
+            self._load_error = str(exc)
+        try:
+            self._projects = sf.load(read_from)
+        except sf.ServicesFileError as exc:
+            self._projects = []
+            self._services_error = str(exc)
+        self._log_fingerprint = lsf.fingerprint(self._log_path)
+        self._services_fingerprint = sf.fingerprint(self._services_path)
+        self._rebuild()
+        self._mark_clean()
+        # Only over a clean page. Where the file is going to be written is
+        # housekeeping, and saying it on top of "this file is not valid JSON"
+        # replaces the one message that has to be read with the one that does
+        # not matter yet.
+        if self._validate() and (self._migrating or self._migrating_logs):
+            # Said rather than done behind their back: the old file is still
+            # theirs, and Save is what decides anything. Both files can be in
+            # this state at once, and naming only one of them would be worse
+            # than naming neither.
+            moving = []
+            if self._migrating_logs:
+                moving.append("logs read from %s" % read_logs)
+            if self._migrating:
+                moving.append("projects read from %s" % read_from)
+            self._show_ok("%s - Save writes to %s."
+                          % (" · ".join(moving).capitalize(),
+                             " and ".join(sorted({self._log_path,
+                                                  self._services_path}))))
+
+    def save(self):
+        if not self._log_path:
+            self._show_problem("No log sources path configured.")
+            return
+        written = []
+        if not self._load_error:
+            if not self._confirm_overwrite(self._log_path, self._log_fingerprint,
+                                           lsf.fingerprint):
+                return
+            try:
+                lsf.save(self._log_path, self._connections, self._logs)
+            except lsf.LogSourcesFileError as exc:
+                self._show_problem(str(exc))
+                return
+            self._log_fingerprint = lsf.fingerprint(self._log_path)
+            written.append("%d log(s)" % len(self._logs))
+        if self._services_path and not self._services_error:
+            if not self._confirm_overwrite(self._services_path,
+                                           self._services_fingerprint, sf.fingerprint):
+                return
+            try:
+                sf.save(self._services_path, self._projects)
+                self._migrating = False
+            except sf.ServicesFileError as exc:
+                self._show_problem(str(exc))
+                return
+            self._services_fingerprint = sf.fingerprint(self._services_path)
+            written.append("%d project(s)" % len(self._projects))
+        self._mark_clean()
+        self._show_ok("Saved %s (previous kept as .bak)." % " and ".join(written))
+        self.saved.emit()
+
+    def _confirm_overwrite(self, path, known, read):
+        """Never write over a change somebody else made while this was open."""
+        if known is None or read(path) == known:
+            return True
+        return QMessageBox.question(
+            self, "File changed on disk",
+            "%s changed since it was loaded here.\n\nOverwrite it with what is on "
+            "screen?" % path,
+            QMessageBox.Save | QMessageBox.Cancel,
+            QMessageBox.Cancel) == QMessageBox.Save
+
+    # -- rendering ------------------------------------------------------------
+    def _rebuild(self):
+        """Rebuild the blocks from the two documents.
+
+        Only ever called when the *configuration* changes. A status change
+        repaints one cell (see :meth:`_status_changed`) - rebuilding on every
+        poll would drop the selection and flicker the page every three seconds.
+        """
+        self._rebuild_connections()
+        # Everything before the connections holder is a block from last time.
+        while self._column.indexOf(self._blocks_end) > self._blocks_from:
+            item = self._column.takeAt(self._blocks_from)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._blocks = {}
+
+        at = self._blocks_from
+        known = {project.name for project in self._projects}
+        for project in self._projects:
+            block = ProjectBlock(self, project)
+            block.set_runners(project.runners)
+            block.set_logs([row for row in self._logs
+                            if row.project == project.name])
+            self._blocks[project.name] = block
+            self._column.insertWidget(at, block)
+            at += 1
+
+        # A log naming a project that is not configured is still a log. It goes
+        # in the trailing block rather than nowhere: silently hiding somebody's
+        # row because a name no longer matches would look exactly like losing it.
+        orphans = [row for row in self._logs if row.project not in known]
+        if orphans or not self._projects:
+            block = ProjectBlock(self, None)
+            block.set_logs(orphans)
+            self._blocks[""] = block
+            self._column.insertWidget(at, block)
+
+        self.supervisor.sync(self._projects)
+        self._refresh_statuses()
+        self._update_dirty()
+
+    # -- unsaved changes ------------------------------------------------------
+    def _comparable(self):
+        """The two documents as one value, for telling edited from untouched.
+
+        Exactly what would be written, minus each project's ``expanded``: folding
+        a block is a view preference and is saved along with the next real edit,
+        but it is not itself a reason to light up Save.
+        """
+        projects = []
+        for project in self._projects:
+            entry = project.to_entry()
+            entry.pop("expanded", None)
+            projects.append(entry)
+        return json.dumps({"connections": [c.to_entry() for c in self._connections],
+                           "logs": [row.to_entry() for row in self._logs],
+                           "projects": projects},
+                          sort_keys=True, default=str)
+
+    def is_dirty(self):
+        return self._dirty
+
+    def _mark_clean(self):
+        self._baseline = self._comparable()
+        self._update_dirty()
+
+    def _update_dirty(self):
+        self._dirty = (self._baseline is not None
+                       and self._comparable() != self._baseline)
+        self.save_button.setProperty("dirty", "true" if self._dirty else "false")
+        # A stylesheet rule keyed on a property is only re-read on re-polish.
+        self.save_button.style().unpolish(self.save_button)
+        self.save_button.style().polish(self.save_button)
+        self._update_buttons()
+
+    def _update_buttons(self):
+        """Nothing offers to act on what is not there."""
+        runners = sum(len(project.runners) for project in self._projects)
+        self.start_all_button.setEnabled(bool(runners))
+        self.stop_all_button.setEnabled(bool(runners))
+        for block in self._blocks.values():
+            block.update_buttons()
+        savable = self._valid and self._dirty and not (self._load_error
+                                                       or self._services_error)
+        self.save_button.setEnabled(savable)
+        self.save_button.setToolTip(
+            "Unsaved changes" if self._dirty else "Nothing to save")
+
+    def confirm_discard(self):
+        """True when it is all right to walk away. Asks only if there is a reason."""
+        if not self._dirty:
+            return True
+        return QMessageBox.question(
+            self, "Unsaved changes",
+            "Services & Logs has changes that are not saved.\n\nDiscard them?",
+            QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Cancel) == QMessageBox.Discard
+
+    def _rebuild_connections(self):
+        table = self.connections
+        table.setRowCount(len(self._connections))
+        for index, row in enumerate(self._connections):
+            used = sum(1 for log in self._logs if log.connection == row.name)
+            _cell(table, index, 0, row.name or "(unnamed)", mono=True)
+            _cell(table, index, 1, row.describe(), mono=True)
+            _cell(table, index, 2, "%d log%s" % (used, "" if used == 1 else "s"))
+            table.setCellWidget(index, 3, _actions(
+                _cell_button("Edit", lambda i=index: self.edit_connection(i)),
+                _cell_button("Copy", lambda i=index: self.duplicate_connection(i)),
+                _cell_button("Delete", lambda i=index: self.delete_connection(i))))
+        _fit_columns(table, 3)
+        self.connections_fold.set_title(
+            "Connections  (%d)" % len(self._connections))
+
+    def _refresh_statuses(self):
+        for project in self._projects:
+            block = self._blocks.get(project.name)
+            if block is None:
+                continue
+            for runner in project.runners:
+                service = self.supervisor.service(project.name, runner.name)
+                block.set_status(runner.name,
+                                 service.status if service else runnertypes.STOPPED,
+                                 service.detail if service else "",
+                                 service.stale if service else False)
+                if service is not None and runner.criteria:
+                    block.set_criteria(runner.name, service.criteria_state())
+            running, total = self.supervisor.counts(project.name)
+            block.set_summary(running, total)
+
+    def _criteria_changed(self, project, name):
+        block = self._blocks.get(project)
+        if block is not None:
+            block.set_criteria(name, self.supervisor.criteria_state(project, name))
+
+    def _status_changed(self, project, name, status):
+        block = self._blocks.get(project)
+        if block is None:
+            return
+        service = self.supervisor.service(project, name)
+        block.set_status(name, status, service.detail if service else "",
+                         service.stale if service else False)
+        running, total = self.supervisor.counts(project)
+        block.set_summary(running, total)
+        if status == runnertypes.FAILED and service is not None and service.detail:
+            self._show_problem("%s · %s: %s" % (project, name, service.detail))
+
+    # -- stacks ---------------------------------------------------------------
+    def _project(self, name):
+        for project in self._projects:
+            if project.name == name:
+                return project
+        return None
+
+    def add_project(self):
+        dialog = ProjectDialog(taken=self.project_names(), parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            self._projects.append(dialog.value())
+            self._rebuild()
+            self._validate()
+
+    def edit_project(self, name):
+        project = self._project(name)
+        if project is None:
+            return
+        dialog = ProjectDialog(project, taken=self.project_names(), parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        updated = dialog.value()
+        index = self._projects.index(project)
+        self._projects[index] = updated
+        # Logs name their stack by name; renaming one behind their back would
+        # tip every log that used it into the Unassigned block.
+        if name and updated.name != name:
+            for row in self._logs:
+                if row.project == name:
+                    row.project = updated.name
+        self._rebuild()
+        self._validate()
+
+    def delete_project(self, name):
+        project = self._project(name)
+        if project is None:
+            return
+        running = [s for s in self.supervisor.detained() if s.project == name]
+        logs = [row for row in self._logs if row.project == name]
+        extra = ""
+        if logs:
+            extra += ("\n\n%d log(s) belong to it. They are kept and move to "
+                      "Unassigned." % len(logs))
+        if running:
+            extra += ("\n\n%d service(s) are running and will be stopped."
+                      % len(running))
+        if QMessageBox.question(
+                self, "Delete project",
+                "Remove the project %r and its %d service(s)?%s"
+                % (name or "(unnamed)", len(project.runners), extra),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        for row in logs:
+            row.project = ""
+        self._projects.remove(project)
+        self._rebuild()
+        self._validate()
+
+    def start_project(self, name=None):
+        self.supervisor.start_all(name)
+
+    def stop_project(self, name=None):
+        self.supervisor.stop_all(name)
+
+    def restart_project(self, name=None):
+        self.supervisor.restart_all(name)
+
+    # -- runners --------------------------------------------------------------
+    def add_runner(self, project_name, runner_type):
+        project = self._project(project_name)
+        if project is None:
+            return
+        dialog = RunnerDialog(runner_type,
+                              taken=[r.name for r in project.runners],
+                              siblings=[r.name for r in project.runners],
+                              project_dir=project.dir, parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            project.runners.append(dialog.value())
+            self._rebuild()
+            self._validate()
+
+    def edit_runner(self, project_name, row):
+        project = self._project(project_name)
+        if project is None or row not in project.runners:
+            return
+        kind = row.runner_type
+        if kind is None:
+            self._show_problem("This build has no %r runner, so there is no form "
+                               "for it. The row is kept as it is." % row.type)
+            return
+        dialog = RunnerDialog(kind, row, taken=[r.name for r in project.runners],
+                              siblings=[r.name for r in project.runners],
+                              project_dir=project.dir, parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        updated = dialog.value()
+        project.runners[project.runners.index(row)] = updated
+        # Services wait for each other by name; renaming one behind their back
+        # would leave them waiting for something that no longer exists.
+        if row.name and updated.name != row.name:
+            for other in project.runners:
+                other.depends = [updated.name if d == row.name else d
+                                 for d in other.depends]
+        self._rebuild()
+        self._validate()
+
+    def copy_runner(self, project_name, row):
+        project = self._project(project_name)
+        if project is None or row not in project.runners:
+            return
+        clone = row.copy()
+        clone.name = _unique(clone.name or "service",
+                             [r.name for r in project.runners])
+        project.runners.insert(project.runners.index(row) + 1, clone)
+        self._rebuild()
+        self._validate()
+
+    def delete_runner(self, project_name, row):
+        project = self._project(project_name)
+        if project is None or row not in project.runners:
+            return
+        service = self.supervisor.service(project_name, row.name)
+        note = ""
+        if service is not None and service.is_running():
+            note = ("\n\nIt is running. It will be stopped." if service.detained()
+                    else "\n\nIt is running, and was set to keep running on its "
+                         "own - deleting the row does not stop it.")
+        if QMessageBox.question(
+                self, "Delete service", "Remove %r from %r?%s"
+                % (row.name or "(unnamed)", project_name, note),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        project.runners.remove(row)
+        for other in project.runners:
+            other.depends = [d for d in other.depends if d != row.name]
+        self._rebuild()
+        self._validate()
+
+    def toggle_runner(self, project_name, runner_name):
+        service = self.supervisor.service(project_name, runner_name)
+        if service is None:
+            return
+        if service.is_running():
+            self.supervisor.stop(project_name, runner_name)
+        else:
+            self._show_ok("Starting %s…" % runner_name)
+            self.supervisor.start(project_name, runner_name)
+
+    def restart_runner(self, project_name, runner_name):
+        self.supervisor.restart(project_name, runner_name)
+
+    def open_console(self, project_name, row):
+        service = self.supervisor.service(project_name, row.name)
+        if service is None:
+            self._show_problem("No service for %r yet - give it a name first."
+                               % (row.name or "(unnamed)"))
+            return
+        window = ConsoleWindow(service, parent=self)
+        self._consoles.append(window)
+        window.finished.connect(
+            lambda _code, w=window: self._consoles.remove(w)
+            if w in self._consoles else None)
+        window.show()
+        window.raise_()
+        return window
+
+    # -- connections ----------------------------------------------------------
+    def add_connection(self):
+        dialog = ConnectionDialog(taken=[c.name for c in self._connections],
+                                  parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            self._connections.append(dialog.value())
+            self.connections_fold.set_expanded(True)
+            self._rebuild()
+            self._validate()
+
+    def edit_connection(self, index):
+        if not (0 <= index < len(self._connections)):
+            return
+        previous = self._connections[index].name
+        dialog = ConnectionDialog(self._connections[index],
+                                  taken=[c.name for c in self._connections],
+                                  parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._connections[index] = dialog.value()
+        # Logs refer to a connection by name; renaming one behind their back
+        # would orphan every log that used it.
+        renamed = self._connections[index].name
+        if previous and renamed != previous:
+            for row in self._logs:
+                if row.connection == previous:
+                    row.connection = renamed
+        self._rebuild()
+        self._validate()
+
+    def duplicate_connection(self, index):
+        if not (0 <= index < len(self._connections)):
+            return
+        clone = self._connections[index].copy()
+        clone.name = _unique(clone.name or "connection",
+                             [c.name for c in self._connections])
+        self._connections.insert(index + 1, clone)
+        self._rebuild()
+        self._validate()
+
+    def delete_connection(self, index):
+        if not (0 <= index < len(self._connections)):
+            return
+        row = self._connections[index]
+        used = [log.name for log in self._logs if log.connection == row.name]
+        extra = ("\n\n%d log(s) use it: %s. They will have no connection until you "
+                 "point them somewhere else." % (len(used), ", ".join(used))
+                 if used else "")
+        if QMessageBox.question(
+                self, "Delete connection",
+                "Remove connection %r?%s" % (row.name or "(unnamed)", extra),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        del self._connections[index]
+        self._rebuild()
+        self._validate()
+
+    # -- logs -----------------------------------------------------------------
+    def add_log(self, project_name=""):
+        if not self._connections:
+            self.connections_fold.set_expanded(True)
+            self._show_problem("Add a connection first - a log has to be read over "
+                               "one.")
+            return
+        seed = lsf.LogRow(connection=self._connections[0].name,
+                          envs=self._envs[:1], type="file", project=project_name)
+        dialog = LogDialog(seed, connections=self._connections, envs=self._envs,
+                           siblings=self._logs, developer=self._developer,
+                           projects=self.project_names(), parent=self)
+        if dialog.exec() == QDialog.Accepted:
+            self._logs.append(dialog.value())
+            self._rebuild()
+            self._validate()
+
+    def edit_log(self, row):
+        if row not in self._logs:
+            return
+        others = [other for other in self._logs if other is not row]
+        dialog = LogDialog(row, connections=self._connections, envs=self._envs,
+                           siblings=others, developer=self._developer,
+                           projects=self.project_names(), parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._logs[self._logs.index(row)] = dialog.value()
+        self._rebuild()
+        self._validate()
+
+    def copy_log(self, row):
+        if row not in self._logs:
+            return
+        clone = row.copy()
+        clone.name = _unique(clone.name or "log", [r.name for r in self._logs])
+        self._logs.insert(self._logs.index(row) + 1, clone)
+        self._rebuild()
+        self._validate()
+
+    def delete_log(self, row):
+        if row not in self._logs:
+            return
+        if QMessageBox.question(
+                self, "Delete log", "Remove log %r?" % (row.name or "(unnamed)"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._logs.remove(row)
+        self._rebuild()
+        self._validate()
+
+    def open_selected_log(self, block, whole):
+        """Show what the selected log holds - the whole of it, or its tail."""
+        row = block.selected_log()
+        if row is None:
+            self._show_problem("Select a log to open.")
+            return
+        if not row.name:
+            self._show_problem("Give the log a name first.")
+            return
+        if self._core is None:
+            self._show_problem("No core configured (Settings).")
+            return
+        if lsf.validate(self._connections, self._logs):
+            self._show_problem("Fix the problems below and save first - the "
+                               "launcher reads the file, not the screen.")
+            return
+        if self._log_fingerprint != lsf.fingerprint(self._log_path):
+            self._show_problem("Save first: the launcher reads what is in the file.")
+            return
+        self._show_ok("Opening %s…" % row.name)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            result = self._core.server_log_show(row.name,
+                                                lines=None if whole else 500)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not result.get("ok"):
+            self._show_problem("%s: %s" % (row.name, result.get("error")
+                                           or "could not be read"))
+            return
+        self._show_ok("%s: %d line(s) from %s"
+                      % (row.name, len(result.get("lines") or []),
+                         result.get("target", "")))
+        viewer = LogViewerDialog(row.name, result, whole, parent=self)
+        self._viewers.append(viewer)
+        viewer.finished.connect(
+            lambda _code, v=viewer: self._viewers.remove(v)
+            if v in self._viewers else None)
+        viewer.show()
+        viewer.raise_()
+        return viewer
+
+    # -- validation -----------------------------------------------------------
+    def _validate(self):
+        if self._load_error or self._services_error:
+            # Never offer to save over a file that could not be read: an empty
+            # editor validates perfectly, and saving it would throw the content
+            # away. Reload once the file is fixed.
+            self._show_problem("%s\n\nFix the file and press Reload - saving now "
+                               "would replace it with an empty one."
+                               % (self._load_error or self._services_error))
+            self._valid = False
+            self._update_buttons()
+            return False
+        problems = (lsf.validate(self._connections, self._logs)
+                    + sf.validate(self._projects))
+        if problems:
+            self._show_problem("\n".join(problems[:6]))
+        elif not self._projects and not self._logs:
+            self._show_ok("Nothing configured yet. Add a project, then a service in "
+                          "it - or a connection and a log, to read a backend "
+                          "nothing here starts.")
+        else:
+            runners = sum(len(p.runners) for p in self._projects)
+            self._show_ok("%d project(s) · %d service(s) · %d connection(s) · %d log(s)"
+                          % (len(self._projects), runners, len(self._connections),
+                             len(self._logs)))
+        self._valid = not problems
+        self._update_buttons()
+        return not problems
+
+    def _show_problem(self, message):
+        self.status.setText(message)
+        self.status.setStyleSheet("color: %s; font-size: 12px;" % theme.BAD)
+
+    def _show_ok(self, message):
+        self.status.setText(message)
+        self.status.setStyleSheet("color: %s; font-size: 12px;" % theme.NEUTRAL[700])
+
+    # -- closing --------------------------------------------------------------
+    def detained(self):
+        """Running services that would be lost if the window closed now."""
+        return self.supervisor.detained()
+
+    def shutdown(self, timeout_ms=svc.SHUTDOWN_WAIT_MS):
+        return self.supervisor.shutdown(timeout_ms)
+
+    def closeEvent(self, event):
+        # Closing the page stops watching, not the services: whether they end is
+        # decided in the main window's closeEvent, by whether each may detach.
+        self.supervisor.dispose()
+        super().closeEvent(event)
+
+
+def _unique(name, taken):
+    """A copy's name, so a duplicate is valid the moment it is made."""
+    candidate, index = "%s-copy" % name, 2
+    while candidate in taken:
+        candidate, index = "%s-copy-%d" % (name, index), index + 1
+    return candidate

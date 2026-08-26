@@ -912,3 +912,138 @@ def test_toggling_always_on_top_on_a_visible_window_keeps_it_visible(window):
     assert window.isVisible()
     window.set_always_on_top(False)
     assert window.isVisible()
+
+
+# ------------------------------------------------------------ services & logs
+def test_the_log_sources_entry_became_services_and_logs(window):
+    labels = {key: label for key, label, _mark in main_window_mod.CONFIGURE}
+    assert labels["logsources"] == "Services & Logs"
+    # The key stays "logsources": it is what Settings.page and the hidden-nav
+    # list hold, so renaming it would reset somebody's rail and last page.
+    assert window._pages["logsources"] is window.services
+
+
+def test_the_entry_has_a_mark_of_its_own(window):
+    from cms_gui import icons
+
+    marks = {key: mark for key, _label, mark in main_window_mod.CONFIGURE}
+    assert marks["logsources"] == "services"
+    assert "services" in icons.DRAWINGS
+
+
+def test_closing_with_nothing_running_asks_nothing(window, monkeypatch):
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("nothing is running; there is nothing to confirm")
+
+    monkeypatch.setattr("cms_gui.pages.services.QMessageBox.question", refuse)
+    assert window.services.detained() == []
+    assert window._confirm_close_with_services() is True
+
+
+def test_closing_on_top_of_a_service_names_it_and_can_be_called_off(window,
+                                                                   monkeypatch):
+    """The only thing standing between a service and being orphaned.
+
+    PySide6 binds no setChildProcessModifier, so there is no PR_SET_PDEATHSIG:
+    if this window goes first, an attached child is simply left behind. So the
+    confirmation is the mechanism, not a courtesy.
+    """
+    from PySide6.QtWidgets import QMessageBox
+
+    class _Doomed:
+        project, name = "Claim", "Odoo Local"
+
+    monkeypatch.setattr(window.services, "detained", lambda: [_Doomed()])
+    seen = {}
+
+    def exec_(self):
+        seen["text"] = self.text() + " " + self.informativeText()
+        self.setClickedButton = None
+        return QMessageBox.RejectRole
+
+    monkeypatch.setattr(QMessageBox, "exec", exec_, raising=False)
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: None)
+    assert window._confirm_close_with_services() is False
+    assert "1 service(s) stop" in seen["text"]
+    assert "Claim · Odoo Local" in seen["text"]
+
+
+# --------------------------------------------------- what is running, in the footer
+def _shell(name):
+    from cms_gui import servicesfile as sf
+
+    return sf.RunnerRow(name=name, type="shell", settings={
+        "command": "%s -c \"import time;time.sleep(30)\"" % sys.executable})
+
+
+def _with_services(window, *names):
+    from cms_gui import servicesfile as sf
+
+    window.services._projects = [sf.ProjectRow(
+        name="Claim", runners=[_shell(name) for name in names])]
+    window.services._rebuild()
+    return window.services.supervisor
+
+
+def _until(qapp, predicate, timeout=15.0):
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline and not predicate():
+        qapp.processEvents()
+        time.sleep(0.02)
+    qapp.processEvents()
+    return predicate()
+
+
+def test_the_footer_says_nothing_while_nothing_is_running(window):
+    assert window.services_label.text() == ""
+
+
+def test_the_footer_names_a_service_that_is_up(window, qapp):
+    supervisor = _with_services(window, "odoo")
+    try:
+        window.services.start_project("Claim")
+        assert _until(qapp, lambda: window.services_label.text() == "odoo: running")
+    finally:
+        window.services.shutdown(6000)
+
+
+def test_the_footer_counts_the_rest_rather_than_filling_the_bar(window, qapp):
+    # It shares its line with the machine's load and the worker limit.
+    supervisor = _with_services(window, "a", "b", "c", "d")
+    try:
+        window.services.start_project("Claim")
+        assert _until(qapp, lambda: len(supervisor.running()) == 4)
+        text = window.services_label.text()
+        assert text.count("running") == main_window_mod.SERVICES_IN_FOOTER
+        assert text.endswith("+1")
+        # The whole list is still reachable, with the project each belongs to.
+        assert window.services_label.toolTip().count("Claim") == 4
+    finally:
+        window.services.shutdown(6000)
+
+
+def test_the_footer_empties_again_when_they_stop(window, qapp):
+    supervisor = _with_services(window, "odoo")
+    try:
+        window.services.start_project("Claim")
+        assert _until(qapp, lambda: supervisor.running())
+        window.services.stop_project("Claim")
+        assert _until(qapp, lambda: window.services_label.text() == "")
+    finally:
+        window.services.shutdown(6000)
+
+
+def test_the_footer_is_about_what_is_happening_not_about_settings(window):
+    """Which core and which interpreter are decided once, in Settings.
+
+    They were three fixed strings taking the left half of the status bar for
+    facts that never change while the window is open. The config file stays: it
+    is the one of the three that changes what a run actually reads.
+    """
+    assert not hasattr(window, "status_core")
+    assert not hasattr(window, "status_python")
+    assert window.status_config.text().startswith("config: ")
+    assert os.sep not in window.status_config.text()      # the name, not the path
+    assert window.status_config.toolTip()                 # the path is still here

@@ -16,6 +16,183 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+### Added
+- **The GUI can start the backends whose logs it was already reading.** The Log
+  sources page is now **Services & Logs**, organised by *project* rather than
+  by kind: each project is a block holding its services above its logs.
+
+  The page could say which backend logs a run may stream; it could not say whether
+  the backend was even running, because nothing here had ever started one. A local
+  Odoo, its Postgres container and its log file are one thing to the person using
+  them and were three unrelated facts on screen.
+
+  A service is a Python script, a shell command, a Docker container or a Compose
+  file — each one row in `runnertypes.TYPES`, with its command lines and a field
+  spec the form is generated from, so a new kind needs no dialog of its own. What
+  is *not* cosmetic is who owns the running thing: a supervised service is a
+  process we started and its state is that process's state, while `docker start`
+  exits the moment the daemon has the job, so a container's state has to be asked
+  for rather than assumed.
+
+  **A service can say what has to be up before it is.** *Starts after* names other
+  services in the same project; Start waits until each of them reports running —
+  the row says *Waiting…* and what it is waiting for — and Stop takes them down in
+  the reverse order. The order is read off the dependencies rather than off the
+  list, so a project whose services were typed in any order still starts in the
+  right one. A dependency that cannot start says so on the row that was waiting
+  for it, rather than leaving it waiting forever. A loop is refused with the ring
+  named, and is broken rather than recursed into if a hand-edited file has one.
+
+  Each service carries **Detach allowed**. Off, it is a child of this window, and
+  closing the application names what will stop and asks first. On, it is started
+  detached and found again by pid next time. The confirmation is the mechanism and
+  not a courtesy: PySide6 binds no `setChildProcessModifier`, so there is no
+  `PR_SET_PDEATHSIG` behind it — and because Qt kills a running child when its
+  `QProcess` is destroyed, a service allowed to detach is started through
+  `subprocess.Popen` instead, writing to a file the console reads.
+
+  Services live in a new `services.json` under your own directory
+  (`~/ChromeMultiSession`), with the path settable in **Settings**. The launcher
+  neither reads it nor needs to — which is exactly why where it goes is nobody
+  else's business. It first went beside `logsources.json`, and that is wrong in
+  the case that matters: from a source checkout the launcher's config path *is*
+  the checkout, so the GUI's own file landed in somebody's repository. A file
+  still at the old location is read when there is nothing at the new one, and the
+  next Save moves it; the old one is left alone rather than deleted.
+
+- **A service can be told what to watch its own log for.** *Criteria* on a
+  service: a name you choose (`start`, `finished_tests`, anything), a colour, and
+  the rules that light it. One that matches shows as a tag beside the service, in
+  its colour; the ones that have not are on the tooltip rather than in the row,
+  which would otherwise be mostly grey words about things that have not happened.
+  A project that uses none has no such column at all.
+
+  "Running" has only ever meant that the process started, which is the weakest
+  useful claim: an Odoo whose port is taken is Running, and so is one that booted
+  cleanly. What separates them is in the log, and nothing read it.
+
+  The rules are about the **whole log**, not one line — which is what
+  `grep "started" && grep "!ERRORS"` actually asks. A *must contain* rule is
+  satisfied by any line at any point and stays so; a *must not contain* rule holds
+  until the first line trips it, and then permanently does not. So a criterion can
+  go dark again: `start` stops being true the moment a `CRITICAL` line arrives.
+  Cleared when the service starts *and* when it stops or falls over, so a tag
+  only ever describes a run that is happening — a green `start` beside a stopped
+  service is a claim about a run that is over.
+
+  A criterion reads the service's own output by default, or a file if you name
+  one — which is what a backend started with a logfile needs, since it prints
+  almost nothing to its console.
+
+  Deliberately display-only: a criterion never changes the status, never holds up
+  anything that waits on the service, and never stops it. STATUS means the
+  process and this means the log, and neither pretends to be the other.
+
+### Changed
+- **A log can name the project it belongs to.** One optional `project` key per log
+  in `logsources.json`, which decides only which block it appears under.
+  `engine.serverlog` already sweeps keys it does not know into `LogSource.extra`
+  and ignores them, so this is not a format change: `--server-log`, `--describe`
+  and every existing file behave exactly as before, and a log naming no project
+  is an ordinary log shown under *Unassigned*. Nothing needs migrating.
+- The sidebar entry is renamed to **Services & Logs**. Its internal key is
+  unchanged, so a hidden-sidebar setting or a remembered last page still resolves.
+- **Save only offers itself when there is something to save**, and closing on top
+  of an unsaved edit asks first. Folding a block is not counted as an edit: it is
+  a view preference, saved along with the next real change.
+- **A Browse button can now reach the paths that live in dotted directories.**
+  A project's interpreter is `.venv/bin/python` and an ssh key is in `~/.ssh`, and
+  a file chooser lists neither. It does show what is inside a dotted directory it
+  *opens in*, though, so every chooser now starts where the answer is likely to
+  be rather than above it. Better still for the commonest case: a Python service
+  finds the project's own `.venv` by itself, and the Interpreter field shows what
+  leaving it blank will actually run.
+- Buttons that live in a table row no longer paint the accent on top of the
+  accent. A row that carries its own buttons marks selection with a quiet band
+  instead of the accent flood: a widget in a cell paints its own background and
+  cannot be told its row is selected, so the flood left the buttons stranded on a
+  rectangle of the wrong colour, and no ink was legible both on and off it.
+- A selected row can be un-selected by clicking it again. Open Tail and Open Full
+  are aimed by selecting a log, so there has to be a way to aim at nothing — and
+  in a list of one there was none.
+- Buttons that act on services are dark while a project has none, and the paths of
+  the two files the page edits moved to **Settings**, where the other answers
+  about where things live already are.
+- **Where `logsources.json` lives is a setting too**, defaulting to
+  `~/ChromeMultiSession` like `services.json`. The launcher resolved it against
+  its own data root, which from a source checkout *is* the checkout — so the file
+  landed in somebody's repository, the same problem `services.json` already had.
+
+  It differs from that one in a way that matters: this file is not the GUI's
+  alone, `--server-log` reads it. So the path travels with every call the GUI
+  makes into the core, through a new **`--log-sources=FILE`** flag — otherwise
+  the file being edited and the file a run reads come apart, and the page's own
+  Open Tail / Open Full read the wrong one. The plumbing was already there: every
+  function that touches the file took a `path` argument and nothing on the
+  command line set it.
+
+  A file still at the old location is read while it is the only one there, the
+  page says so, and the next Save writes the new one; the old is left alone
+  rather than deleted. The core is pointed at whichever one is actually in force,
+  so the two never disagree even mid-migration.
+
+- **Every table header is a filled band.** They were painted in the page's own
+  colour, which makes a header not a band at all but small grey text floating
+  above some rows — and the Services & Logs page carries four tables, so it read
+  as one undifferentiated field with words scattered through it. Filling them caps
+  each table and is what says where one ends and the next begins. Applies
+  everywhere rather than on that page alone: a header that meant one thing on
+  Services and another on Credentials would put the confusion back.
+
+  The selected row moved one step further off the page at the same time, so a
+  selection and a header can never be mistaken for one another.
+
+### Fixed
+- **Where `services.json` will be written no longer hides a reason not to write
+  it.** Reading from the old location and saving to the new one is housekeeping,
+  and it was announced *after* validation — so over a file that was not valid
+  JSON it replaced the one message that had to be read with the one that did not
+  matter yet, on a page whose Save was already correctly dark.
+- **The status bar names what is running** — `odoo: running` — wherever you are in
+  the application. A service started and then navigated away from was otherwise
+  invisible: nothing outside its own page said it was still up. Past three it
+  counts the rest, because that line is shared with the machine's load and the
+  worker limit; the whole list, with the project each belongs to, is on the
+  tooltip.
+- **An empty table says what it means.** A header over a blank band reads as
+  something that failed to load rather than as something not configured yet, and
+  this page can carry four of them at once. Each now says what it is waiting for
+  — no services, no logs, no connections, nothing watched for — following the
+  table's own model, so filling one is not something anybody has to remember.
+- **A form opens at the height it needs.** Every hint under a field is a
+  word-wrapped label, and one of those reports a size for a width it has not been
+  given — always more lines than it takes. Adding those up left a band of nothing
+  under the last field of every dialog; they now take back whatever they did not
+  use, once they have real geometry.
+- **The splash opens in the colours the window will.** Its status strip filled
+  with the ink and wrote in the background, so it was the negative of whatever
+  was about to appear: a light bar under a dark window, and a dark one under a
+  light window. The first thing anybody sees should not contradict the second.
+- **Table headers are filled.** They were painted in the page's own colour, which
+  is not a band at all — small grey text floating above some rows — and a page
+  carrying four tables read as one undifferentiated field with words scattered
+  through it. Each header now caps its table: a tint darker than the page in
+  light mode, lighter in dark, since the neutral ramp inverts with the mode. The
+  selected-row band moved one step further out so the two can never read as each
+  other. Every table in the application, because a header that meant one thing on
+  one page would be worse than none.
+- The Environment grid and *Starts after* list are as tall as what is in them.
+  A fixed maximum is not a height: an empty grid and a one-item list each took
+  the whole of it, and left a field that was mostly nothing.
+- Every line a service prints now goes through one place. A detached service's
+  output was appended and emitted *beside* that door rather than through it, so
+  anything watching output would have missed it entirely — which the criteria
+  above would have shipped as a silent half-working feature.
+- The status bar no longer names the core script and the interpreter. Both are
+  decided once in Settings and are on About; three fixed strings for facts that
+  cannot change while the window is open were taking its left half. `config:`
+  stays — it is the one of the three that changes what a run reads.
+
 ## [0.11.0] - 2026-08-25
 
 ### Added
