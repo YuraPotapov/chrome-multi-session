@@ -16,6 +16,8 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-26
+
 ### Added
 - **The GUI can start the backends whose logs it was already reading.** The Log
   sources page is now **Services & Logs**, organised by *project* rather than
