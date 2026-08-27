@@ -479,11 +479,18 @@ class EmptyNote(QLabel):
     It lives on the table's viewport so it scrolls and clips with the rows, and
     follows the model rather than being told: whoever fills the table has one
     less thing to remember, which is the only way this stays true.
+
+    A table can also be empty for the other reason - every row hidden by a search
+    - and the two are different claims. Rows are counted as they are *shown*, and
+    :meth:`say_filtered` puts the second wording up while a search is on, so a
+    filtered table never reads as an unconfigured one.
     """
 
     def __init__(self, table, text):
         super().__init__(text, table.viewport())
         self._table = table
+        self._text = text
+        self._filtered = ""
         self.setAlignment(Qt.AlignCenter)
         self.setWordWrap(True)
         # The role, not a colour: a literal captured here would go on painting
@@ -501,9 +508,19 @@ class EmptyNote(QLabel):
             self.sync()
         return False
 
+    def say_filtered(self, text):
+        """What to say instead while a search is hiding rows. "" for none."""
+        self._filtered = text or ""
+        self.sync()
+
     def sync(self, *_args):
         self.setGeometry(self._table.viewport().rect())
-        self.setVisible(self._table.model().rowCount() == 0)
+        self.setText(self._filtered or self._text)
+        self.setVisible(not self._shown_rows())
+
+    def _shown_rows(self):
+        return sum(1 for row in range(self._table.model().rowCount())
+                   if not self._table.isRowHidden(row))
 
 
 def empty_note(table, text):

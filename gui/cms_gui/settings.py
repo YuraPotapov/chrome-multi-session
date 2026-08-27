@@ -127,6 +127,20 @@ class Settings:
     def save_hidden_nav_items(self, keys):
         self._qs.setValue("window/hidden_nav", json.dumps(sorted(set(keys))))
 
+    def folds(self, page):
+        """Which sections on ``page`` are open, as {section key: bool}.
+
+        A fold is a view preference, not a document: collapsing a project on
+        Services & Logs must survive closing the window whether or not anything
+        was saved, and must not light up a Save button. Stored as what the person
+        actually chose rather than as what is shut, so a section added in a later
+        version arrives at its own default instead of at somebody's old answer.
+        """
+        return self._json("folds/" + page, {})
+
+    def save_folds(self, page, states):
+        self._qs.setValue("folds/" + page, json.dumps(states, sort_keys=True))
+
     @property
     def always_on_top(self):
         """Whether the window stays above others - including a run's Chrome windows."""

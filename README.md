@@ -500,8 +500,10 @@ One connection serves every log on a machine, so a stand with three logs opens
 **one** ssh connection, not three. Copy `logsources.example.json` to get started,
 or edit it on the GUI's **Services & Logs** page — which also groups each log
 under the stack it belongs to, and starts and stops the backends those logs come
-from. That grouping is one optional `project` key per log, ignored by everything
-here; the CLI reads the file exactly as it always has.
+from. That grouping is one optional `project` key per log, and rows the editor
+creates also carry an `added` date so it can show the newest first. Both are the
+GUI's own and are ignored by everything here; the CLI reads the file exactly as
+it always has.
 
 ```json
 {

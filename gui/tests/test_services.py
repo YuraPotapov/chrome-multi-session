@@ -461,6 +461,36 @@ def test_starting_a_stack_starts_everything_in_it(qapp, supervisor):
     assert _pump(qapp, lambda: supervisor.counts("Claim") == (0, 2))
 
 
+def test_naming_services_acts_on_those_and_leaves_the_rest(qapp, supervisor):
+    # What the page's selection means: Start acts on the rows that were picked.
+    supervisor.sync(_stack(_shell_row("a", "import time;time.sleep(30)"),
+                           _shell_row("b", "import time;time.sleep(30)")))
+    supervisor.start_all("Claim", ["b"])
+    assert _pump(qapp, lambda: supervisor.status("Claim", "b") == RUNNING)
+    assert supervisor.status("Claim", "a") == STOPPED
+    supervisor.stop_all("Claim", ["b"])
+    assert _pump(qapp, lambda: supervisor.counts("Claim") == (0, 2))
+
+
+def test_a_named_service_still_brings_up_what_it_waits_for(qapp, supervisor):
+    # Starting one of three selected services without its database would only
+    # look like it had failed.
+    rows = _stack(_shell_row("db", "import time;time.sleep(30)"),
+                  _shell_row("app", "import time;time.sleep(30)"))
+    rows[0].runners[1].depends = ["db"]
+    supervisor.sync(rows)
+    supervisor.start_all("Claim", ["app"])
+    assert _pump(qapp, lambda: supervisor.counts("Claim") == (2, 2))
+
+
+def test_a_subset_is_still_started_in_the_projects_own_order(supervisor):
+    supervisor.sync(_stack(_shell_row("a", "pass"), _shell_row("b", "pass"),
+                           _shell_row("c", "pass")))
+    ordered = [key[1] for key, _service in supervisor._ordered("Claim",
+                                                               ["c", "a"])]
+    assert ordered == ["a", "c"]
+
+
 def test_only_what_cannot_detach_is_counted_as_lost_on_close(qapp, supervisor):
     supervisor.sync(_stack(
         _shell_row("mine", "import time;time.sleep(30)"),

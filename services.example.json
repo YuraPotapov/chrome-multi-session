@@ -5,7 +5,7 @@
 
   "projects": [
     {
-      "_comment": "dir is where the project lives. Every service in it starts there unless it names a directory of its own; a relative one is read against this. It does not have to exist yet. expanded is only whether the block is open on the page.",
+      "_comment": "dir is where the project lives. Every service in it starts there unless it names a directory of its own; a relative one is read against this. It does not have to exist yet. expanded is what the block opens as the first time the GUI sees this project - after that the page remembers how you left it, in its own settings rather than here. A row the GUI creates also carries added, the date it was made: the page shows the newest first, and nothing else reads it. Neither key changes what runs.",
       "name": "Example App",
       "dir": "~/projects/example-app",
       "expanded": true,

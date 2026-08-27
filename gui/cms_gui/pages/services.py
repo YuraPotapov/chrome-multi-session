@@ -25,12 +25,30 @@ The projects come first and connections last. A connection serves logs across
 every project, so it cannot live inside one - but it is also the part nobody
 opens twice, and putting it above the subject of the page pushed the subject
 down the screen.
+
+Three things about the *view* rather than about either file:
+
+* **What is folded stays folded.** Every section here - a project, the unassigned
+  block, the connections - is remembered in QSettings and comes back the way it
+  was left, whether or not anything was saved in between. It is deliberately not
+  kept in the documents: folding a block is not an edit to anybody's
+  configuration, so it must neither light up Save nor need one.
+* **Newest first.** Blocks, services, logs and connections are shown in the order
+  they were added, most recent at the top. The rows themselves carry the date
+  (``added``); the lists keep the file's order, so what starts before what is
+  untouched by how the page happens to sort.
+* **Every table can be searched by column**, in a row of boxes under its header.
+  What is matched is what the table *says*, cell by cell, so the computed columns
+  - a service's status, a log's format - are searchable with no rule of their own.
+
+And a selection means something: picking rows in a project's services narrows its
+Start, Stop and Restart to those, and the buttons say so.
 """
 
 import json
 import os
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QDialog, QHeaderView, QLabel,
@@ -45,6 +63,7 @@ from .. import runnertypes
 from .. import services as svc
 from .. import servicesfile as sf
 from .. import theme, widgets
+from ..settings import Settings
 from .logsources import ConnectionDialog, LogDialog, LogViewerDialog, RowDialog
 
 #: What each status is called, and which of the theme's colours says it. Looked up
@@ -70,21 +89,221 @@ def status_color(status):
 
 
 class Table(QTableWidget):
-    """A table whose selected row can be un-selected by clicking it again.
+    """A table whose selected row can be un-selected, and which can carry a
+    search row under its header.
 
-    Selecting a row is how Open Tail and Open Full are aimed, so there has to be
-    a way to aim at nothing. With one row in the list there was none: the first
-    click selected it and every click after that re-selected the same thing, and
-    a list of one could never be returned to having nothing chosen.
+    **Selection.** Clicking a selected row clears it. Selection is what aims Open
+    Tail and Open Full at a log, and what narrows a project's Start and Stop to
+    part of it, so there has to be a way to aim at nothing. With one row in the
+    list there was none: the first click selected it and every click after that
+    re-selected the same thing, and a list of one could never be returned to
+    having nothing chosen. Where the table selects several rows at a time, Qt
+    already toggles on click, so this stands aside.
+
+    **The search row** is a child of the *view* rather than of the page, parked
+    in the margin between the header and the first row: that way it stays put
+    while the rows change under it, and it is measured in the table's own
+    coordinates, which is what lets a box line up with the column it searches.
+    That margin belongs to QTableView - it recomputes it on every geometry change
+    to make room for the header - so the only place to claim a strip of it is
+    here, straight after the base class has had its say.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._search_row = None
+        # updateGeometries runs again from inside setViewportMargins, and the
+        # nested call would hand the margins back to the header alone - which is
+        # exactly the strip we are claiming.
+        self._laying_out = False
+
+    def set_search_row(self, widget):
+        self._search_row = widget
+        widget.setParent(self)
+        widget.show()
+        self.updateGeometries()
+
+    def top_margin(self):
+        """Header plus search row: everything above the first row of data."""
+        return self.viewportMargins().top()
+
+    def updateGeometries(self):
+        if self._laying_out:
+            return
+        self._laying_out = True
+        try:
+            super().updateGeometries()
+            row = self._search_row
+            if row is None:
+                return
+            margins = self.viewportMargins()
+            height = row.sizeHint().height()
+            self.setViewportMargins(margins.left(), margins.top() + height,
+                                    margins.right(), margins.bottom())
+            row.setGeometry(margins.left() + self.frameWidth(),
+                            margins.top() + self.frameWidth(),
+                            self.viewport().width(), height)
+        finally:
+            self._laying_out = False
 
     def mousePressEvent(self, event):
         index = self.indexAt(event.position().toPoint())
-        if index.isValid() and index.row() in {i.row() for i in self.selectedIndexes()}:
+        if (self.selectionMode() == QAbstractItemView.SingleSelection
+                and index.isValid()
+                and index.row() in {i.row() for i in self.selectedIndexes()}):
             self.clearSelection()
             self.setCurrentIndex(self.model().index(-1, -1))
             return
         super().mousePressEvent(event)
+
+
+class SearchRow(QWidget):
+    """One search box per column, under the table's header.
+
+    A box per column rather than one over the whole row, because the columns ask
+    different questions: "postgres" in Name finds a service, in Config it finds
+    every service that mentions the container, and in Status it finds nothing at
+    all. Typing in more than one narrows - they are joined with AND, which is what
+    a row of boxes looks like it does.
+
+    What is searched is what the table *says*, cell by cell, not the rows behind
+    it. So a search matches exactly what a person can read on screen, including
+    the columns that are computed rather than stored - a service's status, a log's
+    format - and no column needs a rule of its own here.
+    """
+
+    changed = Signal()
+
+    #: The strip's height, and the box's inside it. Sized from the row rather
+    #: than from a form field: this stands between the header and the first row
+    #: and has to read as part of the table's own furniture.
+    HEIGHT = 26
+    INSET = 3
+
+    def __init__(self, table, skip=(), parent=None):
+        super().__init__(parent)
+        self.setProperty("role", "searchrow")
+        # A plain QWidget paints no background from a stylesheet without this,
+        # so the strip would show the page through it.
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedHeight(self.HEIGHT)
+        self._table = table
+        self._edits = {}
+        for column in range(table.columnCount()):
+            if column in set(skip):
+                continue
+            edit = QLineEdit(self)
+            heading = table.horizontalHeaderItem(column)
+            edit.setPlaceholderText((heading.text() if heading else "").lower()
+                                    or "search")
+            edit.setProperty("role", "search")
+            edit.textChanged.connect(self.apply)
+            self._edits[column] = edit
+        table.set_search_row(self)
+        header = table.horizontalHeader()
+        header.sectionResized.connect(self._place)
+        table.horizontalScrollBar().valueChanged.connect(self._place)
+
+    def sizeHint(self):
+        return QSize(self._table.viewport().width(), self.HEIGHT)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place()
+
+    def _place(self, *_args):
+        """Every box over the column it searches, at whatever width that is now.
+
+        Flush with the column's own edges rather than inset inside them. Inset,
+        the first box sat against the table's border while every other one had a
+        gap on each side, so a row of boxes meant to line up with the columns
+        read as a row of unevenly spaced ones. Sharing edges also means the boxes
+        divide the strip exactly where the header divides its sections.
+        """
+        header = self._table.horizontalHeader()
+        for column, edit in self._edits.items():
+            if self._table.isColumnHidden(column):
+                edit.hide()
+                continue
+            edit.show()
+            # One pixel wider than the column, so this box's right border lands
+            # under the next box's left one and the two read as a single rule
+            # rather than as a double.
+            edit.setGeometry(header.sectionViewportPosition(column), self.INSET,
+                             max(header.sectionSize(column) + 1, 0),
+                             self.HEIGHT - 2 * self.INSET)
+
+    def box(self, column):
+        """The search box over one column, or None where there is not one."""
+        return self._edits.get(column)
+
+    def needles(self):
+        """{column: what to look for}, lower-cased, empty boxes left out."""
+        return {column: edit.text().strip().lower()
+                for column, edit in self._edits.items() if edit.text().strip()}
+
+    def searching(self):
+        return bool(self.needles())
+
+    def clear(self):
+        for edit in self._edits.values():
+            edit.clear()
+
+    def state(self):
+        """What is typed here, keyed by column, for putting back after a rebuild."""
+        return {str(column): edit.text() for column, edit in self._edits.items()
+                if edit.text()}
+
+    def set_state(self, state):
+        for column, edit in self._edits.items():
+            edit.setText((state or {}).get(str(column), ""))
+
+    def apply(self, *_args):
+        """Hide what does not match. Called again whenever the rows are rebuilt."""
+        needles = self.needles()
+        table = self._table
+        for row in range(table.rowCount()):
+            table.setRowHidden(row, not self._matches(row, needles))
+        self._place()
+        self.changed.emit()
+
+    def _matches(self, row, needles):
+        for column, needle in needles.items():
+            item = self._table.item(row, column)
+            if needle not in (item.text().lower() if item is not None else ""):
+                return False
+        return True
+
+
+def _stamped(row):
+    """Mark a row as added now, unless it already says when it was.
+
+    Only rows *created* here are stamped. An edited row keeps the date it had -
+    changing a service's port does not make it a new service - and a copy is
+    stamped afresh, because that is one more row than there was.
+    """
+    if not row.added:
+        row.added = lsf.stamp()
+    return row
+
+
+def _newest_first(rows):
+    """The order the page shows rows in: most recently added at the top.
+
+    A *view* order and nothing more. The lists themselves keep the file's order,
+    which is what :meth:`servicesfile.ProjectRow.start_order` reads - so putting a
+    new service at the top of a block does not make it start before the database
+    it was added after.
+
+    Rows written before the editor stamped them carry no date. They keep the
+    file's order, below the ones that do: guessing that an undated row is old
+    would be a guess, but showing it under everything that says when it arrived
+    is only saying what is known.
+    """
+    dated = [row for row in rows if getattr(row, "added", "")]
+    undated = [row for row in rows if not getattr(row, "added", "")]
+    # reverse=True on a stable sort keeps rows sharing a second in file order.
+    return sorted(dated, key=lambda row: row.added, reverse=True) + undated
 
 
 def _table(headers, actions_col, stretch):
@@ -176,10 +395,19 @@ def _fit_height(table):
     Inside a scrolling page a table has no natural height - it takes whatever the
     layout offers, which is either nothing or everything. Measuring the rows is
     what makes a block's height mean "how much is in it".
+
+    Rows hidden by a search do not count. A table that kept its full height while
+    showing one match would leave the band of nothing the search was meant to
+    clear away, and a page of them would not look searched at all.
     """
     row_height = table.verticalHeader().defaultSectionSize()
-    height = table.horizontalHeader().height() + 4
-    height += row_height * table.rowCount() if table.rowCount() else 30
+    shown = sum(1 for row in range(table.rowCount())
+                if not table.isRowHidden(row))
+    # Everything above the first row of data, which is the header *and* the
+    # search row standing under it - measuring the header alone would clip the
+    # last row by exactly the strip's height.
+    height = table.top_margin() + 4
+    height += row_height * shown if shown else 30
     table.setFixedHeight(height)
 
 
@@ -452,7 +680,8 @@ class ProjectDialog(RowDialog):
                              dir=self.dir.text().strip(),
                              expanded=self._row.expanded,
                              runners=[r.copy() for r in self._row.runners],
-                             extra=dict(self._row.extra))
+                             extra=dict(self._row.extra),
+                             added=self._row.added)
 
 
 class RunnerDialog(RowDialog):
@@ -608,7 +837,8 @@ class RunnerDialog(RowDialog):
                             detach=self.detach.isChecked(), settings=settings,
                             depends=list(self.depends.checked()),
                             criteria=self.criteria.rows(),
-                            extra=dict(self._row.extra))
+                            extra=dict(self._row.extra),
+                            added=self._row.added)
 
 
 # ----------------------------------------------------------------- criteria
@@ -924,8 +1154,14 @@ class ProjectBlock(QWidget):
         outer.addWidget(panel)
 
         title = self.name or "Unassigned"
+        #: How this block's fold is remembered between sessions. By name, so a
+        #: project keeps its own answer as others come and go.
+        self.fold_key = ("project:%s" % self.name if project is not None
+                         else "unassigned")
         self.disclosure = widgets.Disclosure(
-            title, expanded=(project.expanded if project is not None else True))
+            title, expanded=page.fold_state(
+                self.fold_key,
+                project.expanded if project is not None else True))
         self.disclosure.toggled.connect(self._remember_expanded)
         panel.layout().addWidget(self.disclosure)
         self._title = title
@@ -938,13 +1174,24 @@ class ProjectBlock(QWidget):
             body.addWidget(widgets.row(widgets.kicker("Services (runners)"), None))
             self.runners = _table(self.RUNNER_HEADERS, self.R_ACTIONS,
                                   stretch=self.R_CONFIG)
+            # Several at a time, and one click each way: the selection is what
+            # narrows Start and Stop to part of a project, so making one asks for
+            # no modifier key that nobody would think to hold.
+            self.runners.setSelectionMode(QAbstractItemView.MultiSelection)
+            self.runners.itemSelectionChanged.connect(self._selection_changed)
             self.runners.doubleClicked.connect(
                 lambda index: self._console_at(index.row()))
-            widgets.empty_note(self.runners,
-                               "No services yet - Add Configuration builds one.")
+            self._runners_note = widgets.empty_note(
+                self.runners, "No services yet - Add Configuration builds one.")
+            # No box over the criteria or the buttons: neither cell holds text,
+            # so a search of them could only ever match nothing.
+            self.runners_search = SearchRow(
+                self.runners, skip=(self.R_CRITERIA, self.R_ACTIONS))
+            self.runners_search.changed.connect(self._runners_filtered)
             body.addWidget(self._panel(self.runners))
         else:
             self.runners = None
+            self.runners_search = None
             note = widgets.lede(
                 "Logs that name no project, or one that is no longer configured. "
                 "They stream exactly as they always have - give one a project in "
@@ -966,12 +1213,16 @@ class ProjectBlock(QWidget):
             lambda index: self._edit_log_at(index.row()))
         # The unassigned block's empty state is a different claim from a
         # project's: there, nothing has been added yet; here, nothing is stray.
-        widgets.empty_note(self.logs,
-                           "No logs in this project yet."
-                           if project is not None else
-                           "No logs without a project.")
+        self._logs_note = widgets.empty_note(self.logs,
+                                             "No logs in this project yet."
+                                             if project is not None else
+                                             "No logs without a project.")
+        self.logs_search = SearchRow(self.logs, skip=(self.L_ACTIONS,))
+        self.logs_search.changed.connect(self._logs_filtered)
         body.addWidget(self._panel(self.logs))
-        self.update_buttons()
+        # Sets every button's label as well as whether it is enabled - the two
+        # are the same question, asked of an empty selection.
+        self._selection_changed()
 
     @staticmethod
     def _panel(table):
@@ -994,24 +1245,88 @@ class ProjectBlock(QWidget):
         # These three act on the services, so an empty project has nothing for
         # them to do. Add Configuration is deliberately not among them: it is the
         # one thing an empty project is for.
+        #
+        # Each says "All" until rows are selected, and then says how many it will
+        # act on instead. Selecting a row used to mean nothing here - the buttons
+        # took the whole project either way - which made the selection look like
+        # a thing that had stopped working.
         self._service_buttons = [
-            _ghost("Start", lambda: self.page.start_project(self.name),
-                   "Start every service in this project that is not up, waiting "
-                   "where one service waits for another."),
-            _ghost("Stop", lambda: self.page.stop_project(self.name),
-                   "Stop them all, in the reverse of the order they start."),
-            _ghost("Restart", lambda: self.page.restart_project(self.name)),
+            (_ghost("Start All", lambda: self.page.start_project(
+                self.name, self.selected_runners()), ""), "Start"),
+            (_ghost("Stop All", lambda: self.page.stop_project(
+                self.name, self.selected_runners()), ""), "Stop"),
+            (_ghost("Restart All", lambda: self.page.restart_project(
+                self.name, self.selected_runners()), ""), "Restart"),
         ]
-        for widget in self._service_buttons + [
+        for widget in [button for button, _verb in self._service_buttons] + [
                 _ghost("Edit", lambda: self.page.edit_project(self.name),
                        "Rename this project, or point it at another directory."),
                 _ghost("Delete", lambda: self.page.delete_project(self.name)),
                 add]:
             self.disclosure.add_to_header(widget)
 
+    # -- selection ------------------------------------------------------------
+    def selected_runners(self):
+        """The services the block's buttons act on; empty means all of them.
+
+        A row hidden by a search is not one of them even if it is still selected
+        underneath: acting on something that cannot be seen is how a button ends
+        up doing more than it said.
+        """
+        if self.runners is None:
+            return []
+        rows = sorted({index.row() for index in self.runners.selectedIndexes()})
+        return [self._runner_rows[row].name for row in rows
+                if 0 <= row < len(self._runner_rows)
+                and not self.runners.isRowHidden(row)]
+
+    def _selection_changed(self, *_args):
+        chosen = len(self.selected_runners())
+        for button, verb in self._service_buttons:
+            button.setText("%s (%d)" % (verb, chosen) if chosen
+                           else "%s All" % verb)
+            button.setToolTip(
+                "%s the %d selected service%s. Click a row again to drop it from "
+                "the selection." % (verb, chosen, "" if chosen == 1 else "s")
+                if chosen else
+                "%s every service in this project. Select rows to act on some of "
+                "them instead." % verb)
+        self.update_buttons()
+
+    def _runners_filtered(self):
+        self._after_filter(self.runners, self._runners_note, self.runners_search)
+        # A search that hides a selected row changes what the buttons would act
+        # on, and they have to say so.
+        self._selection_changed()
+
+    def _logs_filtered(self):
+        self._after_filter(self.logs, self._logs_note, self.logs_search)
+
+    @staticmethod
+    def _after_filter(table, note, search):
+        note.say_filtered("Nothing here matches the search."
+                          if search.searching() else "")
+        _fit_height(table)
+
+    def search_state(self):
+        """What is typed in this block's search boxes, to survive a rebuild.
+
+        Editing a row rebuilds the page, and a search that cleared itself every
+        time somebody acted on what they had found would be a search nobody could
+        use twice.
+        """
+        return {"runners": (self.runners_search.state()
+                            if self.runners_search is not None else {}),
+                "logs": self.logs_search.state()}
+
+    def restore_search(self, state):
+        if self.runners_search is not None:
+            self.runners_search.set_state((state or {}).get("runners"))
+        self.logs_search.set_state((state or {}).get("logs"))
+
     def update_buttons(self):
         """Nothing offers to act on rows that are not there."""
-        for button in self._service_buttons:
+        for button, _verb in self._service_buttons:
             button.setEnabled(bool(self._runner_rows))
         for button in (self.open_full_button, self.open_tail_button):
             button.setEnabled(bool(self._log_rows))
@@ -1019,6 +1334,7 @@ class ProjectBlock(QWidget):
     def _remember_expanded(self, expanded):
         if self.project is not None:
             self.project.expanded = bool(expanded)
+        self.page.remember_fold(self.fold_key, expanded)
 
     # -- runners --------------------------------------------------------------
     def _runner_at(self, index):
@@ -1062,9 +1378,11 @@ class ProjectBlock(QWidget):
         # about a feature most services never use.
         table.setColumnHidden(self.R_CRITERIA,
                               not any(row.criteria for row in rows))
-        self.update_buttons()
+        self._selection_changed()
         _fit_columns(table, self.R_ACTIONS)
         _fit_actions(table, self.R_CRITERIA)
+        # New rows arrive shown; whatever is being searched for still holds.
+        self.runners_search.apply()
         # After the content pass: the status cells are filled in later, by
         # set_status, so sizing this one to what is in it now would size it to
         # an empty string and clip every word it is about to hold.
@@ -1110,6 +1428,11 @@ class ProjectBlock(QWidget):
             item.setText(text)
             item.setIcon(icons.icon("dot", status_color(status)))
             item.setToolTip(detail or text)
+            # Status is a column like any other, so a search on it has to follow
+            # what the row now says - a service searched for as "failed" that has
+            # since come up does not belong in the results.
+            if self.runners_search.searching():
+                self.runners_search.apply()
             strip = table.cellWidget(index, self.R_ACTIONS)
             toggle = getattr(strip, "toggle", None)
             if toggle is not None:
@@ -1176,6 +1499,7 @@ class ProjectBlock(QWidget):
                 _cell_button("Delete", lambda r=row: self.page.delete_log(r))))
         self.update_buttons()
         _fit_columns(table, self.L_ACTIONS)
+        self.logs_search.apply()
 
 
 # ------------------------------------------------------------------------ page
@@ -1184,8 +1508,21 @@ class ServicesPage(QWidget):
 
     saved = Signal()
 
-    def __init__(self, parent=None):
+    #: Where this page's fold states live in QSettings. Every section on the page
+    #: is remembered - a project, the unassigned block, the connections - because
+    #: a person who folds four projects away to work on the fifth has said
+    #: something about how they want the page, and having to say it again every
+    #: time the window opens is the same as not being listened to. It is kept out
+    #: of the two documents on purpose: folding a block is not an edit to
+    #: anybody's configuration, so it must neither light up Save nor need one.
+    FOLDS = "services"
+
+    def __init__(self, settings=None, parent=None):
         super().__init__(parent)
+        # Its own when nobody hands one over, so the page works standalone (and
+        # in a test) and still remembers what it folded.
+        self._settings = settings if settings is not None else Settings()
+        self._folds = self._settings.folds(self.FOLDS)
         self._log_path = ""
         self._services_path = ""
         self._connections = []
@@ -1207,6 +1544,7 @@ class ServicesPage(QWidget):
         self._migrating = False     # reading the old path, writing the new one
         self._configured_services = ""   # what Settings says, "" for the default
         self._blocks = {}           # project name ("" = unassigned) -> ProjectBlock
+        self._connection_order = []  # drawn row -> its index in _connections
         # Save is for changes, not for re-writing the same file: it stays dark
         # until something on screen differs from what was loaded.
         self._baseline = None
@@ -1283,15 +1621,24 @@ class ServicesPage(QWidget):
         one. It is also the part nobody opens twice - and above the projects it
         pushed the subject of the page down the screen for no one's benefit.
         """
-        self.connections_fold = widgets.Disclosure("Connections", expanded=False)
+        self.connections_fold = widgets.Disclosure(
+            "Connections", expanded=self.fold_state("connections", False))
+        self.connections_fold.toggled.connect(
+            lambda expanded: self.remember_fold("connections", expanded))
         self.connections_fold.add_to_header(
             _ghost("+ Add connection", self.add_connection))
         self.connections = _table(["Name", "Runs on", "Used by", ""], 3, stretch=1)
         self.connections.doubleClicked.connect(
-            lambda index: self.edit_connection(index.row()))
-        widgets.empty_note(self.connections,
-                           "No connections yet - a log is read over one, local "
-                           "for this machine or ssh for anywhere else.")
+            lambda index: self.edit_connection(self._at(index.row())))
+        self._connections_note = widgets.empty_note(
+            self.connections,
+            "No connections yet - a log is read over one, local "
+            "for this machine or ssh for anywhere else.")
+        self.connections_search = SearchRow(self.connections, skip=(3,))
+        self.connections_search.changed.connect(
+            lambda: ProjectBlock._after_filter(self.connections,
+                                               self._connections_note,
+                                               self.connections_search))
         self.connections_fold.body().addWidget(ProjectBlock._panel(self.connections))
         holder = widgets.BlueprintPanel(padding=(14, 12, 14, 14))
         holder.layout().addWidget(self.connections_fold)
@@ -1299,15 +1646,21 @@ class ServicesPage(QWidget):
         self._column.addStretch(1)
         return holder
 
-        self.status = QLabel("")
-        self.status.setWordWrap(True)
-        column.addWidget(self.status)
-        # Built empty rather than bare: the inventory arrives from --describe on
-        # a thread, so between the window opening and that answer there is a
-        # stretch with no load() yet - and a page showing only a Connections
-        # header reads as broken rather than as empty.
-        self._rebuild()
-        self._validate()
+    # -- folds ----------------------------------------------------------------
+    def fold_state(self, key, default):
+        """Whether the section ``key`` opens up or shut.
+
+        ``default`` is what to do when this window has never been told - for a
+        project, what the file says; for the connections, shut. Once somebody
+        folds it themselves, their answer is the one that is kept.
+        """
+        value = self._folds.get(key)
+        return bool(default) if value is None else bool(value)
+
+    def remember_fold(self, key, expanded):
+        """Keep a fold across sessions. Written now, not at the next Save."""
+        self._folds[key] = bool(expanded)
+        self._settings.save_folds(self.FOLDS, self._folds)
 
     # -- wiring ---------------------------------------------------------------
     def set_core(self, core):
@@ -1431,8 +1784,18 @@ class ServicesPage(QWidget):
         Only ever called when the *configuration* changes. A status change
         repaints one cell (see :meth:`_status_changed`) - rebuilding on every
         poll would drop the selection and flicker the page every three seconds.
+
+        Newest first, everywhere: blocks, services and logs are shown in the
+        order they were added, most recent at the top, which is where the thing
+        somebody is working on is. The lists themselves are left in the file's
+        order - see :func:`_newest_first` - so nothing about what starts before
+        what changes with the view.
         """
         self._rebuild_connections()
+        # What was being searched for, so acting on a row that was found does not
+        # throw away the search that found it.
+        searches = {name: block.search_state()
+                    for name, block in self._blocks.items()}
         # Everything before the connections holder is a block from last time.
         while self._column.indexOf(self._blocks_end) > self._blocks_from:
             item = self._column.takeAt(self._blocks_from)
@@ -1444,11 +1807,12 @@ class ServicesPage(QWidget):
 
         at = self._blocks_from
         known = {project.name for project in self._projects}
-        for project in self._projects:
+        for project in _newest_first(self._projects):
             block = ProjectBlock(self, project)
-            block.set_runners(project.runners)
-            block.set_logs([row for row in self._logs
-                            if row.project == project.name])
+            block.set_runners(_newest_first(project.runners))
+            block.set_logs(_newest_first([row for row in self._logs
+                                          if row.project == project.name]))
+            block.restore_search(searches.get(project.name))
             self._blocks[project.name] = block
             self._column.insertWidget(at, block)
             at += 1
@@ -1459,7 +1823,8 @@ class ServicesPage(QWidget):
         orphans = [row for row in self._logs if row.project not in known]
         if orphans or not self._projects:
             block = ProjectBlock(self, None)
-            block.set_logs(orphans)
+            block.set_logs(_newest_first(orphans))
+            block.restore_search(searches.get(""))
             self._blocks[""] = block
             self._column.insertWidget(at, block)
 
@@ -1527,18 +1892,32 @@ class ServicesPage(QWidget):
     def _rebuild_connections(self):
         table = self.connections
         table.setRowCount(len(self._connections))
-        for index, row in enumerate(self._connections):
+        # Shown newest first like everything else, so the row a button acts on is
+        # found by where the row *is* in the file, not by where it is drawn. The
+        # order is kept because a double-click arrives as a drawn row and has to
+        # be turned back into the other kind.
+        self._connection_order = [self._connections.index(row)
+                                  for row in _newest_first(self._connections)]
+        for index, row in enumerate(_newest_first(self._connections)):
+            at = self._connection_order[index]
             used = sum(1 for log in self._logs if log.connection == row.name)
             _cell(table, index, 0, row.name or "(unnamed)", mono=True)
             _cell(table, index, 1, row.describe(), mono=True)
             _cell(table, index, 2, "%d log%s" % (used, "" if used == 1 else "s"))
             table.setCellWidget(index, 3, _actions(
-                _cell_button("Edit", lambda i=index: self.edit_connection(i)),
-                _cell_button("Copy", lambda i=index: self.duplicate_connection(i)),
-                _cell_button("Delete", lambda i=index: self.delete_connection(i))))
+                _cell_button("Edit", lambda i=at: self.edit_connection(i)),
+                _cell_button("Copy", lambda i=at: self.duplicate_connection(i)),
+                _cell_button("Delete", lambda i=at: self.delete_connection(i))))
         _fit_columns(table, 3)
+        self.connections_search.apply()
         self.connections_fold.set_title(
             "Connections  (%d)" % len(self._connections))
+
+    def _at(self, drawn_row):
+        """The connection a drawn row is: the page sorts, the file does not."""
+        if 0 <= drawn_row < len(self._connection_order):
+            return self._connection_order[drawn_row]
+        return -1
 
     def _refresh_statuses(self):
         for project in self._projects:
@@ -1583,7 +1962,9 @@ class ServicesPage(QWidget):
     def add_project(self):
         dialog = ProjectDialog(taken=self.project_names(), parent=self)
         if dialog.exec() == QDialog.Accepted:
-            self._projects.append(dialog.value())
+            # Appended, and shown at the top: the file keeps the order things
+            # were written in, the page shows the order they arrived in.
+            self._projects.append(_stamped(dialog.value()))
             self._rebuild()
             self._validate()
 
@@ -1631,14 +2012,16 @@ class ServicesPage(QWidget):
         self._rebuild()
         self._validate()
 
-    def start_project(self, name=None):
-        self.supervisor.start_all(name)
+    # ``names`` is what the block's selection says, and empty means the whole
+    # project - which is also what the page's own Start All / Stop All pass.
+    def start_project(self, name=None, names=()):
+        self.supervisor.start_all(name, names or None)
 
-    def stop_project(self, name=None):
-        self.supervisor.stop_all(name)
+    def stop_project(self, name=None, names=()):
+        self.supervisor.stop_all(name, names or None)
 
-    def restart_project(self, name=None):
-        self.supervisor.restart_all(name)
+    def restart_project(self, name=None, names=()):
+        self.supervisor.restart_all(name, names or None)
 
     # -- runners --------------------------------------------------------------
     def add_runner(self, project_name, runner_type):
@@ -1650,7 +2033,7 @@ class ServicesPage(QWidget):
                               siblings=[r.name for r in project.runners],
                               project_dir=project.dir, parent=self)
         if dialog.exec() == QDialog.Accepted:
-            project.runners.append(dialog.value())
+            project.runners.append(_stamped(dialog.value()))
             self._rebuild()
             self._validate()
 
@@ -1686,6 +2069,9 @@ class ServicesPage(QWidget):
         clone = row.copy()
         clone.name = _unique(clone.name or "service",
                              [r.name for r in project.runners])
+        # A copy is a row that did not exist a moment ago, so it is the newest
+        # one whatever the row it was taken from says.
+        clone.added = lsf.stamp()
         project.runners.insert(project.runners.index(row) + 1, clone)
         self._rebuild()
         self._validate()
@@ -1744,7 +2130,7 @@ class ServicesPage(QWidget):
         dialog = ConnectionDialog(taken=[c.name for c in self._connections],
                                   parent=self)
         if dialog.exec() == QDialog.Accepted:
-            self._connections.append(dialog.value())
+            self._connections.append(_stamped(dialog.value()))
             self.connections_fold.set_expanded(True)
             self._rebuild()
             self._validate()
@@ -1775,6 +2161,7 @@ class ServicesPage(QWidget):
         clone = self._connections[index].copy()
         clone.name = _unique(clone.name or "connection",
                              [c.name for c in self._connections])
+        clone.added = lsf.stamp()
         self._connections.insert(index + 1, clone)
         self._rebuild()
         self._validate()
@@ -1809,7 +2196,7 @@ class ServicesPage(QWidget):
                            siblings=self._logs, developer=self._developer,
                            projects=self.project_names(), parent=self)
         if dialog.exec() == QDialog.Accepted:
-            self._logs.append(dialog.value())
+            self._logs.append(_stamped(dialog.value()))
             self._rebuild()
             self._validate()
 
@@ -1831,6 +2218,7 @@ class ServicesPage(QWidget):
             return
         clone = row.copy()
         clone.name = _unique(clone.name or "log", [r.name for r in self._logs])
+        clone.added = lsf.stamp()
         self._logs.insert(self._logs.index(row) + 1, clone)
         self._rebuild()
         self._validate()

@@ -15,16 +15,21 @@ Saving is atomic (temp file + replace) with a one-slot backup, the same as
 interrupted write must leave the previous file intact rather than a truncated one.
 """
 
+import datetime
 import json
 import os
 import re
 
-# Keys the launcher reads. Anything else in an entry (comments, notes) is
-# preserved as-is when a row round-trips through the editor.
-CONNECTION_KEYS = ("name", "type", "host", "user", "identity", "port", "options")
+# Keys the launcher reads, plus "added" - which it does not, and never will:
+# engine.serverlog sweeps every key it does not know into `extra` and ignores it.
+# It is here so a row that carries one keeps it as a field rather than as an
+# unknown, because the editor sorts on it. Anything else in an entry (comments,
+# notes) is preserved as-is when a row round-trips through the editor.
+CONNECTION_KEYS = ("name", "type", "host", "user", "identity", "port", "options",
+                   "added")
 LOG_KEYS = ("name", "connection", "envs", "env", "type", "path", "container",
             "unit", "url", "headers", "format", "timestamp", "level", "tz",
-            "default", "project")
+            "default", "project", "added")
 
 CONNECTION_TYPES = ("local", "ssh")
 LOG_TYPES = ("file", "docker", "journal", "http")
@@ -68,13 +73,29 @@ class LogSourcesFileError(Exception):
     pass
 
 
+def stamp():
+    """When a row was added, as it is written down: ``2026-08-27T14:03:11``.
+
+    Seconds and no offset, because this is only ever read back to put the newest
+    row on top - and a string that sorts as a string is what makes that a sort
+    rather than a parse. It serves ``services.json`` as well as this file: the two
+    are edited on one page, which shows rows from both, so they have to agree
+    about the clock down to the format.
+    """
+    return datetime.datetime.now().replace(microsecond=0).isoformat()
+
+
 class ConnectionRow:
     """One server, plus whatever unknown keys came with it."""
 
     def __init__(self, name="", type="local", host="", user="", identity="",
-                 port="", options=(), extra=None):
+                 port="", options=(), extra=None, added=""):
         self.name = name
         self.type = type or "local"
+        # When this row was created, or "" for one written before the editor
+        # stamped them. It decides where the row sits on the page and nothing
+        # else - see the sort in cms_gui.pages.services.
+        self.added = added or ""
         self.host = host
         self.user = user
         self.identity = identity
@@ -97,12 +118,17 @@ class ConnectionRow:
                    identity=entry.get("identity", "") or "",
                    port=entry.get("port") or "",
                    options=list(options),
+                   added=entry.get("added", "") or "",
                    extra={k: v for k, v in entry.items() if k not in CONNECTION_KEYS})
 
     def to_entry(self):
         entry = dict(self.extra)
         entry["name"] = self.name
         entry["type"] = self.type
+        # Only when the row has one: a file written before this existed should
+        # not grow a key it never had just for being opened.
+        if self.added:
+            entry["added"] = self.added
         # Only what this type actually uses: a local connection carrying a host
         # field reads as if it might connect somewhere, and it never will.
         if self.type == "ssh":
@@ -126,7 +152,7 @@ class ConnectionRow:
     def copy(self):
         return ConnectionRow(self.name, self.type, self.host, self.user,
                              self.identity, self.port, list(self.options),
-                             dict(self.extra))
+                             dict(self.extra), self.added)
 
 
 class LogRow:
@@ -134,9 +160,12 @@ class LogRow:
 
     def __init__(self, name="", connection="", envs=(), type="file", target="",
                  format="iso", default=False, headers=None, timestamp=None,
-                 level=None, tz="", project="", extra=None):
+                 level=None, tz="", project="", extra=None, added=""):
         self.name = name
         self.connection = connection
+        #: When this row was created; "" for one that predates the stamp. Only
+        #: the page's own ordering reads it.
+        self.added = added or ""
         self.envs = list(envs)
         self.type = type or "file"
         # One field in the form, because a log has exactly one of path /
@@ -193,6 +222,7 @@ class LogRow:
                    level=entry.get("level"),
                    tz=entry.get("tz", "") or "",
                    project=entry.get("project", "") or "",
+                   added=entry.get("added", "") or "",
                    extra={k: v for k, v in entry.items() if k not in LOG_KEYS})
 
     def to_entry(self):
@@ -219,6 +249,8 @@ class LogRow:
         # did before this page existed.
         if self.project:
             entry["project"] = self.project
+        if self.added:
+            entry["added"] = self.added
         return entry
 
     def envs_text(self):
@@ -229,7 +261,7 @@ class LogRow:
                       self.target, self.format, self.default, dict(self.headers),
                       dict(self.timestamp) if self.timestamp else None,
                       dict(self.level) if self.level else None,
-                      self.tz, self.project, dict(self.extra))
+                      self.tz, self.project, dict(self.extra), self.added)
 
 
 def load(path):

@@ -51,6 +51,35 @@ def test_what_the_editor_writes_the_launcher_can_read(tmp_path):
     assert [s.name for s in config.for_env(DEV)] == ["nginx"]
 
 
+def test_the_date_a_row_was_added_survives_and_the_launcher_ignores_it(tmp_path):
+    path = tmp_path / "logsources.json"
+    connections, logs = _rows()
+    connections[0].added = "2026-08-27T10:00:00"
+    logs[0].added = "2026-08-27T10:00:01"
+    lsf.save(str(path), connections, logs)
+    back_connections, back_logs = lsf.load(str(path))
+    assert back_connections[0].added == "2026-08-27T10:00:00"
+    assert back_logs[0].added == "2026-08-27T10:00:01"
+    # The key is the editor's own. The launcher must read the file regardless,
+    # and must not mistake it for anything of its own.
+    config = _engine_reads(path)
+    assert [s.name for s in config.for_env(LOCAL)] == ["app"]
+
+
+def test_a_row_written_before_the_stamp_does_not_grow_one(tmp_path):
+    path = tmp_path / "logsources.json"
+    path.write_text(json.dumps({
+        "connections": [{"name": "here", "type": "local"}],
+        "logs": [{"name": "app", "connection": "here", "env": LOCAL,
+                  "type": "file", "path": "/var/log/app.log"}]}))
+    connections, logs = lsf.load(str(path))
+    assert connections[0].added == "" and logs[0].added == ""
+    lsf.save(str(path), connections, logs)
+    written = json.loads(path.read_text())
+    assert "added" not in written["connections"][0]
+    assert "added" not in written["logs"][0]
+
+
 def test_a_file_survives_a_load_save_cycle_unchanged(tmp_path):
     path = tmp_path / "logsources.json"
     lsf.save(str(path), *_rows())

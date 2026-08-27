@@ -1081,37 +1081,49 @@ class ServiceSupervisor(QObject):
             service.stop()
         return True
 
-    def _ordered(self, project=None):
-        """Every service in dependency order - what has to be up first, first."""
+    def _ordered(self, project=None, names=None):
+        """Every service in dependency order - what has to be up first, first.
+
+        ``names`` narrows it to part of a project - what the page's selection
+        says. The order is still the project's own: picking three services out of
+        five does not say anything about which of the three goes first, and the
+        one thing that does is still where they stand in the file.
+        """
+        wanted = None if names is None else set(names)
         ordered = []
         for row in self._projects:
             if project not in (None, row.name):
                 continue
             for runner in row.start_order():
+                if wanted is not None and runner.name not in wanted:
+                    continue
                 service = self._services.get((row.name, runner.name))
                 if service is not None:
                     ordered.append(((row.name, runner.name), service))
         return ordered
 
-    def start_all(self, project=None):
-        for key, service in self._ordered(project):
+    def start_all(self, project=None, names=None):
+        for key, service in self._ordered(project, names):
             if not service.is_running():
+                # start() still pulls up whatever the service waits for, named or
+                # not: starting one of three selected services without its
+                # database would only look like it had failed.
                 self.start(key[0], key[1])
         self._retime()
 
-    def stop_all(self, project=None):
+    def stop_all(self, project=None, names=None):
         # Reverse of the start order: what waited for something is stopped before
         # the thing it waited for, so nothing is pulled out from under a service
         # that is still using it.
-        for key, service in reversed(self._ordered(project)):
+        for key, service in reversed(self._ordered(project, names)):
             self._waiting.pop(key, None)
             if service.is_running():
                 service.stop()
 
-    def restart_all(self, project=None):
+    def restart_all(self, project=None, names=None):
         # Each one chains its own stop-then-start through here, so a service that
         # comes back before what it waits for simply waits again.
-        for key, _service in self._ordered(project):
+        for key, _service in self._ordered(project, names):
             self.restart(key[0], key[1])
         self._retime()
 

@@ -359,6 +359,17 @@ QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled {{
     background: {n200}; color: {n500};
 }}
 QLineEdit[mono="true"], QComboBox[mono="true"] {{ font-family: {mono}; font-size: 12px; }}
+/* The search row under a table's header: one box per column, standing in the
+   band the header leaves for it. Slimmer than a form input on purpose - it is a
+   fitting on the table rather than a field to fill in, and at form height it
+   would stand taller than the rows it filters. The strip behind it carries the
+   header's own tone so the two read as one band. */
+QWidget[role="searchrow"] {{ background: {n200}; }}
+QLineEdit[role="search"] {{
+    background: {bg}; border: 1px solid {divider}; border-radius: 0;
+    padding: 0 5px; min-height: 0; font-size: 11px;
+}}
+QLineEdit[role="search"]:focus {{ border-color: {accent}; }}
 QComboBox::drop-down {{ border: none; width: 18px; }}
 QComboBox::down-arrow {{
     image: none; border-left: 4px solid transparent; border-right: 4px solid transparent;

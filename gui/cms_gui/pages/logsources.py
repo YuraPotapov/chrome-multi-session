@@ -253,7 +253,10 @@ class ConnectionDialog(RowDialog):
             host=self.host.text().strip(), user=self.user.text().strip(),
             identity=self.identity.text().strip(), port=self.port.text().strip(),
             options=[o.strip() for o in self.options.text().split(",") if o.strip()],
-            extra=dict(self._row.extra))
+            extra=dict(self._row.extra),
+            # Carried, not renewed: editing a row does not make it a new one, and
+            # the page shows these newest first.
+            added=self._row.added)
 
 
 class LogDialog(RowDialog):
@@ -485,7 +488,8 @@ class LogDialog(RowDialog):
             tz=self.tz.currentText().strip() or "local",
             project=("" if self.project.currentText() == self.NO_PROJECT
                      else self.project.currentText()),
-            extra=dict(self._row.extra))
+            extra=dict(self._row.extra),
+            added=self._row.added)
 
 
 class LogViewerDialog(QDialog):

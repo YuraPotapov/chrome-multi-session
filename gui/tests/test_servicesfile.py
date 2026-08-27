@@ -70,6 +70,37 @@ def test_a_stack_written_by_hand_opens_rather_than_hides(tmp_path):
     assert sf.load(str(path))[0].expanded is True
 
 
+# ------------------------------------------------------------- when it arrived
+def test_when_a_row_was_added_round_trips(tmp_path):
+    path = tmp_path / "services.json"
+    runner = sf.RunnerRow(name="r", type="shell", settings={"command": "true"},
+                          added="2026-08-27T10:00:01")
+    sf.save(str(path), [sf.ProjectRow(name="P", added="2026-08-27T10:00:00",
+                                      runners=[runner])])
+    back = sf.load(str(path))[0]
+    assert back.added == "2026-08-27T10:00:00"
+    assert back.runners[0].added == "2026-08-27T10:00:01"
+    assert back.copy().added == back.added
+
+
+def test_a_row_written_before_the_stamp_does_not_grow_one(tmp_path):
+    path = tmp_path / "services.json"
+    path.write_text(json.dumps({"projects": [
+        {"name": "P", "runners": [{"name": "r", "type": "shell",
+                                   "settings": {"command": "true"}}]}]}))
+    projects = sf.load(str(path))
+    assert projects[0].added == "" and projects[0].runners[0].added == ""
+    sf.save(str(path), projects)
+    written = json.loads(path.read_text())["projects"][0]
+    assert "added" not in written and "added" not in written["runners"][0]
+
+
+def test_the_stamp_reads_as_a_date_that_sorts(tmp_path):
+    # Sorting is done on the string itself, so the format is the contract.
+    assert sf.stamp() > "2026-01-01T00:00:00"
+    assert len(sf.stamp()) == len("2026-08-27T10:00:00")
+
+
 # ------------------------------------------------------------------- detach
 def test_a_new_runner_takes_its_kinds_answer_about_detaching():
     assert sf.RunnerRow(name="a", type="python").detach is False

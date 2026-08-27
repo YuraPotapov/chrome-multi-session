@@ -449,7 +449,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.environments = EnvironmentsPage(self.settings)
         self.credentials = CredentialsPage()
-        self.services = ServicesPage()
+        self.services = ServicesPage(self.settings)
         self.services.set_core(self.core)
         self.scenarios = ScenariosPage(self.settings)
         self.command = CommandPage(self.settings)

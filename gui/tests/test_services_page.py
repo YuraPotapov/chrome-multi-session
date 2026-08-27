@@ -374,7 +374,9 @@ def test_a_duplicated_log_is_valid_the_moment_it_is_made(page):
 
 def test_a_copied_log_stays_in_the_block_it_came_from(page):
     page.copy_log(page.rows()[1][0])
-    assert [r.name for r in page._blocks["Claim"]._log_rows] == ["app", "app-copy"]
+    # Its own block, at the top of it: a copy is a row that did not exist a
+    # moment ago, and the page shows the newest first.
+    assert [r.name for r in page._blocks["Claim"]._log_rows] == ["app-copy", "app"]
 
 
 def test_deleting_a_connection_warns_about_the_logs_that_used_it(page, monkeypatch):
@@ -678,7 +680,10 @@ def test_a_table_is_exactly_as_tall_as_what_is_in_it(page):
     block = page._blocks["Claim"]
     table = block.runners
     rows = table.verticalHeader().defaultSectionSize() * table.rowCount()
-    assert table.height() == table.horizontalHeader().height() + 4 + rows
+    # top_margin, not the header alone: the search row stands between the two.
+    assert table.height() == table.top_margin() + 4 + rows
+    assert table.top_margin() == (table.horizontalHeader().height()
+                                  + block.runners_search.height())
 
 
 # --------------------------------------------------------- unsaved changes
@@ -741,7 +746,7 @@ def test_walking_away_from_an_edit_asks_first(page, monkeypatch):
 def test_an_empty_project_offers_nothing_to_act_on(qapp, tmp_path):
     widget = _open(tmp_path, services={"projects": [{"name": "Empty"}]})
     block = widget._blocks["Empty"]
-    for button in block._service_buttons:
+    for button, _verb in block._service_buttons:
         assert not button.isEnabled(), button.text()
     # Except the one thing an empty project is for.
     assert block._add_menu.actions()
@@ -749,7 +754,7 @@ def test_an_empty_project_offers_nothing_to_act_on(qapp, tmp_path):
 
 
 def test_a_project_with_services_offers_them(page):
-    for button in page._blocks["Claim"]._service_buttons:
+    for button, _verb in page._blocks["Claim"]._service_buttons:
         assert button.isEnabled(), button.text()
 
 
@@ -1214,3 +1219,253 @@ def test_the_notice_is_still_shown_when_there_is_nothing_wrong(qapp, tmp_path):
     assert widget._migrating
     assert "Save writes to" in widget.status.text()
     widget.close()
+
+
+# --------------------------------------------------------------- folded away
+# A fold is a view preference: it survives the window closing whether or not
+# anything was saved, and it never lights up Save. That is why it is kept in
+# QSettings (redirected into a sandbox by conftest) rather than in either file.
+def test_a_folded_project_is_still_folded_next_time(qapp, tmp_path):
+    first = _open(tmp_path)
+    first._blocks["Claim"].disclosure.set_expanded(False)
+    first.shutdown(2000)
+    first.close()
+
+    again = _open(tmp_path)
+    try:
+        assert again._blocks["Claim"].disclosure.is_expanded() is False
+        # And back again: what is remembered is the answer, not the folding.
+        again._blocks["Claim"].disclosure.set_expanded(True)
+    finally:
+        again.shutdown(2000)
+        again.close()
+
+    third = _open(tmp_path)
+    try:
+        assert third._blocks["Claim"].disclosure.is_expanded() is True
+    finally:
+        third.shutdown(2000)
+        third.close()
+
+
+def test_the_connections_fold_is_remembered_too(qapp, tmp_path):
+    first = _open(tmp_path)
+    first.connections_fold.set_expanded(True)
+    first.shutdown(2000)
+    first.close()
+
+    again = _open(tmp_path)
+    try:
+        assert again.connections_fold.is_expanded() is True
+    finally:
+        again.shutdown(2000)
+        again.close()
+
+
+def test_the_unassigned_block_is_remembered_too(qapp, tmp_path):
+    first = _open(tmp_path, services={"projects": []})
+    first._blocks[""].disclosure.set_expanded(False)
+    first.shutdown(2000)
+    first.close()
+
+    again = _open(tmp_path, services={"projects": []})
+    try:
+        assert again._blocks[""].disclosure.is_expanded() is False
+    finally:
+        again.shutdown(2000)
+        again.close()
+
+
+def test_a_fold_is_kept_out_of_the_documents(page, tmp_path):
+    # It is written the moment it happens, and writing it must not need a Save
+    # or count as one.
+    page._blocks["Claim"].disclosure.set_expanded(False)
+    assert not page.is_dirty()
+    assert page._settings.folds("services")["project:Claim"] is False
+
+
+# ------------------------------------------------------- searching by column
+def test_a_column_search_hides_the_rows_that_do_not_match(page):
+    block = page._blocks["Claim"]
+    block.runners_search.box(block.R_NAME).setText("odoo")
+    shown = [row for row in range(block.runners.rowCount())
+             if not block.runners.isRowHidden(row)]
+    assert [block._runner_rows[row].name for row in shown] == ["Odoo Local"]
+
+
+def test_the_columns_narrow_together(page):
+    block = page._blocks["Claim"]
+    block.runners_search.box(block.R_NAME).setText("o")        # both rows
+    block.runners_search.box(block.R_TYPE).setText("docker")   # one of them
+    shown = [row for row in range(block.runners.rowCount())
+             if not block.runners.isRowHidden(row)]
+    assert [block._runner_rows[row].name for row in shown] == ["PostgreSQL DB"]
+
+
+def test_a_search_matches_what_the_column_says_not_what_is_behind_it(page):
+    # The status column is computed, never stored, and is searchable all the
+    # same - the search reads the table, cell by cell.
+    block = page._blocks["Claim"]
+    block.set_status("Odoo Local", runnertypes.RUNNING)
+    block.runners_search.box(block.R_STATUS).setText("running")
+    shown = [row for row in range(block.runners.rowCount())
+             if not block.runners.isRowHidden(row)]
+    assert [block._runner_rows[row].name for row in shown] == ["Odoo Local"]
+
+
+def test_a_table_searched_down_to_nothing_says_which_kind_of_empty_it_is(page):
+    block = page._blocks["Claim"]
+    block.logs_search.box(block.L_NAME).setText("nothing-by-this-name")
+    assert all(block.logs.isRowHidden(row)
+               for row in range(block.logs.rowCount()))
+    assert "matches the search" in block._logs_note.text()
+    # isHidden rather than isVisible: nothing in this test is on a screen.
+    assert not block._logs_note.isHidden()
+    block.logs_search.clear()
+    assert "No logs in this project yet." == block._logs_note.text()
+
+
+def test_a_search_shrinks_the_table_to_what_it_found(page):
+    block = page._blocks["Claim"]
+    full = block.runners.height()
+    block.runners_search.box(block.R_NAME).setText("odoo")
+    assert block.runners.height() < full
+
+
+def test_the_search_survives_acting_on_what_it_found(page, monkeypatch):
+    # Editing a row rebuilds the page. A search that cleared itself every time
+    # somebody used what they had found would be a search nobody could use twice.
+    block = page._blocks["Claim"]
+    block.runners_search.box(block.R_NAME).setText("odoo")
+    _accept(monkeypatch, lambda d: d.name.setText("Odoo Local") or True)
+    page.edit_runner("Claim", page.rows()[2][0].runners[0])
+    block = page._blocks["Claim"]
+    assert block.runners_search.needles() == {block.R_NAME: "odoo"}
+    assert block.runners.isRowHidden(
+        [r.name for r in block._runner_rows].index("PostgreSQL DB"))
+
+
+def test_every_search_box_stands_over_the_column_it_searches(page, qapp):
+    block = page._blocks["Claim"]
+    block.show()
+    qapp.processEvents()
+    header = block.runners.horizontalHeader()
+    for column in (block.R_NAME, block.R_TYPE, block.R_CONFIG, block.R_STATUS):
+        box = block.runners_search.box(column)
+        assert box.x() == header.sectionViewportPosition(column)
+    # Nothing over the buttons, and nothing over the criteria: neither cell
+    # holds text, so a box there could only ever match nothing.
+    assert block.runners_search.box(block.R_ACTIONS) is None
+    assert block.runners_search.box(block.R_CRITERIA) is None
+    # And the strip stands between the header and the first row, not over them.
+    assert block.runners.top_margin() == (header.height()
+                                          + block.runners_search.height())
+
+
+# ------------------------------------------------------------- newest on top
+def test_a_new_project_is_shown_first_and_written_last(page, monkeypatch):
+    _accept(monkeypatch, lambda d: d.name.setText("Helpdesk") or True)
+    page.add_project()
+    assert list(page._blocks)[0] == "Helpdesk"
+    # The file keeps the order things were written in. Only the page sorts.
+    assert [p.name for p in page.rows()[2]] == ["Claim", "Helpdesk"]
+
+
+def test_a_new_service_is_shown_first_but_still_starts_last(page, monkeypatch):
+    def fill(dialog):
+        dialog.name.setText("Worker")
+        dialog._editors["command"].setText("celery worker")
+        return True
+
+    _accept(monkeypatch, fill)
+    page.add_runner("Claim", runnertypes.BY_ID["shell"])
+    block = page._blocks["Claim"]
+    assert [r.name for r in block._runner_rows][0] == "Worker"
+    project = page.rows()[2][0]
+    assert [r.name for r in project.runners][-1] == "Worker"
+    assert [r.name for r in project.start_order()][-1] == "Worker"
+
+
+def test_rows_with_no_date_keep_the_order_the_file_has_them_in(page):
+    # Every row in the fixtures predates the stamp. Guessing at their order
+    # would be a guess; keeping the file's is only saying what is known.
+    block = page._blocks["Claim"]
+    assert [r.name for r in block._runner_rows] == ["Odoo Local", "PostgreSQL DB"]
+
+
+def test_a_dated_row_stands_above_the_undated_ones(page, monkeypatch):
+    _accept(monkeypatch, lambda d: d.name.setText("nginx-2") or True)
+    page.add_log("Claim")
+    block = page._blocks["Claim"]
+    assert [r.name for r in block._log_rows][0] == "nginx-2"
+
+
+def test_editing_a_row_keeps_the_date_it_arrived(page, monkeypatch):
+    _accept(monkeypatch, lambda d: d.name.setText("Helpdesk") or True)
+    page.add_project()
+    added = page.rows()[2][-1].added
+    assert added
+    _accept(monkeypatch, lambda d: d.name.setText("Helpdesk 2") or True)
+    page.edit_project("Helpdesk")
+    assert page.rows()[2][-1].added == added
+
+
+def test_the_newest_connection_is_shown_first_and_its_buttons_still_aim_right(
+        page, monkeypatch):
+    _accept(monkeypatch, lambda d: d.name.setText("staging") or True)
+    page.add_connection()
+    assert page.connections.item(0, 0).text() == "staging"
+    # Drawn first, third in the file: a button on that row has to act on the
+    # connection it is drawn for, not on whatever is written down first.
+    assert page._at(0) == len(page.rows()[0]) - 1
+    _answer_question(monkeypatch)
+    page.delete_connection(page._at(0))
+    assert [c.name for c in page.rows()[0]] == ["here", "dev"]
+
+
+# --------------------------------------------------- acting on a selection
+def test_the_block_buttons_say_they_act_on_everything_until_rows_are_picked(page):
+    block = page._blocks["Claim"]
+    assert [b.text() for b, _v in block._service_buttons] == [
+        "Start All", "Stop All", "Restart All"]
+    block.runners.selectRow(0)
+    assert [b.text() for b, _v in block._service_buttons] == [
+        "Start (1)", "Stop (1)", "Restart (1)"]
+
+
+def test_start_acts_only_on_the_rows_that_are_selected(page, monkeypatch):
+    calls = []
+    monkeypatch.setattr(page.supervisor, "start_all",
+                        lambda project=None, names=None: calls.append((project,
+                                                                       names)))
+    block = page._blocks["Claim"]
+    block._service_buttons[0][0].click()
+    block.runners.selectRow(1)
+    block._service_buttons[0][0].click()
+    assert calls == [("Claim", None), ("Claim", ["PostgreSQL DB"])]
+
+
+def test_two_rows_can_be_picked_without_a_modifier_key(page):
+    block = page._blocks["Claim"]
+    block.runners.selectRow(0)
+    block.runners.selectRow(1)
+    assert block.selected_runners() == ["Odoo Local", "PostgreSQL DB"]
+
+
+def test_a_row_hidden_by_a_search_is_not_one_of_the_selected(page):
+    block = page._blocks["Claim"]
+    block.runners.selectRow(0)
+    block.runners.selectRow(1)
+    block.runners_search.box(block.R_NAME).setText("odoo")
+    assert block.selected_runners() == ["Odoo Local"]
+    assert [b.text() for b, _v in block._service_buttons][0] == "Start (1)"
+
+
+def test_the_page_wide_buttons_still_mean_everything(page, monkeypatch):
+    calls = []
+    monkeypatch.setattr(page.supervisor, "stop_all",
+                        lambda project=None, names=None: calls.append((project,
+                                                                       names)))
+    page._blocks["Claim"].runners.selectRow(0)
+    page.stop_all_button.click()
+    assert calls == [(None, None)]

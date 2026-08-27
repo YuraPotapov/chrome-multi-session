@@ -25,14 +25,19 @@ import os
 
 from . import criteria as criteria_mod
 from . import runnertypes
+# One clock for both files. The Services & Logs page shows rows from this file
+# and from logsources.json in the same block and sorts them the same way, so the
+# stamp they carry has to be written the same way too.
+from .logsourcesfile import stamp
 
 #: The schema version written out. Nothing reads it yet; it is here so that a
 #: future change has somewhere to look rather than having to guess from shape.
 VERSION = 1
 
 # Keys this module understands. Anything else in an entry is preserved as-is.
-PROJECT_KEYS = ("name", "dir", "expanded", "runners")
-RUNNER_KEYS = ("name", "type", "detach", "settings", "depends", "criteria")
+PROJECT_KEYS = ("name", "dir", "expanded", "runners", "added")
+RUNNER_KEYS = ("name", "type", "detach", "settings", "depends", "criteria",
+               "added")
 
 
 class ServicesFileError(Exception):
@@ -43,9 +48,13 @@ class RunnerRow:
     """One service, plus whatever unknown keys came with it."""
 
     def __init__(self, name="", type="", detach=None, settings=None,
-                 depends=(), criteria=(), extra=None):
+                 depends=(), criteria=(), extra=None, added=""):
         self.name = name
         self.type = type or ""
+        # When this row was created, or "" for one written before the editor
+        # stamped them. Read by the page's ordering and by nothing else - what
+        # starts before what is decided by `depends`, never by this.
+        self.added = added or ""
         runner = runnertypes.get(self.type)
         # None means "whatever this kind is by default", so a row written before a
         # type existed, or by hand, still opens with the sane answer rather than
@@ -100,6 +109,7 @@ class RunnerRow:
                    settings=settings,
                    depends=depends,
                    criteria=parsed,
+                   added=entry.get("added", "") or "",
                    extra={k: v for k, v in entry.items() if k not in RUNNER_KEYS})
 
     def to_entry(self):
@@ -114,6 +124,9 @@ class RunnerRow:
             entry["depends"] = list(self.depends)
         if self.criteria:
             entry["criteria"] = [one.to_entry() for one in self.criteria]
+        # Only when the row has one, for the same reason as the two above.
+        if self.added:
+            entry["added"] = self.added
         return entry
 
     def summary(self):
@@ -131,16 +144,23 @@ class RunnerRow:
     def copy(self):
         return RunnerRow(self.name, self.type, self.detach, dict(self.settings),
                          list(self.depends),
-                         [one.copy() for one in self.criteria], dict(self.extra))
+                         [one.copy() for one in self.criteria], dict(self.extra),
+                         self.added)
 
 
 class ProjectRow:
     """One project: a name, where it lives, and the services in it."""
 
-    def __init__(self, name="", dir="", expanded=True, runners=(), extra=None):
+    def __init__(self, name="", dir="", expanded=True, runners=(), extra=None,
+                 added=""):
         self.name = name
         self.dir = dir
+        # The fold state a project opens with when the GUI has never been told
+        # otherwise. What it is folded to *now* is a view preference and lives in
+        # QSettings - see cms_gui.settings.folds.
         self.expanded = bool(expanded)
+        #: When this project was created; "" for one that predates the stamp.
+        self.added = added or ""
         self.runners = list(runners)
         self.extra = dict(extra or {})
 
@@ -159,6 +179,7 @@ class ProjectRow:
                    # a file written by hand should not have to opt in to being read.
                    expanded=entry.get("expanded", True),
                    runners=[RunnerRow.from_entry(r) for r in runners],
+                   added=entry.get("added", "") or "",
                    extra={k: v for k, v in entry.items() if k not in PROJECT_KEYS})
 
     def to_entry(self):
@@ -166,6 +187,8 @@ class ProjectRow:
         entry["name"] = self.name
         entry["dir"] = self.dir
         entry["expanded"] = bool(self.expanded)
+        if self.added:
+            entry["added"] = self.added
         entry["runners"] = [runner.to_entry() for runner in self.runners]
         return entry
 
@@ -217,7 +240,8 @@ class ProjectRow:
 
     def copy(self):
         return ProjectRow(self.name, self.dir, self.expanded,
-                          [r.copy() for r in self.runners], dict(self.extra))
+                          [r.copy() for r in self.runners], dict(self.extra),
+                          self.added)
 
 
 def load(path):
