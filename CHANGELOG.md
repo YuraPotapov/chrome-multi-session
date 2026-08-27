@@ -16,6 +16,39 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-08-27
+
+### Added
+- **Services & Logs remembers how it was left.** Every section that folds — each
+  project, the unassigned block, the connections — comes back the way it was,
+  including after the window is closed and reopened. Folding a block is a view
+  preference, so it is kept in the GUI's own settings rather than in
+  `services.json`: it is written the moment it happens, needs no Save, and does
+  not light one up. A project written by hand still opens on whatever its
+  `expanded` key says, until somebody folds it themselves.
+- **Every table on the page can be searched by column.** A row of boxes under each
+  header, one per column; typing in more than one narrows. What is matched is what
+  the table *says*, cell by cell, so the computed columns are searchable too — a
+  service can be found by `failed` in Status as readily as by name. A table
+  searched down to nothing says that is why it is empty, and shrinks to fit what
+  it found. The search survives editing a row it turned up.
+- **Newest first.** Projects, services, logs and connections are shown in the order
+  they were added, most recent at the top; rows now carry the date they were added
+  (`added`) and a copy is stamped afresh. The files keep their own order — so
+  nothing about which service starts before which changes with the view — and rows
+  written before this keep the file's order, below the ones that say when they
+  arrived. `logsources.json` gains the key as well; the launcher ignores it, as it
+  ignores every key it does not know.
+
+### Changed
+- **Selecting services now means something.** A project's Start, Stop and Restart
+  act on the rows selected in it, and say which — `Start (2)` rather than
+  `Start All`. Selection took no modifier key and did nothing before, which made
+  it look like a feature that had stopped working. With nothing selected the
+  buttons still take the whole project, the page's own Start All / Stop All still
+  take everything, and a service brings up whatever it waits for whether or not
+  that was selected too.
+
 ## [0.12.1] - 2026-08-27
 
 ### Changed
