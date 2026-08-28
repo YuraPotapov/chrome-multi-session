@@ -1438,6 +1438,7 @@ def test_start_acts_only_on_the_rows_that_are_selected(page, monkeypatch):
     monkeypatch.setattr(page.supervisor, "start_all",
                         lambda project=None, names=None: calls.append((project,
                                                                        names)))
+    _answer_question(monkeypatch)        # only the All form asks
     block = page._blocks["Claim"]
     block._service_buttons[0][0].click()
     block.runners.selectRow(1)
@@ -1466,6 +1467,73 @@ def test_the_page_wide_buttons_still_mean_everything(page, monkeypatch):
     monkeypatch.setattr(page.supervisor, "stop_all",
                         lambda project=None, names=None: calls.append((project,
                                                                        names)))
+    monkeypatch.setattr(page.supervisor, "counts", lambda project=None: (2, 2))
+    _answer_question(monkeypatch)
     page._blocks["Claim"].runners.selectRow(0)
     page.stop_all_button.click()
     assert calls == [(None, None)]
+
+
+# ------------------------------------------------------ asking before the lot
+# Only the All form asks. A button that names a count was aimed at those rows by
+# hand; one that says All can take down every backend on the machine from a
+# click meant for the row underneath it.
+def test_stopping_everything_asks_first_and_says_how_much(page, monkeypatch):
+    stopped = []
+    monkeypatch.setattr(page.supervisor, "stop_all",
+                        lambda project=None, names=None: stopped.append(project))
+    monkeypatch.setattr(page.supervisor, "counts", lambda project=None: (2, 2))
+    asked = {}
+    _answer_question(monkeypatch, record=asked)
+    page.stop_all_button.click()
+    assert stopped == [None]
+    assert "Stop every service on this page?" in asked["text"]
+    assert "2 running service(s) will be stopped." in asked["text"]
+
+
+def test_a_project_wide_button_names_the_project_it_would_take(page, monkeypatch):
+    monkeypatch.setattr(page.supervisor, "counts", lambda project=None: (0, 2))
+    asked = {}
+    _answer_question(monkeypatch, record=asked)
+    page._blocks["Claim"]._service_buttons[0][0].click()
+    assert "Start every service in 'Claim'?" in asked["text"]
+    assert "2 will be started; 0 already running." in asked["text"]
+
+
+def test_saying_no_leaves_everything_alone(page, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    acted = []
+    for verb in ("start_all", "stop_all", "restart_all"):
+        monkeypatch.setattr(page.supervisor, verb,
+                            lambda project=None, names=None, v=verb: acted.append(v))
+    monkeypatch.setattr(page.supervisor, "counts", lambda project=None: (1, 2))
+    _answer_question(monkeypatch, answer=QMessageBox.No)
+    page.start_all_button.click()
+    page.stop_all_button.click()
+    for button, _verb in page._blocks["Claim"]._service_buttons:
+        button.click()
+    assert acted == []
+
+
+def test_a_selection_is_acted_on_without_being_asked_about(page, monkeypatch):
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a button that named a count asked anyway")
+
+    monkeypatch.setattr("cms_gui.pages.services.QMessageBox.question", refuse)
+    acted = []
+    monkeypatch.setattr(page.supervisor, "restart_all",
+                        lambda project=None, names=None: acted.append(names))
+    block = page._blocks["Claim"]
+    block.runners.selectRow(0)
+    block._service_buttons[2][0].click()
+    assert acted == [["Odoo Local"]]
+
+
+def test_nothing_to_do_is_said_rather_than_asked(page, monkeypatch):
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("asked about an action that would touch nothing")
+
+    monkeypatch.setattr("cms_gui.pages.services.QMessageBox.question", refuse)
+    # Nothing is running, so there is nothing for Stop All to stop.
+    page.stop_all_button.click()
+    assert "No service on this page is running." in page.status.text()

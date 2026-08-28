@@ -1252,11 +1252,11 @@ class ProjectBlock(QWidget):
         # a thing that had stopped working.
         self._service_buttons = [
             (_ghost("Start All", lambda: self.page.start_project(
-                self.name, self.selected_runners()), ""), "Start"),
+                self.name, self.selected_runners(), confirm=True), ""), "Start"),
             (_ghost("Stop All", lambda: self.page.stop_project(
-                self.name, self.selected_runners()), ""), "Stop"),
+                self.name, self.selected_runners(), confirm=True), ""), "Stop"),
             (_ghost("Restart All", lambda: self.page.restart_project(
-                self.name, self.selected_runners()), ""), "Restart"),
+                self.name, self.selected_runners(), confirm=True), ""), "Restart"),
         ]
         for widget in [button for button, _verb in self._service_buttons] + [
                 _ghost("Edit", lambda: self.page.edit_project(self.name),
@@ -1289,8 +1289,8 @@ class ProjectBlock(QWidget):
                 "%s the %d selected service%s. Click a row again to drop it from "
                 "the selection." % (verb, chosen, "" if chosen == 1 else "s")
                 if chosen else
-                "%s every service in this project. Select rows to act on some of "
-                "them instead." % verb)
+                "%s every service in this project - it asks first. Select rows "
+                "to act on some of them instead." % verb)
         self.update_buttons()
 
     def _runners_filtered(self):
@@ -1560,9 +1560,12 @@ class ServicesPage(QWidget):
         column.setSpacing(6)
 
         self.start_all_button = _ghost(
-            "Start All", lambda: self.start_project(None),
-            "Start every service on this page that is not already up.")
-        self.stop_all_button = _ghost("Stop All", lambda: self.stop_project(None))
+            "Start All", lambda: self.start_project(None, confirm=True),
+            "Start every service on this page that is not already up. It asks "
+            "first - this one is every project.")
+        self.stop_all_button = _ghost(
+            "Stop All", lambda: self.stop_project(None, confirm=True),
+            "Stop every service on this page. It asks first.")
         self.add_project_button = QPushButton("+ Add Project")
         self.add_project_button.clicked.connect(self.add_project)
         self.reload_button = QPushButton("Reload")
@@ -2014,14 +2017,64 @@ class ServicesPage(QWidget):
 
     # ``names`` is what the block's selection says, and empty means the whole
     # project - which is also what the page's own Start All / Stop All pass.
-    def start_project(self, name=None, names=()):
+    #
+    # ``confirm`` is what a *button* passes. Only the All form asks: a button
+    # that names a count was aimed at those rows by hand, while one that says
+    # All can take down every backend on the machine from a click meant for the
+    # row underneath it. A call made in code is not a click and asks nothing.
+    def start_project(self, name=None, names=(), confirm=False):
+        if not names and confirm and not self._confirm_all("start", name):
+            return
         self.supervisor.start_all(name, names or None)
 
-    def stop_project(self, name=None, names=()):
+    def stop_project(self, name=None, names=(), confirm=False):
+        if not names and confirm and not self._confirm_all("stop", name):
+            return
         self.supervisor.stop_all(name, names or None)
 
-    def restart_project(self, name=None, names=()):
+    def restart_project(self, name=None, names=(), confirm=False):
+        if not names and confirm and not self._confirm_all("restart", name):
+            return
         self.supervisor.restart_all(name, names or None)
+
+    #: For each verb: how many services it would actually touch, what to ask, and
+    #: what to say instead when the answer is none of them. Named fields rather
+    #: than positional, so each sentence names only what it has anything to say
+    #: about - Start is the only one with a word for the services it leaves alone.
+    _ALL_ACTIONS = {
+        "start": (lambda running, total: total - running,
+                  "Start every service {where}?\n\n{affected} will be started; "
+                  "{running} already running.",
+                  "Every service {where} is already running."),
+        "stop": (lambda running, _total: running,
+                 "Stop every service {where}?\n\n{affected} running service(s) "
+                 "will be stopped.",
+                 "No service {where} is running."),
+        "restart": (lambda _running, total: total,
+                    "Restart every service {where}?\n\n{affected} service(s) will "
+                    "be stopped and started again.",
+                    "There is no service {where} to restart."),
+    }
+
+    def _confirm_all(self, verb, project):
+        """Ask before acting on a whole project, or on the whole page.
+
+        Answers False when there is nothing for the verb to do, having said so:
+        an action that would touch nothing is not worth a question.
+        """
+        counted, question, nothing = self._ALL_ACTIONS[verb]
+        running, total = self.supervisor.counts(project)
+        where = "in %r" % project if project else "on this page"
+        affected = counted(running, total)
+        if not affected:
+            self._show_ok(nothing.format(where=where))
+            return False
+        return QMessageBox.question(
+            self, "%s all services" % verb.capitalize(),
+            question.format(where=where, affected=affected, running=running,
+                            total=total),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No) == QMessageBox.Yes
 
     # -- runners --------------------------------------------------------------
     def add_runner(self, project_name, runner_type):

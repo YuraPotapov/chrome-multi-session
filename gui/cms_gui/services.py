@@ -1005,9 +1005,14 @@ class ServiceSupervisor(QObject):
         service = self._services.get((project, name))
         return service.status if service is not None else STOPPED
 
-    def counts(self, project):
-        """(running, total) for one project - the block header's summary."""
-        rows = [s for key, s in self._services.items() if key[0] == project]
+    def counts(self, project=None):
+        """(running, total) for one project - the block header's summary.
+
+        No project means every one of them, which is what the page's own Start
+        All and Stop All are about.
+        """
+        rows = [s for key, s in self._services.items()
+                if project in (None, key[0])]
         return sum(1 for s in rows if s.status == RUNNING), len(rows)
 
     def detained(self):
