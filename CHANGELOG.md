@@ -16,6 +16,17 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-08-28
+
+### Changed
+- **The All buttons on Services & Logs ask first**, and say how much they are about
+  to move: how many will be started and how many already are, how many running ones
+  will be stopped. A button that names a count — `Start (2)` — was aimed at those
+  rows by hand and still acts at once; one that says *All* can take down every
+  backend on the machine from a click meant for the row underneath it. Where there
+  is nothing for it to do — Stop All with nothing running — it says so instead of
+  asking.
+
 ## [0.12.2] - 2026-08-27
 
 ### Added
