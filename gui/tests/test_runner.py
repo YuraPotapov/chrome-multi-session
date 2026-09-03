@@ -5,8 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cms_gui.runner import (SERVER_LOG_LINES, LauncherProcess, RunState,
-                            parse_log_line)
+from cms_gui.runner import (LIVE_STATES, SERVER_LOG_LINES, LauncherProcess,
+                            RunState, parse_log_line)
 
 
 # ------------------------------------------------------------------ log lines
@@ -180,6 +180,29 @@ def test_the_core_announcing_a_stop_marks_that_session_only(qapp):
           {"kind": "session.stopping", "session": "a"})
     assert state.sessions["a"]["state"] == "stopping"
     assert state.sessions["b"]["state"] == "launched"
+
+
+def test_the_windows_still_up_are_the_ones_stop_can_act_on(qapp):
+    """One definition of "still there", shared by the Stop menu and the rail."""
+    state = RunState()
+    _feed(state,
+          {"kind": "window.launched", "session": "a", "pid": 1},
+          {"kind": "window.launched", "session": "b", "pid": 2},
+          {"kind": "window.launched", "session": "c", "pid": 3})
+    state.sessions["b"]["state"] = "passed"
+    state.sessions["c"]["state"] = "stopping"
+    # "stopping" has already been told to go: there is nothing left to stop.
+    assert [s["name"] for s in state.live()] == ["a"]
+    # And the whole set is still there, which is what the report is written from.
+    assert len(state.sessions) == 3
+
+
+def test_a_session_that_never_ran_is_still_a_window_to_close(qapp):
+    state = RunState()
+    _feed(state, {"kind": "window.launched", "session": "a", "pid": 1})
+    assert state.sessions["a"]["state"] in LIVE_STATES
+    state.reset()
+    assert state.live() == []
 
 
 def _flow(state, name, scenario, labels, status="pass"):

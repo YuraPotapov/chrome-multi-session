@@ -29,6 +29,11 @@ LOG_LINE = re.compile(r"^(?P<ts>\d{2}:\d{2}:\d{2})\s+(?P<level>[A-Z]+)\s+"
 # model for as long as the window is open.
 SERVER_LOG_LINES = 2000
 
+# A session in one of these has a window on screen that Stop can still act on.
+# "stopping" is deliberately not among them: it has been told to go, and both
+# the Stop menu and the rail's count are about what is still there to stop.
+LIVE_STATES = ("launching", "launched", "attached", "running")
+
 
 def parse_log_line(line):
     """Split a console line into its parts; unparseable lines stay whole."""
@@ -435,6 +440,15 @@ class RunState(QObject):
     # -- reading --------------------------------------------------------------
     def ordered(self):
         return [self.sessions[n] for n in self.order if n in self.sessions]
+
+    def live(self):
+        """The windows still up: what Stop offers, and what the rail counts.
+
+        Not ``sessions`` - that keeps every window the run ever opened, finished
+        and closed ones included, which is the right answer for the report and
+        the wrong one for "how many are on screen right now".
+        """
+        return [s for s in self.ordered() if s["state"] in LIVE_STATES]
 
     def totals(self):
         done = sum(s["done"] for s in self.sessions.values())

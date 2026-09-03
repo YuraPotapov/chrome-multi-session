@@ -9,11 +9,11 @@ layout rather than as widget configuration.
 import itertools
 import os
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QRectF, Qt, Signal
 from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
-                               QPushButton, QSizePolicy, QSpinBox, QVBoxLayout,
-                               QWidget)
+                               QPushButton, QSizePolicy, QSpinBox, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from . import icons, theme
 
@@ -66,6 +66,200 @@ class Tag(QLabel):
     def set(self, text, variant):
         self.setText(text)
         self.set_variant(variant)
+
+
+#: The rail's badge geometry. The count goes INSIDE the point - a filled bubble
+#: with the figure on it - rather than beside it, because the rail is the width
+#: its names need and a number set next to a disc is room it has not got. Small,
+#: because two of them have to stand past the longest label in the rail:
+#: "Services & Logs" is the entry that carries both counts and it is also very
+#: nearly the widest thing the rail measured itself from.
+BADGE_HEIGHT = 13
+BADGE_PAD = 3
+BADGE_GAP = 2
+BADGE_RIGHT = 4
+
+#: How far into the label's own right padding the counts may reach. The rail's
+#: rule gives every entry 13px there and a label never draws in it, so most of
+#: it is room going spare - and the few px left still keep the two apart.
+BADGE_ENCROACH = 9
+
+#: What is drawn where even a bubble will not go - an entry narrower than the
+#: rail measured for, which is the rail refusing to widen rather than the rail
+#: being wrong. A bare point, and the figure on the tooltip that has it anyway.
+POINT_DOT = 6
+POINT_GAP = 3
+POINT_RIGHT = 6
+
+#: Collapsed the rail is a column of marks and a width, and neither form fits
+#: beside a mark - so the points go on its own corner instead, stacked.
+#: COMPACT_INSET is the air between the mark's right edge and the points: they
+#: sat against it, and a point touching a drawing reads as part of the drawing.
+COMPACT_DOT = 5
+COMPACT_GAP = 2
+COMPACT_INSET = 2
+
+#: Badge colour tokens -> the theme attribute read when one is painted. Read
+#: late, never captured: set_dark_mode rewrites the palette in place.
+BADGE_INKS = {"ok": "OK", "bad": "BAD"}
+
+#: The figure on a bubble. Both fills are dark inks in either theme - OK and BAD
+#: are not among what set_dark_mode rewrites - so one light ink reads on both.
+BADGE_FIGURE = "#ffffff"
+
+
+class NavButton(QToolButton):
+    """A rail entry that can carry live counts.
+
+    Points on the rail because it is read at a glance and from the corner of the
+    eye: what is running is a colour before it is a figure. The figure is on the
+    point rather than beside it, and nothing is reserved for either, so the rail
+    stays exactly the width it measured from its labels - which is the width it
+    is for, expanded and collapsed both.
+
+    Collapsed the bubbles do not fit at all, so they become bare points on the
+    mark's own corner and the numbers move to the tooltip that mode already puts
+    the name on.
+    """
+
+    def __init__(self, badges=2, parent=None):
+        super().__init__(parent)
+        self._badges = []
+        self._summary = ""
+        self._compact = False
+        self._slots = max(0, int(badges))
+
+    def set_compact(self, compact):
+        """Marks only: the counts become points, and the numbers the tooltip."""
+        compact = bool(compact)
+        if compact != self._compact:
+            self._compact = compact
+            self.update()
+
+    def set_badges(self, pairs, summary=""):
+        """Show ``[(count, token), …]``, in the order they should read.
+
+        A count of zero shows nothing: an idle rail should be quiet, and a point
+        that is always there reading 0 is one more thing to check rather than
+        one fewer. What is shown is laid out from the right, so the last one
+        given - the failures - keeps its place whether or not anything is
+        running beside it.
+
+        ``summary`` is the same counts in words, for the collapsed tooltip. It
+        is kept rather than composed here because what the numbers are called is
+        the caller's to say; this only knows how many and in which colour.
+
+        Repainting only on a real change matters because the run's counts come
+        off RunState, which fires on every event the launcher sends.
+        """
+        wanted = [(int(count), token) for count, token in pairs]
+        if wanted == self._badges and summary == self._summary:
+            return
+        self._badges, self._summary = wanted, summary
+        self.update()
+
+    def badges(self):
+        return list(self._badges)
+
+    def summary(self):
+        """The counts in words. Empty when there is nothing to report."""
+        return self._summary if any(c > 0 for c, _t in self._badges) else ""
+
+    def _shown(self):
+        return [(count, token) for count, token in self._badges[:self._slots]
+                if count > 0]
+
+    def _bubbles(self, metrics):
+        """``[(text, width, token)]`` for what is shown, and what it comes to."""
+        boxes = [(str(count),
+                  max(BADGE_HEIGHT, metrics.horizontalAdvance(str(count))
+                      + 2 * BADGE_PAD),
+                  token)
+                 for count, token in self._shown()]
+        return boxes, sum(w for _t, w, _k in boxes) + BADGE_GAP * (len(boxes) - 1)
+
+    def _room(self):
+        """The width past the label that nothing else has a claim on.
+
+        sizeHint is the label, the mark and the padding the rail's own rule
+        gives them, so what is left of the button is free - plus the part of
+        that padding a label never draws in. Staying inside it is the whole
+        arrangement: the rail is measured from its names, and the counts take
+        what that leaves rather than asking for a wider rail.
+        """
+        return self.width() - self.sizeHint().width() + BADGE_ENCROACH
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._shown():
+            return
+        from PySide6.QtGui import QPainter
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setFont(theme.mono_font(8))
+        boxes, needed = self._bubbles(painter.fontMetrics())
+        # The fullest form the entry has room for. A long label leaves a narrow
+        # entry no space for figures, and rather than widen the rail - which is
+        # the one thing the rail is not to do - it says the same in colour alone
+        # and puts the numbers on the tooltip, which carries them either way.
+        if self._compact or needed + BADGE_RIGHT > self._room():
+            self._paint_points(painter)
+        else:
+            self._paint_bubbles(painter, boxes)
+        painter.end()
+
+    def _paint_bubbles(self, painter, boxes):
+        """The counts on their own points, laid out from the right edge in.
+
+        From the right because the label is laid out from the left and nothing
+        holds a gap between them: what is drawn has to end where the button
+        does, so a count that grows a digit grows towards the empty side.
+        """
+        top = (self.height() - BADGE_HEIGHT) / 2.0
+        right = self.width() - BADGE_RIGHT
+        for text, width, token in reversed(boxes):
+            box = QRectF(right - width, top, width, BADGE_HEIGHT)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(self._ink(token))
+            painter.drawRoundedRect(box, BADGE_HEIGHT / 2.0, BADGE_HEIGHT / 2.0)
+            painter.setPen(theme.color(BADGE_FIGURE))
+            painter.drawText(box, Qt.AlignCenter, text)
+            right -= width + BADGE_GAP
+
+    def _paint_points(self, painter):
+        """Colour alone: a bare point per count, and the figures on the tooltip.
+
+        Collapsed they go on the mark's own corner, stacked, because beside it
+        is room the rail has not got and the mark is centred in what is left.
+        Expanded they sit at the right edge like the bubbles they stand in for.
+        """
+        painter.setPen(Qt.NoPen)
+        if not self._compact:
+            top = (self.height() - POINT_DOT) / 2.0
+            right = self.width() - POINT_RIGHT
+            for _text, _width, token in reversed(self._bubbles(
+                    painter.fontMetrics())[0]):
+                painter.setBrush(self._ink(token))
+                painter.drawEllipse(QRectF(right - POINT_DOT, top,
+                                           POINT_DOT, POINT_DOT))
+                right -= POINT_DOT + POINT_GAP
+            return
+        icon = self.iconSize()
+        area = self.contentsRect()
+        right = area.x() + (area.width() + icon.width()) / 2.0
+        top = area.y() + (area.height() - icon.height()) / 2.0
+        for count, token in self._badges[:self._slots]:
+            if count <= 0:
+                top += COMPACT_DOT + COMPACT_GAP
+                continue
+            painter.setBrush(self._ink(token))
+            painter.drawEllipse(QRectF(right + COMPACT_INSET, top,
+                                       COMPACT_DOT, COMPACT_DOT))
+            top += COMPACT_DOT + COMPACT_GAP
+
+    @staticmethod
+    def _ink(token):
+        return theme.color(getattr(theme, BADGE_INKS.get(token, "TEXT")))
 
 
 class Segmented(QWidget):
@@ -432,6 +626,10 @@ class Disclosure(QWidget):
         icons.button(self.button,
                      "disclosure_open" if self.is_expanded() else "disclosure_closed",
                      title)
+
+    def title(self):
+        """What the header reads now, tally and all."""
+        return self._title
 
     def set_expanded(self, expanded):
         self.button.setChecked(bool(expanded))

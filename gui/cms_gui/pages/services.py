@@ -1464,13 +1464,22 @@ class ProjectBlock(QWidget):
             _fit_actions(table, self.R_CRITERIA)
             return
 
-    def set_summary(self, running, total):
-        """The count in the block's own title: `Claim (3 of 5 running)`."""
+    def set_summary(self, running, total, failed=0):
+        """The count in the block's own title: `Claim (3 of 5 running · 1 failed)`.
+
+        The failures only when there are some. A block that says "0 failed"
+        whenever all is well is a number to read on every glance to find out it
+        is still nothing, which is the opposite of what a summary is for.
+        """
         if self.project is None:
             return
-        self.disclosure.set_title(
-            "%s  (%d of %d running)" % (self._title, running, total) if total
-            else "%s  (nothing configured)" % self._title)
+        if not total:
+            self.disclosure.set_title("%s  (nothing configured)" % self._title)
+            return
+        count = "%d of %d running" % (running, total)
+        if failed:
+            count += " · %d failed" % failed
+        self.disclosure.set_title("%s  (%s)" % (self._title, count))
 
     # -- logs -----------------------------------------------------------------
     def selected_log(self):
@@ -1574,10 +1583,15 @@ class ServicesPage(QWidget):
         self.save_button = QPushButton("Save")
         self.save_button.setProperty("variant", "primary")
         self.save_button.clicked.connect(self.save)
+        # The whole page in one line, beside its name. Every block carries its
+        # own tally, but a page of folded blocks answers "is anything wrong"
+        # only by being unfolded one at a time - which is the question this is.
+        self.totals = QLabel("")
+        self.totals.setTextFormat(Qt.RichText)
         column.addWidget(widgets.row(
-            widgets.heading("Services & Logs"), None, self.start_all_button,
-            self.stop_all_button, self.add_project_button, self.reload_button,
-            self.save_button))
+            widgets.heading("Services & Logs"), self.totals, None,
+            self.start_all_button, self.stop_all_button,
+            self.add_project_button, self.reload_button, self.save_button))
 
         self.wording = widgets.Phrasing()
         _tail = ("project groups the services that make one thing work and the logs "
@@ -1935,8 +1949,33 @@ class ServicesPage(QWidget):
                                  service.stale if service else False)
                 if service is not None and runner.criteria:
                     block.set_criteria(runner.name, service.criteria_state())
-            running, total = self.supervisor.counts(project.name)
-            block.set_summary(running, total)
+            self._summarise(project.name)
+        self._update_totals()
+
+    def _summarise(self, project):
+        """Put one block's tally in its title. The counts come off the supervisor."""
+        block = self._blocks.get(project)
+        if block is None:
+            return
+        running, total = self.supervisor.counts(project)
+        block.set_summary(running, total, len(self.supervisor.failed(project)))
+
+    def _update_totals(self):
+        """The page's own line: everything configured here, however it is folded.
+
+        Coloured the same as the Status column and the rail, and read from the
+        theme every time rather than kept, because dark mode rewrites the
+        palette in place under whatever is already on screen.
+        """
+        up, down = len(self.supervisor.running()), len(self.supervisor.failed())
+        parts = []
+        if up:
+            parts.append("<span style='color: %s'>%d running</span>"
+                         % (theme.OK, up))
+        if down:
+            parts.append("<span style='color: %s'>%d failed</span>"
+                         % (theme.BAD, down))
+        self.totals.setText(" · ".join(parts))
 
     def _criteria_changed(self, project, name):
         block = self._blocks.get(project)
@@ -1944,14 +1983,16 @@ class ServicesPage(QWidget):
             block.set_criteria(name, self.supervisor.criteria_state(project, name))
 
     def _status_changed(self, project, name, status):
+        # The page's line first, and whatever else happens: it is about every
+        # service configured here, including one whose block is not drawn yet.
+        self._update_totals()
         block = self._blocks.get(project)
         if block is None:
             return
         service = self.supervisor.service(project, name)
         block.set_status(name, status, service.detail if service else "",
                          service.stale if service else False)
-        running, total = self.supervisor.counts(project)
-        block.set_summary(running, total)
+        self._summarise(project)
         if status == runnertypes.FAILED and service is not None and service.detail:
             self._show_problem("%s · %s: %s" % (project, name, service.detail))
 

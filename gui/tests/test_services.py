@@ -918,3 +918,39 @@ def test_a_watched_path_may_be_written_with_a_tilde(qapp, tmp_path, state,
         handle.write("listening on 0.0.0.0:8000\n")
     service.poll()
     assert _lit(service, "start") is True
+
+
+# ------------------------------------------------- what is up, and what fell over
+def test_the_supervisor_separates_what_is_running_from_what_failed(
+        qapp, supervisor):
+    """Two readers, because the rail asks two questions of the same set.
+
+    ``counts`` answers "how many of these are up", which is the block header's
+    question; a failure is not the absence of a success and needs its own.
+    """
+    supervisor.sync(_stack(_shell_row("up", "import time;time.sleep(30)"),
+                           _shell_row("gone", "import sys;sys.exit(3)")))
+    supervisor.start("Claim", "up")
+    supervisor.start("Claim", "gone")
+    assert _pump(qapp, lambda: len(supervisor.failed()) == 1)
+    assert [s.name for s in supervisor.running()] == ["up"]
+    assert [s.name for s in supervisor.failed()] == ["gone"]
+    assert supervisor.counts("Claim") == (1, 2)
+
+
+def test_a_service_that_was_never_started_is_in_neither_list(supervisor):
+    supervisor.sync(_stack(_shell_row("idle", "pass")))
+    assert supervisor.running() == []
+    assert supervisor.failed() == []
+
+
+def test_failed_is_about_the_process_and_not_about_criteria(qapp, supervisor):
+    """A criterion that has not lit is not a failure. STATUS means the process."""
+    criterion = cr.CriterionRow(name="ready", rules=[
+        cr.Rule(cr.MATCH, cr.TEXT, "never printed")])
+    supervisor.sync(_project(_watching(
+        "svc", "import time;time.sleep(30)", [criterion])))
+    supervisor.start("Claim", "svc")
+    assert _pump(qapp, lambda: supervisor.running())
+    assert supervisor.criteria_state("Claim", "svc")[0][2] is False
+    assert supervisor.failed() == []

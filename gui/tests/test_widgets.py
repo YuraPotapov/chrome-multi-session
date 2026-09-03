@@ -207,3 +207,170 @@ def test_the_note_takes_its_colour_from_the_theme_not_from_a_literal(qapp):
     note = widgets.empty_note(table, "Nothing yet.")
     assert note.property("role") == "hint"
     assert not note.styleSheet()
+
+
+# ------------------------------------------------------------------ nav badges
+def _wide(slots=2, text="Services & Logs", room=140):
+    """A nav button with ``room`` px to spare past its label, as the rail gives it."""
+    from PySide6.QtCore import Qt
+
+    button = widgets.NavButton(slots)
+    button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+    button.setIcon(icons.icon("services"))
+    button.setText(text)
+    button.resize(button.sizeHint().width() + room, button.sizeHint().height())
+    return button
+
+
+def _painted(button, qapp):
+    """Which badge colours the button drew, and the leftmost x of each."""
+    qapp.processEvents()
+    image = button.grab().toImage()
+    seen = {}
+    for x in range(image.width()):
+        for y in range(image.height()):
+            name = image.pixelColor(x, y).name().lower()
+            if name in (theme.OK.lower(), theme.BAD.lower()):
+                seen.setdefault(name, []).append(x)
+    return {name: min(xs) for name, xs in seen.items()}
+
+
+def test_a_rail_button_with_nothing_to_report_paints_nothing(qapp):
+    button = _wide()
+    button.set_badges([(0, "ok"), (0, "bad")])
+    assert _painted(button, qapp) == {}
+
+
+def test_the_counts_are_painted_in_their_own_colours(qapp):
+    button = _wide()
+    button.set_badges([(3, "ok"), (1, "bad")])
+    painted = _painted(button, qapp)
+    assert theme.OK.lower() in painted and theme.BAD.lower() in painted
+    # Green first, red after it: the order they are given is the order they read.
+    assert painted[theme.OK.lower()] < painted[theme.BAD.lower()]
+
+
+def test_a_failure_holds_its_place_whether_or_not_anything_is_running(qapp):
+    """Laid out from the right, so the last one given never moves.
+
+    A red that slid across the moment the last service stopped would be a colour
+    read twice - once for what it is, once for where it now is.
+    """
+    both = _wide()
+    both.set_badges([(3, "ok"), (1, "bad")])
+    beside_green = _painted(both, qapp)[theme.BAD.lower()]
+
+    alone = _wide()
+    alone.set_badges([(0, "ok"), (1, "bad")])
+    assert _painted(alone, qapp)[theme.BAD.lower()] == beside_green
+
+
+def test_a_count_never_changes_the_width_of_the_rail(qapp):
+    """The rail measures itself from its labels, expanded and collapsed both.
+
+    Nothing is held open for a badge and nothing grows to fit one, so a count
+    arriving mid-run cannot move the rail out from under what is being read.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QToolButton
+
+    plain = QToolButton()
+    plain.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+    plain.setIcon(icons.icon("services"))
+    plain.setText("Services & Logs")
+    button = _wide()
+    for compact in (False, True):
+        # The rail switches both together: marks only, and the counts with them.
+        style = Qt.ToolButtonIconOnly if compact else Qt.ToolButtonTextBesideIcon
+        button.set_compact(compact)
+        button.setToolButtonStyle(style)
+        plain.setToolButtonStyle(style)
+        for pairs in ([(0, "ok"), (0, "bad")], [(1, "ok"), (0, "bad")],
+                      [(99, "ok"), (99, "bad")]):
+            button.set_badges(pairs)
+            assert button.sizeHint() == plain.sizeHint(), (compact, pairs)
+
+
+def test_a_count_with_room_for_it_is_drawn_on_its_point(qapp):
+    """The figure goes on the point, not beside it: beside it is width."""
+    button = _wide(slots=1, text="Run", room=140)
+    button.set_badges([(7, "ok")])
+    qapp.processEvents()
+    image = button.grab().toImage()
+    fill = [(x, y) for x in range(image.width()) for y in range(image.height())
+            if image.pixelColor(x, y).name().lower() == theme.OK.lower()]
+    figure = [(x, y) for x, y in
+              [(x, y) for x in range(image.width()) for y in range(image.height())]
+              if image.pixelColor(x, y).name().lower() == widgets.BADGE_FIGURE]
+    assert fill, "no point was drawn"
+    # The figure is inside the point, so its ink is bounded by the fill's box.
+    inside = [p for p in figure
+              if min(x for x, _y in fill) < p[0] < max(x for x, _y in fill)
+              and min(y for _x, y in fill) < p[1] < max(y for _x, y in fill)]
+    assert inside, "the count was not drawn on the point"
+
+
+def test_a_label_that_leaves_no_room_says_it_in_colour_alone(qapp):
+    """Rather than widen the rail, which is the one thing it must not do.
+
+    The numbers are still there - on the tooltip, which carries them whichever
+    form the entry ends up drawing.
+    """
+    cramped = _wide(room=14)
+    cramped.set_badges([(3, "ok"), (1, "bad")], "3 running · 1 failed")
+    image = cramped.grab().toImage()
+    assert not any(image.pixelColor(x, y).name() == widgets.BADGE_FIGURE
+                   for x in range(image.width()) for y in range(image.height()))
+    # Both counts are still said, in colour and on the tooltip.
+    assert set(_painted(cramped, qapp)) == {theme.OK.lower(), theme.BAD.lower()}
+    assert cramped.summary() == "3 running · 1 failed"
+
+
+def test_collapsed_the_counts_are_points_on_the_mark_and_nothing_else(qapp):
+    from PySide6.QtCore import Qt
+
+    button = widgets.NavButton(2)
+    button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+    button.setIcon(icons.icon("services"))
+    button.set_compact(True)
+    button.set_badges([(3, "ok"), (1, "bad")], "3 running · 1 failed")
+    button.resize(button.sizeHint())
+    qapp.processEvents()
+    image = button.grab().toImage()
+    seen = {}
+    for x in range(image.width()):
+        for y in range(image.height()):
+            name = image.pixelColor(x, y).name().lower()
+            if name in (theme.OK.lower(), theme.BAD.lower()):
+                seen.setdefault(name, []).append(y)
+    # Both points are there, stacked rather than in a row: there is no room
+    # beside the mark, which is why the numbers went to the tooltip.
+    assert set(seen) == {theme.OK.lower(), theme.BAD.lower()}
+    assert max(seen[theme.OK.lower()]) < min(seen[theme.BAD.lower()])
+    assert button.summary() == "3 running · 1 failed"
+
+
+def test_a_summary_says_nothing_when_there_is_nothing_to_say(qapp):
+    button = widgets.NavButton(2)
+    button.set_badges([(0, "ok"), (0, "bad")], "0 running")
+    assert button.summary() == ""
+
+
+def test_two_counts_fit_what_the_longest_label_leaves_spare(qapp):
+    """The bubbles are sized for the entry that carries two of them.
+
+    The rail is measured from its names and adds nothing for a tally, so what
+    the longest label leaves past itself is the whole budget - and a bubble that
+    reads well at some comfortable size but does not fit here is one nobody
+    sees: it falls back to a bare point. "Services & Logs" is that entry, and it
+    is also very nearly the widest label in the rail.
+    """
+    from PySide6.QtGui import QFontMetrics
+
+    metrics = QFontMetrics(theme.mono_font(8))
+    one = max(widgets.BADGE_HEIGHT,
+              metrics.horizontalAdvance("9") + 2 * widgets.BADGE_PAD)
+    pair = one * 2 + widgets.BADGE_GAP + widgets.BADGE_RIGHT
+    # RAIL_SLACK past the widest label, plus the part of the entry's own right
+    # padding that a label never draws in.
+    assert pair <= 12 + widgets.BADGE_ENCROACH + 15

@@ -1537,3 +1537,59 @@ def test_nothing_to_do_is_said_rather_than_asked(page, monkeypatch):
     # Nothing is running, so there is nothing for Stop All to stop.
     page.stop_all_button.click()
     assert "No service on this page is running." in page.status.text()
+
+
+# ------------------------------------------------- how many, and how many badly
+def _pretend(page, project, name, status):
+    """Put one service in a status without running anything."""
+    service = page.supervisor.service(project, name)
+    service._set_status(status)
+    return service
+
+
+def test_a_block_says_how_many_of_its_services_are_up(page):
+    _pretend(page, "Claim", "Odoo Local", runnertypes.RUNNING)
+    assert "(1 of 2 running)" in page._blocks["Claim"].disclosure.title()
+
+
+def test_a_block_says_how_many_of_them_fell_over(page):
+    _pretend(page, "Claim", "Odoo Local", runnertypes.RUNNING)
+    _pretend(page, "Claim", "PostgreSQL DB", runnertypes.FAILED)
+    title = page._blocks["Claim"].disclosure.title()
+    assert "1 of 2 running" in title and "1 failed" in title
+
+
+def test_a_block_with_nothing_wrong_does_not_say_so(page):
+    """"0 failed" on every block is a number read once a glance to find nothing."""
+    _pretend(page, "Claim", "Odoo Local", runnertypes.RUNNING)
+    assert "failed" not in page._blocks["Claim"].disclosure.title()
+
+
+def test_the_page_totals_every_project_at_the_top(page):
+    """A page of folded blocks otherwise answers "is anything wrong" one at a time."""
+    _pretend(page, "Claim", "Odoo Local", runnertypes.RUNNING)
+    _pretend(page, "Claim", "PostgreSQL DB", runnertypes.FAILED)
+    text = page.totals.text()
+    assert "1 running" in text and "1 failed" in text
+
+
+def test_the_page_totals_say_nothing_while_nothing_is_up(page):
+    assert page.totals.text() == ""
+
+
+def test_the_totals_take_their_colours_from_the_theme_not_from_a_literal(page):
+    from cms_gui import theme
+
+    _pretend(page, "Claim", "Odoo Local", runnertypes.RUNNING)
+    _pretend(page, "Claim", "PostgreSQL DB", runnertypes.FAILED)
+    # Read every time they are set: dark mode rewrites the palette in place.
+    assert theme.OK in page.totals.text()
+    assert theme.BAD in page.totals.text()
+
+
+def test_the_block_and_the_page_agree_because_both_ask_the_supervisor(page):
+    _pretend(page, "Claim", "Odoo Local", runnertypes.FAILED)
+    assert len(page.supervisor.failed("Claim")) == 1
+    assert len(page.supervisor.failed()) == 1
+    assert "1 failed" in page._blocks["Claim"].disclosure.title()
+    assert "1 failed" in page.totals.text()

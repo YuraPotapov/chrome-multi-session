@@ -1047,3 +1047,174 @@ def test_the_footer_is_about_what_is_happening_not_about_settings(window):
     assert window.status_config.text().startswith("config: ")
     assert os.sep not in window.status_config.text()      # the name, not the path
     assert window.status_config.toolTip()                 # the path is still here
+
+
+# ------------------------------------------------- what is running, on the rail
+def _badges(window, key):
+    return window._nav_buttons[key].badges()
+
+
+def test_the_rail_says_nothing_while_nothing_is_happening(window):
+    assert _badges(window, "logsources") == [(0, "ok"), (0, "bad")]
+    assert _badges(window, "run") == [(0, "ok")]
+
+
+def test_the_rail_counts_the_services_that_are_up(window, qapp):
+    """Visible from whichever page you are on - that is the whole point of it."""
+    supervisor = _with_services(window, "a", "b")
+    try:
+        window.services.start_project("Claim")
+        assert _until(qapp, lambda: len(supervisor.running()) == 2)
+        assert _badges(window, "logsources") == [(2, "ok"), (0, "bad")]
+        window.services.stop_project("Claim")
+        assert _until(qapp,
+                      lambda: _badges(window, "logsources") == [(0, "ok"), (0, "bad")])
+    finally:
+        window.services.shutdown(6000)
+
+
+def test_a_service_that_fell_over_is_counted_in_red(window, qapp):
+    from cms_gui import servicesfile as sf
+
+    window.services._projects = [sf.ProjectRow(name="Claim", runners=[
+        sf.RunnerRow(name="gone", type="shell", settings={
+            "command": "%s -c \"import sys;sys.exit(3)\"" % sys.executable})])]
+    window.services._rebuild()
+    try:
+        window.services.start_project("Claim")
+        assert _until(qapp,
+                      lambda: _badges(window, "logsources") == [(0, "ok"), (1, "bad")])
+    finally:
+        window.services.shutdown(6000)
+
+
+def test_the_rail_counts_the_windows_a_run_has_open(window, qapp):
+    window.run_state.handle({"kind": "window.launched", "session": "a", "pid": 1})
+    window.run_state.handle({"kind": "window.launched", "session": "b", "pid": 2})
+    # Coalesced: RunState.changed fires on every event the launcher sends.
+    assert _until(qapp, lambda: _badges(window, "run") == [(2, "ok")])
+    window.run_state.sessions["b"]["state"] = "passed"
+    window.run_state.handle({"kind": "run.finished", "exit_code": 0})
+    assert _until(qapp, lambda: _badges(window, "run") == [(1, "ok")])
+
+
+def test_the_rails_run_count_clears_when_the_next_run_begins(window, qapp):
+    window.run_state.handle({"kind": "window.launched", "session": "a", "pid": 1})
+    assert _until(qapp, lambda: _badges(window, "run") == [(1, "ok")])
+    window.run_state.reset()
+    assert _until(qapp, lambda: _badges(window, "run") == [(0, "ok")])
+
+
+def test_the_rail_and_the_footer_cannot_disagree_about_what_is_up(window, qapp):
+    """Both read the supervisor rather than keeping a tally of their own."""
+    supervisor = _with_services(window, "odoo")
+    try:
+        window.services.start_project("Claim")
+        assert _until(qapp, lambda: window.services_label.text() == "odoo: running")
+        assert _badges(window, "logsources")[0] == (len(supervisor.running()), "ok")
+    finally:
+        window.services.shutdown(6000)
+
+
+def test_collapsing_the_rail_does_not_widen_it_for_the_counts(window, qapp):
+    """The collapsed rail is the width it always was, badges or no badges.
+
+    Room enough for a figure would be most of the rail again, and the rail is
+    collapsed precisely to not be that wide - so collapsed the counts are points
+    on the mark, and the numbers are on the tooltip that mode already puts the
+    name on.
+    """
+    from PySide6.QtWidgets import QToolButton
+
+    window.set_sidebar_collapsed(True)
+    qapp.processEvents()
+    rail = window._nav_buttons["launch"].parentWidget()
+    collapsed = rail.width()
+
+    # Styled and parented like the real thing, so it is measured like one: the
+    # rail's rule sets the padding and the minimum height a bare button lacks.
+    plain = QToolButton(rail)
+    plain.setProperty("variant", "nav")
+    plain.setToolButtonStyle(window._nav_buttons["logsources"].toolButtonStyle())
+    plain.setIcon(window._nav_buttons["logsources"].icon())
+    plain.ensurePolished()
+    assert collapsed == max(main_window_mod.RAIL_COLLAPSED_MIN_WIDTH,
+                            plain.sizeHint().width() + 1)
+
+    window._nav_buttons["logsources"].set_badges([(3, "ok"), (1, "bad")])
+    window.set_sidebar_collapsed(True)
+    qapp.processEvents()
+    assert rail.width() == collapsed
+
+
+def test_the_collapsed_tooltip_carries_the_numbers_the_points_cannot(window, qapp):
+    supervisor = _with_services(window, "odoo")
+    try:
+        window.set_sidebar_collapsed(True)
+        window.services.start_project("Claim")
+        assert _until(qapp, lambda: len(supervisor.running()) == 1)
+        tip = window._nav_buttons["logsources"].toolTip()
+        assert tip.startswith("Services & Logs")
+        assert "1 running" in tip
+        # Expanded the label is right there, so the tooltip drops it and keeps
+        # the counts - a point may be all of them that the entry has room for.
+        window.set_sidebar_collapsed(False)
+        assert window._nav_buttons["logsources"].toolTip() == "1 running"
+    finally:
+        window.services.shutdown(6000)
+
+
+def test_a_quiet_entry_keeps_the_plain_tooltip_it_always_had(window):
+    window.set_sidebar_collapsed(True)
+    assert window._nav_buttons["log"].toolTip() == "Log"
+    assert window._nav_buttons["logsources"].toolTip() == "Services & Logs"
+    # And expanded says nothing at all until there is something to say.
+    window.set_sidebar_collapsed(False)
+    assert window._nav_buttons["logsources"].toolTip() == ""
+    assert window._nav_buttons["log"].toolTip() == ""
+
+
+def test_the_counts_do_not_widen_the_rail_in_either_state(window, qapp):
+    """The rail is measured from its labels. A badge may not be a reason to grow.
+
+    Both states, because both are measured the same way - and the expanded one
+    is the one a long label makes tight, which is why an entry with no room for
+    a figure draws a bare point and leaves the numbers to the tooltip.
+    """
+    rail = window._nav_buttons["launch"].parentWidget()
+    window.set_sidebar_collapsed(False)
+    qapp.processEvents()
+    expanded = rail.width()
+    window.set_sidebar_collapsed(True)
+    qapp.processEvents()
+    collapsed = rail.width()
+
+    window._nav_buttons["logsources"].set_badges([(99, "ok"), (99, "bad")])
+    window._nav_buttons["run"].set_badges([(99, "ok")])
+    for collapse, was in ((True, collapsed), (False, expanded)):
+        window.set_sidebar_collapsed(collapse)
+        qapp.processEvents()
+        assert rail.width() == was, collapse
+
+
+def test_reloading_the_configuration_does_not_leave_a_stale_count(window, qapp):
+    """A service that stops existing reports no status on its way out.
+
+    Loading replaces the supervisor's whole set, so the window has to ask again
+    - the rail naming three running services that are no longer configured is
+    worse than a rail naming none.
+    """
+    supervisor = _with_services(window, "a", "b")
+    try:
+        window.services.start_project("Claim")
+        assert _until(qapp, lambda: len(supervisor.running()) == 2)
+        assert _badges(window, "logsources")[0] == (2, "ok")
+    finally:
+        window.services.shutdown(6000)
+    # What refresh_inventory does to the page, without the core behind it.
+    window.services._projects = []
+    window.services._rebuild()
+    window._update_services()
+    window._update_nav_badges()
+    assert _badges(window, "logsources") == [(0, "ok"), (0, "bad")]
+    assert window.services_label.text() == ""

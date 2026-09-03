@@ -56,12 +56,19 @@ OBSERVE = [("run", "Run", "run"), ("log", "Log", "log"),
 # primary interface in one mode and still available in the other.
 DEVELOPER_ONLY = ("commands",)
 
+# How many live counts a rail entry can show: Services & Logs says how many are
+# running and how many have failed, Run says how many windows are up. Every
+# entry reserves room for the larger of these whether or not it uses it, so the
+# points line up in one column and the marks stay aligned when the rail is
+# collapsed - see widgets.NavButton.
+NAV_BADGES = {"logsources": 2, "run": 1}
+
 # The rail's width is measured from its contents (see _build_ui); these only set
 # the floor, the left/right inset of the group headings, and enough slack that a
 # label never sits flush against the divider.
-RAIL_MIN_WIDTH = 196
+RAIL_MIN_WIDTH = 190
 RAIL_PADDING = 14
-RAIL_SLACK = 18
+RAIL_SLACK = 12
 
 # Collapsed, the rail is measured the same way - from an icon-only button, whose
 # width comes from the style and the screen's pixel ratio rather than from
@@ -169,6 +176,17 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.services_label)
         self.services.supervisor.status_changed.connect(self._update_services)
         self._update_services()
+
+        # The same two facts on the rail, where they are visible from whichever
+        # page you are on. The footer names what is up; the rail counts it, and
+        # counts what has failed, which the footer has no room to say.
+        self._badges_pending = False
+        self.services.supervisor.status_changed.connect(self._update_nav_badges)
+        # A service deleted while it was running is disposed of by sync without
+        # a status of its own to report, so the save is the signal for that one.
+        self.services.saved.connect(self._update_nav_badges)
+        self.run_state.changed.connect(self._schedule_nav_badges)
+        self._update_nav_badges()
 
         self.workers_label = QLabel("")
         self.workers_label.setStyleSheet("padding: 0 10px;")
@@ -424,13 +442,22 @@ class MainWindow(QMainWindow):
                 # how "Services & Logs" came out of the rail as "Services _Logs".
                 # Only what is drawn is escaped - _nav_labels keeps the real name,
                 # so the collapsed rail's tooltip still reads properly.
-                button = icons.button(QToolButton(), mark, label.replace("&", "&&"))
+                # Only the entries that have something to count ask for the room
+                # to say it: reserving it on every one of them would widen the
+                # rail on account of "Launch Sessions", which never counts.
+                button = icons.button(widgets.NavButton(NAV_BADGES.get(key, 0)),
+                                      mark, label.replace("&", "&&"))
                 button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
                 button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 button.setProperty("variant", "nav")
                 button.setCursor(Qt.PointingHandCursor)
                 button.clicked.connect(lambda _c=False, k=key: self.show_page(k))
                 self._nav_buttons[key] = button
+                # Measured from the label alone, counts or no counts: the rail
+                # is the width its names need and a tally is not a name. What is
+                # left past the longest of them is what the counts get, and an
+                # entry with less than they need says it in colour instead of
+                # asking for more - see widgets.NavButton.
                 widest = max(widest, button.sizeHint().width())
                 rail_layout.addWidget(button)
             rail_layout.addSpacing(10)
@@ -616,10 +643,11 @@ class MainWindow(QMainWindow):
         for key, button in self._nav_buttons.items():
             button.setToolButtonStyle(Qt.ToolButtonIconOnly if collapsed
                                       else Qt.ToolButtonTextBesideIcon)
-            # The label has to stay reachable once it is no longer drawn. Only
-            # then: beside a label that is right there, a tooltip repeating it
-            # is something to wait for that says nothing.
-            button.setToolTip(self._nav_labels.get(key, "") if collapsed else "")
+            # Marks only, so the counts go on the mark's own corner: the
+            # collapsed rail is a width, and neither a figure nor the room for
+            # one fits beside a mark - see NavButton.
+            button.set_compact(collapsed)
+            button.setToolTip(self._nav_tooltip(key))
         self.rail_note.setVisible(not collapsed)
         icons.button(self.collapse_button, "expand" if collapsed else "collapse")
         self.collapse_button.setToolTip("Expand the sidebar" if collapsed
@@ -849,7 +877,13 @@ class MainWindow(QMainWindow):
                                or self.inventory.log_sources_path,
                                self.settings.services_path,
                                self.settings.log_sources_path)
-            
+            # Loading replaces the supervisor's whole set, and a service that
+            # simply stopped existing reports no status on its way out - so the
+            # window's two tallies have to be asked again rather than waiting to
+            # be told, or they go on naming what is no longer configured.
+            self._update_services()
+            self._update_nav_badges()
+
             _splash_msg("Finalizing UI...")
             self.describe_label.setText(self.inventory.summary())
             self.rail_note.setText("core %s\nPySide6 %s" % (self.inventory.version,
@@ -1102,8 +1136,7 @@ class MainWindow(QMainWindow):
         that is only correct while it is on screen only has to be correct then.
         """
         self.stop_menu.clear()
-        live = [s for s in self.run_state.ordered()
-                if s["state"] in ("launching", "launched", "attached", "running")]
+        live = self.run_state.live()
         for session in live:
             label = session["name"]
             if session.get("scenario"):
@@ -1404,6 +1437,59 @@ class MainWindow(QMainWindow):
         self.services_label.setToolTip("\n".join(
             "%s · %s: running" % (service.project, service.name)
             for service in running))
+
+    def _schedule_nav_badges(self):
+        """Coalesce the run's updates: RunState.changed fires on every event.
+
+        A window launching, a step finishing, a line of log - all of them land
+        here, and repainting the rail for each would be work done hundreds of
+        times to arrive at the same two numbers.
+        """
+        if not self._badges_pending:
+            self._badges_pending = True
+            QTimer.singleShot(0, self._update_nav_badges)
+
+    def _update_nav_badges(self, *_args):
+        """The rail's live counts: services up and failed, windows still open.
+
+        Read off the supervisor and the run state rather than tallied here, for
+        the same reason the footer is: one answer to what is running, so the
+        rail and the page it points at cannot disagree.
+        """
+        self._badges_pending = False
+        services = self._nav_buttons.get("logsources")
+        if services is not None:
+            supervisor = self.services.supervisor
+            up, down = len(supervisor.running()), len(supervisor.failed())
+            services.set_badges(
+                [(up, "ok"), (down, "bad")],
+                " · ".join(filter(None, ["%d running" % up if up else "",
+                                         "%d failed" % down if down else ""])))
+        run = self._nav_buttons.get("run")
+        if run is not None:
+            live = len(self.run_state.live())
+            run.set_badges([(live, "ok")],
+                           "%d window%s open" % (live, "" if live == 1 else "s"))
+        # A point may be all there is to see - a long label leaves no room for
+        # the figure - so the numbers behind it always go on the tooltip, and
+        # they change long after it was first set.
+        for key in NAV_BADGES:
+            if key in self._nav_buttons:
+                self._nav_buttons[key].setToolTip(self._nav_tooltip(key))
+
+    def _nav_tooltip(self, key):
+        """What a rail entry says on hover: its counts, and its name if hidden.
+
+        Expanded, only the counts. Beside a label that is right there, a tooltip
+        repeating it is something to wait for that says nothing - but what a
+        point stands for is not on the rail at all, whichever state it is in.
+        """
+        button = self._nav_buttons.get(key)
+        counts = button.summary() if button is not None else ""
+        if not self.settings.sidebar_collapsed:
+            return counts
+        label = self._nav_labels.get(key, "")
+        return "%s\n%s" % (label, counts) if counts else label
 
     def closeEvent(self, event):
         if self.process.is_running():

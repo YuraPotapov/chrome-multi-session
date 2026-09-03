@@ -1024,10 +1024,26 @@ class ServiceSupervisor(QObject):
         service = self._services.get((project, name))
         return service.criteria_state() if service is not None else []
 
-    def running(self):
-        """Every service that is up, in the order the page shows them."""
-        return [service for service in self._services.values()
-                if service.status == RUNNING]
+    def _in(self, project, status):
+        return [service for key, service in self._services.items()
+                if project in (None, key[0]) and service.status == status]
+
+    def running(self, project=None):
+        """Every service that is up, in the order the page shows them.
+
+        No project means every one of them - the rail's count and the page's
+        own total; a name narrows it to one block's.
+        """
+        return self._in(project, RUNNING)
+
+    def failed(self, project=None):
+        """Every service that went down badly, in the same order.
+
+        STATUS, and only STATUS: a service whose criteria have not lit is not in
+        here. The two answer different questions and neither stands in for the
+        other - see criteria.py.
+        """
+        return self._in(project, FAILED)
 
     # -- acting ---------------------------------------------------------------
     def start(self, project, name, _seen=None):
