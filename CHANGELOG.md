@@ -16,6 +16,31 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-09-04
+
+### Added
+- **The sidebar counts what is live.** *Services & Logs* carries a green point with
+  the number of services running and a red one with the number that have failed;
+  *Run* carries a point with the number of windows a run still has open. A service
+  started on one page and then left behind was visible only from the page that owns
+  it — the footer named it in a line it shares with the machine load, and said
+  nothing at all about one that had fallen over. The counts are STATUS: the process,
+  never a criterion, which is a whole-log assertion and has never spoken for it.
+  A count of zero shows nothing, so an idle rail is blank; hovering an entry says
+  the same in words. The rail is measured from its names and adds nothing for a
+  tally, so the counts arrive without it moving — where a long label leaves no room
+  for the figure the entry shows the colour alone, and collapsed the points sit on
+  the mark's own corner.
+- **Services & Logs totals what it is showing.** Each project header now reads
+  `Claim  (1 of 3 running · 1 failed)`, and the page's own line beside the heading
+  totals every project — `12 running · 2 failed`. A page of folded blocks otherwise
+  answers "is anything wrong" one unfold at a time.
+
+### Fixed
+- Reloading the configuration no longer leaves the footer and the sidebar naming
+  services that are no longer configured. A service that stops existing reports no
+  status on its way out, so the tallies now ask again rather than waiting to be told.
+
 ## [0.12.3] - 2026-08-28
 
 ### Changed
