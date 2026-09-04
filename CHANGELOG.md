@@ -16,6 +16,52 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.14.3] - 2026-09-04
+
+### Fixed
+- **A restarted service died a few seconds later.** `stop()` arms a timer to kill
+  whatever has not gone down by the grace period; a restart stops and starts again
+  in well under that, so the timer came back to a running service — the *new* one —
+  and killed it. From the outside it looked like whatever you did next had killed
+  it, because that is what you were doing when the timer finally fired. The timer
+  is now bound to the process it was armed for and leaves its successor alone.
+- **Restarting a service that forks workers left the workers running**, and said it
+  had worked. Only the process this application started was ever signalled, so a
+  master/worker server — Odoo in prefork, gunicorn, anything with a pool — lost its
+  master and kept its workers, which went on holding the port. The restart then
+  started a new master whose workers could not bind, and the row said *running* over
+  a backend that was not there. An attached service is now given its own process
+  group (`CreateNewSession`) and the group is what gets signalled, so the workers go
+  down with the master. Detached services were already in a group of their own and
+  were signalled one process at a time; they take the same path now.
+
+  The guard matters as much as the fix: a child that never got its own group is in
+  *this application's*, and signalling that group would signal the GUI. So the group
+  is used only where the child leads one that is not ours, and otherwise the single
+  process is signalled exactly as before.
+
+### Added
+- **A service can say how long it may take to stop.** *Stop timeout*, on every
+  supervised service's form, in seconds. It was eight for everything, which is
+  generous for a server that shuts down by closing a socket and nowhere near enough
+  for one in the middle of work it must finish — a migration, a module update. Those
+  were killed mid-write, which is what made restarting them by hand the only safe
+  way to do it. Blank still means eight; `0` means never force it, leaving the
+  service *Stopping* until it goes on its own rather than cutting it in half.
+  A container has no such field: `docker stop` has a timeout of its own.
+
+### Changed
+- **Services & Logs tells its parts from your rows.** Connections and the block for
+  logs belonging to no project are filled now, on the tone the table headers already
+  use; a project you added keeps the page's own ground. Which is which no longer
+  depends on reading the titles. `SURFACE` rather than a step down the grey ramp, so
+  the distinction survives dark mode instead of inverting.
+- **A page with no projects says so**, on its own dashed ground, where the projects
+  would be. It used to show only the parts that are always there, which reads as a
+  page that failed to draw — the more so because the unassigned-logs block was shown
+  whether or not there were any, purely so the page would not look bare. That block
+  now appears when there are such logs, and not otherwise.
+
 ## [0.14.2] - 2026-09-04
 
 ### Added
