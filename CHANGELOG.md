@@ -16,6 +16,44 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-09-04
+
+### Added
+- **The scenarios folder is a setting.** *Settings -> Scenarios* says where scenarios
+  are read from and written to, the way *Services* and *Log sources* already do. Until
+  now a source checkout had only one answer — the checkout — so everything saved on the
+  Scenarios page landed among the code. The path travels with every call the GUI makes
+  (`--flows-dir`), so the tree the page edits is the tree a run reads.
+
+  Set, it is the **only** tree: nothing that ships with the application is searched
+  behind it, so the blocks and `selectors.yaml` your scenarios reference have to be in
+  it too. The field says so, and docs/flows.md has the one line that copies them across.
+
+### Changed
+- `--flows-dir` no longer requires `--run-tests` or `--recorder`. It says where a tree
+  *is*, not what to do with it, and the GUI now passes it on every call — `--describe`
+  and the `--flow-*` commands included — so that the tree its Scenarios page edits is
+  the tree a run reads. A plain launch simply does not use it. A directory that is not
+  there is still refused: it is the only tree, so a wrong path means no scenarios at
+  all rather than a quiet fallback.
+- The Command page no longer offers `--flows-dir` as a form field; it is
+  *Settings -> Scenarios* instead. Two places to name one tree meant the page could be
+  editing one while a run read another.
+- Example and placeholder text no longer names one particular deployment. The
+  project-name box offered "Claim, Helpdesk…" and the service-name box "Odoo Local,
+  PostgreSQL DB…"; `users.example.json` carried a real host. They now read
+  "Storefront, Billing…", "App Server, PostgreSQL DB…" and `app-dev.example.com`.
+  Where a comment reached for a concrete backend it says "a local app server"
+  instead. `odoo` stays where it is a *log format* beside `django` and `flask`, and
+  the bundled Odoo Debug extension keeps its name — both are what they are, not
+  examples.
+
+### Removed
+- `run_access_matrix.sh` and `run_access_matrix.txt`, which were one deployment's
+  role/access matrix rather than anything this application needs: they named that
+  project's logins, its ticket ids and a path into a sibling repository. The same
+  run is a `for` loop over `--user` and `--run-tests`, and the README shows it.
+
 ## [0.14.1] - 2026-09-04
 
 ### Fixed
