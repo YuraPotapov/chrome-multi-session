@@ -4,7 +4,7 @@ A scenario that needs its backend restarted cannot do it itself. The services on
 the GUI's Services & Logs page are owned by *that* process - an attached one is
 literally a child of it (``gui/cms_gui/services.py``) - and this engine runs in
 the launcher, which is a different process. Starting our own copy would leave the
-GUI watching a second Odoo it has never heard of.
+GUI watching a second copy of it that it has never heard of.
 
 So the engine asks and the GUI acts. The pipe already exists and is the one the
 GUI always opens: facts go out on ``--events`` (stdout) and instructions come back
@@ -36,7 +36,7 @@ log = logging.getLogger("flowengine.services")
 DEFAULT_ACK_MS = 15000
 
 #: How long a wait action waits by default. Deliberately not the engine's 30 s
-#: page default: a cold Odoo with its assets to build routinely needs longer, and
+#: page default: a cold server with its assets to build routinely needs longer, and
 #: a default that is nearly enough is worse than one that is plainly generous.
 #: Any step can say ``timeout:`` and override it.
 DEFAULT_WAIT_MS = 120000

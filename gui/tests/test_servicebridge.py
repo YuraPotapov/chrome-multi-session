@@ -42,7 +42,7 @@ class FakeSupervisor(QObject):
 
     def __init__(self, services=None):
         super().__init__()
-        self._services = dict(services or {("Claim", "Odoo"): FakeService()})
+        self._services = dict(services or {("Storefront", "Web"): FakeService()})
         self._criteria = {}
         self.calls = []
 
@@ -104,14 +104,14 @@ def bridge(qapp):
     return ServiceBridge(supervisor, replies), supervisor, replies
 
 
-def request(bridge, op, project="Claim", service="Odoo", pattern=None,
+def request(bridge, op, project="Storefront", service="Web", pattern=None,
             request_id=1, timeout_ms=0):
     bridge.handle({"kind": "service.request", "id": request_id, "op": op,
                    "project": project, "service": service, "pattern": pattern,
                    "timeout_ms": timeout_ms})
 
 
-KEY = ("Claim", "Odoo")
+KEY = ("Storefront", "Web")
 
 
 # -- the imperative ops ------------------------------------------------------
@@ -122,7 +122,7 @@ KEY = ("Claim", "Odoo")
 def test_an_imperative_op_is_done_and_answered_at_once(bridge, op, call):
     bridge, supervisor, replies = bridge
     request(bridge, op)
-    assert supervisor.calls == [(call, "Claim", "Odoo")]
+    assert supervisor.calls == [(call, "Storefront", "Web")]
     assert replies.last["command"] == "service.result"
     assert replies.last["ok"] is True
 
@@ -144,23 +144,23 @@ def test_a_configuration_that_cannot_run_is_answered_as_a_failure(bridge):
 
 def test_an_unknown_service_is_answered_at_once_rather_than_waited_out(bridge):
     bridge, supervisor, replies = bridge
-    request(bridge, "wait_for_service", project="Claim", service="Ghost")
+    request(bridge, "wait_for_service", project="Storefront", service="Ghost")
     assert replies.last["ok"] is False
     assert "services.json" in replies.last["message"]
 
 
 def test_a_bare_name_resolves_when_only_one_project_has_it(bridge):
     bridge, supervisor, replies = bridge
-    request(bridge, "service_start", project="", service="Odoo")
-    assert supervisor.calls == [("start", "Claim", "Odoo")]
+    request(bridge, "service_start", project="", service="Web")
+    assert supervisor.calls == [("start", "Storefront", "Web")]
 
 
 def test_a_bare_name_in_two_projects_is_refused_with_both_named(bridge):
     bridge, supervisor, replies = bridge
-    supervisor._services[("Other", "Odoo")] = FakeService()
-    request(bridge, "service_start", project="", service="Odoo")
+    supervisor._services[("Other", "Web")] = FakeService()
+    request(bridge, "service_start", project="", service="Web")
     assert replies.last["ok"] is False
-    assert "Project/Odoo" in replies.last["message"]
+    assert "Project/Web" in replies.last["message"]
 
 
 # -- wait_for_service --------------------------------------------------------
@@ -415,7 +415,7 @@ def test_what_the_engine_asks_is_what_the_bridge_answers(qapp):
         answer = {}
 
         def ask():
-            answer["r"] = services.request(services.WAIT_OUT, "Claim/Odoo",
+            answer["r"] = services.request(services.WAIT_OUT, "Storefront/Web",
                                            pattern=r".+:8069", timeout_ms=5000,
                                            session="admin")
 

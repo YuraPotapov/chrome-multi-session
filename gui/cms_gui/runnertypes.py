@@ -1,7 +1,7 @@
 """The kinds of service the Services & Logs page can start, as one table.
 
 A **runner** is something the page can start, stop and report the state of: a
-local Odoo, a container, an `npm run dev`. What differs between them is small and
+local server, a container, an `npm run dev`. What differs between them is small and
 regular - the command line to start, the command line to stop, how to ask whether
 it is up, and which fields the form has to collect - so each kind is one entry in
 :data:`TYPES` rather than a plugin discovered at import time. That is the shape
@@ -203,10 +203,10 @@ class PythonRunner(RunnerType):
         field("interpreter", "Interpreter", "file",
               "Blank finds the project's own .venv, and falls back to %s from "
               "PATH. Name one here only to override that." % DEFAULT_PYTHON),
-        field("script", "Script", "file", "e.g. odoo-bin. Relative to the working "
+        field("script", "Script", "file", "e.g. manage.py. Relative to the working "
               "directory below.", required=True),
         field("args", "Arguments", "args", "Split the way a shell would split "
-              "them, e.g. -c odoo.conf --dev=all"),
+              "them, e.g. -c app.conf --debug"),
         field("dir", "Working directory", "dir",
               "Blank uses the project's own directory."),
         field("env", "Environment", "env",

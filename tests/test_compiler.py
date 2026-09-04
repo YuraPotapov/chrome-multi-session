@@ -67,20 +67,20 @@ def test_parse_shorthand_must_be_single_key():
 
 # --- service steps ----------------------------------------------------------
 def test_parse_shorthand_service_reference():
-    step = compiler.parse_step({"service_restart": "Claim/Odoo"})
-    assert step.action == "service_restart" and step.target == "Claim/Odoo"
+    step = compiler.parse_step({"service_restart": "Storefront/Web"})
+    assert step.action == "service_restart" and step.target == "Storefront/Web"
 
 
 def test_parse_service_wait_takes_target_and_value():
-    step = compiler.parse_step({"wait_for_out": {"target": "Claim/Odoo",
+    step = compiler.parse_step({"wait_for_out": {"target": "Storefront/Web",
                                                  "value": ".+:8069",
                                                  "timeout": 120000}})
-    assert (step.target, step.value, step.timeout) == ("Claim/Odoo", ".+:8069", 120000)
+    assert (step.target, step.value, step.timeout) == ("Storefront/Web", ".+:8069", 120000)
 
 
 def test_parse_service_wait_verbose_form():
     step = compiler.parse_step({"type": "wait_for_criterion",
-                                "target": "Claim/Odoo", "value": "start"})
+                                "target": "Storefront/Web", "value": "start"})
     assert step.action == "wait_for_criterion" and step.value == "start"
 
 
@@ -91,7 +91,7 @@ def test_service_step_needs_a_reference():
 
 def test_service_wait_needs_both_halves():
     with pytest.raises(compiler.CompileError):
-        compiler.parse_step({"wait_for_out": {"target": "Claim/Odoo"}})
+        compiler.parse_step({"wait_for_out": {"target": "Storefront/Web"}})
     with pytest.raises(compiler.CompileError):
         compiler.parse_step({"wait_for_criterion": {"value": "start"}})
 
@@ -108,7 +108,7 @@ def test_a_service_wait_with_a_blank_value_is_refused(blank):
     """
     for action in ("wait_for_out", "wait_for_criterion"):
         with pytest.raises(compiler.CompileError) as excinfo:
-            compiler.parse_step({action: {"target": "Claim/Odoo", "value": blank}})
+            compiler.parse_step({action: {"target": "Storefront/Web", "value": blank}})
         assert action in str(excinfo.value)
 
 
@@ -126,7 +126,7 @@ def test_a_service_reference_is_not_looked_up_as_a_selector():
 
 
 def test_wait_for_out_rejects_a_regex_that_will_not_compile():
-    step = compiler.parse_step({"wait_for_out": {"target": "Claim/Odoo",
+    step = compiler.parse_step({"wait_for_out": {"target": "Storefront/Web",
                                                  "value": "[unclosed"}})
     with pytest.raises(compiler.CompileError) as excinfo:
         compiler._finalize(step, {}, None)
@@ -137,7 +137,7 @@ def test_wait_for_out_compiles_a_pattern_built_from_a_param():
     # The check has to run AFTER substitution, or a valid pattern with a
     # placeholder in it would be judged on the placeholder.
     ctx = RunContext(env={"origin": "http://localhost:8069"})
-    step = compiler.parse_step({"wait_for_out": {"target": "Claim/Odoo",
+    step = compiler.parse_step({"wait_for_out": {"target": "Storefront/Web",
                                                  "value": "{{env.origin}}"}})
     compiler._finalize(step, {}, ctx)
     assert step.value == "http://localhost:8069"

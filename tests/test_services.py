@@ -52,7 +52,7 @@ def test_a_request_is_emitted_and_its_answer_comes_back(sink):
     result = {}
 
     def ask():
-        result["r"] = services.request(services.WAIT_OUT, "Claim/Odoo",
+        result["r"] = services.request(services.WAIT_OUT, "Storefront/Web",
                                        pattern=".+:8069", timeout_ms=5000,
                                        session="admin")
 
@@ -68,7 +68,7 @@ def test_a_request_is_emitted_and_its_answer_comes_back(sink):
 
     assert request["kind"] == "service.request"
     assert request["op"] == "wait_for_out"
-    assert (request["project"], request["service"]) == ("Claim", "Odoo")
+    assert (request["project"], request["service"]) == ("Storefront", "Web")
     assert request["pattern"] == ".+:8069"
     assert request["session"] == "admin"
     assert result["r"] == (True, "matched")
@@ -76,14 +76,14 @@ def test_a_request_is_emitted_and_its_answer_comes_back(sink):
 
 def test_a_refusal_comes_back_as_its_message(sink):
     _in_a_moment(lambda: _answer(sink, ok=False, status="failed",
-                                 message="no service Claim/Nope"))
-    ok, message = services.request(services.START, "Claim/Nope", timeout_ms=3000)
+                                 message="no service Storefront/Nope"))
+    ok, message = services.request(services.START, "Storefront/Nope", timeout_ms=3000)
     assert not ok
     assert "no service" in message
 
 
 def test_a_wait_with_no_answer_times_out(sink):
-    ok, message = services.request(services.WAIT_RUNNING, "Claim/Odoo", timeout_ms=60)
+    ok, message = services.request(services.WAIT_RUNNING, "Storefront/Web", timeout_ms=60)
     assert not ok
     assert "timed out" in message
     # And it left nothing behind for the next request to trip over.
@@ -92,7 +92,7 @@ def test_a_wait_with_no_answer_times_out(sink):
 
 def test_without_a_control_channel_it_fails_at_once_rather_than_waiting():
     services.reset()          # configure() was never called: no GUI
-    ok, message = services.request(services.START, "Claim/Odoo", timeout_ms=60000)
+    ok, message = services.request(services.START, "Storefront/Web", timeout_ms=60000)
     assert not ok
     assert "need the GUI" in message
 
@@ -107,7 +107,7 @@ def test_abandon_all_releases_a_waiting_thread(sink):
     result = {}
 
     def ask():
-        result["r"] = services.request(services.WAIT_RUNNING, "Claim/Odoo",
+        result["r"] = services.request(services.WAIT_RUNNING, "Storefront/Web",
                                        timeout_ms=60000)
 
     thread = threading.Thread(target=ask)
@@ -125,7 +125,7 @@ def test_abandon_all_releases_a_waiting_thread(sink):
 
 def test_ids_are_unique_across_threads(sink):
     threads = [threading.Thread(target=services.request,
-                               args=(services.WAIT_RUNNING, "Claim/Odoo"),
+                               args=(services.WAIT_RUNNING, "Storefront/Web"),
                                kwargs={"timeout_ms": 80})
                for _ in range(8)]
     for thread in threads:
@@ -138,11 +138,11 @@ def test_ids_are_unique_across_threads(sink):
 
 
 def test_parse_ref_splits_on_the_first_slash():
-    assert services.parse_ref("Claim/Odoo") == ("Claim", "Odoo")
-    assert services.parse_ref("Claim/web/api") == ("Claim", "web/api")
-    assert services.parse_ref(" Claim / Odoo ") == ("Claim", "Odoo")
+    assert services.parse_ref("Storefront/Web") == ("Storefront", "Web")
+    assert services.parse_ref("Storefront/web/api") == ("Storefront", "web/api")
+    assert services.parse_ref(" Storefront / Web ") == ("Storefront", "Web")
     # No slash: a bare service name, for the GUI to resolve across projects.
-    assert services.parse_ref("Odoo") == ("", "Odoo")
+    assert services.parse_ref("Web") == ("", "Web")
     assert services.parse_ref("") == ("", "")
 
 
@@ -164,28 +164,28 @@ def test_a_wait_that_fails_is_a_clean_false_naming_what_it_wanted(sink):
     # assertion returns (ok, message) rather than raising.
     services.reset()
     ok, message = assertions.run_assertion(
-        None, Step("wait_for_out", target="Claim/Odoo", value=".+:8069"))
+        None, Step("wait_for_out", target="Storefront/Web", value=".+:8069"))
     assert not ok
-    assert "Claim/Odoo" in message and ".+:8069" in message
+    assert "Storefront/Web" in message and ".+:8069" in message
 
 
 def test_a_wait_passes_on_a_true_answer(sink):
     _in_a_moment(lambda: _answer(sink, ok=True, status="running", message="matched"))
     ok, message = assertions.run_assertion(
-        None, Step("wait_for_service", target="Claim/Odoo", timeout=3000))
+        None, Step("wait_for_service", target="Storefront/Web", timeout=3000))
     assert ok
-    assert "Claim/Odoo" in message
+    assert "Storefront/Web" in message
 
 
 def test_a_wait_passes_its_step_timeout_through(sink):
     _in_a_moment(lambda: _answer(sink, ok=True, status="running"))
     assertions.run_assertion(
-        None, Step("wait_for_criterion", target="Claim/Odoo", value="start",
+        None, Step("wait_for_criterion", target="Storefront/Web", value="start",
                    timeout=4500))
     assert sink.events()[-1]["timeout_ms"] == 4500
 
 
 def test_a_wait_with_no_timeout_gets_the_generous_default(sink):
     _in_a_moment(lambda: _answer(sink, ok=True, status="running"))
-    assertions.run_assertion(None, Step("wait_for_service", target="Claim/Odoo"))
+    assertions.run_assertion(None, Step("wait_for_service", target="Storefront/Web"))
     assert sink.events()[-1]["timeout_ms"] == services.DEFAULT_WAIT_MS

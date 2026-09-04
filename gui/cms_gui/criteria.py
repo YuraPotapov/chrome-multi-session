@@ -1,7 +1,7 @@
 """What a service's own log says about where it has got to.
 
 The Services page can say whether a service's **process** is up, and that is the
-weakest useful claim: a local Odoo whose port is already taken is running, and so
+weakest useful claim: a server whose port is already taken is running, and so
 is one that booted cleanly. What separates them is in the log the service writes -
 ``started localhost:8069``, ``tests passed``, a ``CRITICAL`` line.
 
@@ -134,7 +134,7 @@ class CriterionRow:
         self.color = color if color in COLORS else DEFAULT_COLOR
         # Blank means the service's own output. A path means that file instead,
         # for a backend that logs somewhere rather than to its console - which is
-        # what any Odoo started with a logfile does.
+        # what any server started with a logfile does.
         self.source = source or ""
         self.rules = list(rules)
         self.extra = dict(extra or {})

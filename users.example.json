@@ -13,7 +13,7 @@
     "login": "agent",
     "password": "CHANGE-ME",
     "run-tests": [
-      "smoke_odoo"
+      "smoke"
     ]
   },
   {
@@ -23,12 +23,12 @@
     "login": "agent",
     "password": "CHANGE-ME",
     "run-tests": [
-      "smoke_odoo",
+      "smoke",
       "tag:access"
     ]
   },
   {
-    "env": "https://claim-dev.demo.tech/odoo",
+    "env": "https://app-dev.example.com/",
     "class": "Agent",
     "login": "agent",
     "password": "CHANGE-ME"

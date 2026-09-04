@@ -183,7 +183,7 @@ def discover_scenarios(flows_dir=None, include_templates=False):
     """Return the ids of runnable scenarios under ``flows/scenarios`` (sorted).
 
     Scenarios tagged ``template`` (need real selectors) or ``manual`` (have side
-    effects, e.g. create_reclamation writes a record) are skipped by default, so
+    effects, e.g. one that creates a record) are skipped by default, so
     ``--run-tests=all`` only runs safe, configured scenarios. Pass
     ``include_templates=True`` to list them too; they are always runnable by id.
     """

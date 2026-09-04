@@ -161,7 +161,7 @@ def pid_alive(pid, marker=""):
 
     ``marker`` is the program we started, checked against the process's own
     command line where the system will say. A pid is reused eventually, and
-    reporting somebody else's shell as a running Odoo would be worse than
+    reporting somebody else's shell as a running server would be worse than
     reporting nothing.
     """
     try:
@@ -1005,7 +1005,7 @@ class ServiceSupervisor(QObject):
         """Every (project, name) pair it knows, in the order the page shows them.
 
         For looking a service up by name alone, which is what a scenario step
-        written as ``Odoo`` rather than ``Claim/Odoo`` has to do.
+        written as ``Web`` rather than ``Storefront/Web`` has to do.
         """
         return list(self._services)
 

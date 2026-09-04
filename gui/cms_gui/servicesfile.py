@@ -3,9 +3,9 @@
 A **project** is a name, the directory its parts live in, and the list of
 services that make it up. It is the one grouping this application did not have -
 environments come from ``users.json`` and describe *where a run points*, which is a
-different question from *what is running on this machine*. A local Odoo, its
-Postgres container and its log all belong to "Claim"; two of those three had
-nowhere to say so.
+different question from *what is running on this machine*. A local app server,
+its database container and its log all belong to one project; two of those three
+had nowhere to say so.
 
 The file is the GUI's own - the launcher neither reads nor needs it - but it is
 kept beside ``logsources.json`` in the data root rather than in the GUI's private

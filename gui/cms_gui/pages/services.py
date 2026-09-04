@@ -3,7 +3,7 @@
 This page is the old Log sources page with the other half of its subject added.
 That page could say which backend logs a run may stream; it could not say whether
 the backend was even running, because nothing in the application had ever started
-one. A local Odoo, its Postgres container and its log file are one thing to the
+one. A local app server, its database container and its log file are one thing to
 person using them and were three unrelated facts here.
 
 So the page is organised by **project** rather than by kind. Each project is a
@@ -636,7 +636,7 @@ class ProjectDialog(RowDialog):
         self._taken = {name for name in taken if name != self._row.name}
 
         self.name = QLineEdit(self._row.name)
-        self.name.setPlaceholderText("Claim, Helpdesk…")
+        self.name.setPlaceholderText("Storefront, Billing…")
         self.name.textChanged.connect(self._changed)
         self.column.addWidget(widgets.field(
             "Name", self.name, "What the block is called, and what a log names "
@@ -706,7 +706,7 @@ class RunnerDialog(RowDialog):
         self._editors = {}
 
         self.name = QLineEdit(self._row.name)
-        self.name.setPlaceholderText("Odoo Local, PostgreSQL DB…")
+        self.name.setPlaceholderText("App Server, PostgreSQL DB…")
         self.name.textChanged.connect(self._changed)
         self.column.addWidget(widgets.field(
             "Name", self.name, "Unique within this project."))
@@ -1465,7 +1465,7 @@ class ProjectBlock(QWidget):
             return
 
     def set_summary(self, running, total, failed=0):
-        """The count in the block's own title: `Claim (3 of 5 running · 1 failed)`.
+        """The count in the block's own title: `Storefront (3 of 5 running · 1 failed)`.
 
         The failures only when there are some. A block that says "0 failed"
         whenever all is well is a number to read on every glance to find out it
