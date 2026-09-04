@@ -156,6 +156,12 @@ whose port was already taken is *running* and has not printed its ready line; th
 distinction, and it is usually the one you want. Use `wait_for_criterion` for something the
 service is already configured to watch for, `wait_for_out` for a one-off.
 
+**A restart is a stop and a start, in that order.** The service is signalled, the engine
+waits for it to actually be down, and only then is it started again — so a scenario does
+not have to sleep and hope. How long it is given before it is killed is the service's own
+*Stop timeout* on the Services & Logs page: raise it for anything that must finish what it
+is doing, because the default is eight seconds and a module update is not.
+
 **Timeouts.** `service_start`/`stop`/`restart` default to **15 s** (they only wait for the
 request to be taken, not for the service to be up); the three waits default to **120 s**,
 because a cold backend building its assets routinely needs more than the engine's usual

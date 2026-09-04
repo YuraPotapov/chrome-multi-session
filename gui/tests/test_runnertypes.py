@@ -30,7 +30,7 @@ def test_every_type_declares_what_the_page_needs_to_draw_it():
     for runner in runnertypes.TYPES:
         assert runner.label and runner.icon
         assert runner.mode in (runnertypes.SUPERVISED, runnertypes.MANAGED)
-        assert set(runner.default_settings()) == {f.key for f in runner.fields}
+        assert set(runner.default_settings()) == {f.key for f in runner.form_fields()}
 
 
 def test_a_container_is_never_ours_to_kill():
@@ -201,3 +201,34 @@ def test_a_named_interpreter_still_wins_over_the_one_found(tmp_path):
     argv = runnertypes.BY_ID["python"].command(
         {"interpreter": "/usr/bin/python3.11", "script": "x.py"}, str(tmp_path))
     assert argv[0] == "/usr/bin/python3.11"
+
+
+def test_every_supervised_type_can_be_told_how_long_it_may_take_to_stop():
+    """Not a property of the kind: it is a property of what the kind runs.
+
+    A shell command and a python script are each as slow to shut down as the
+    thing they start, so the field is appended to every supervised form rather
+    than written into each type.
+    """
+    for runner in runnertypes.TYPES:
+        keys = {f.key for f in runner.form_fields()}
+        if runner.mode == runnertypes.SUPERVISED:
+            assert "stop_grace" in keys
+        else:
+            # A container is stopped by its daemon, which has a timeout of its own.
+            assert "stop_grace" not in keys
+
+
+def test_a_stop_timeout_that_is_not_a_number_is_reported():
+    problems = runnertypes.stop_grace_problems({"stop_grace": "soon"})
+    assert problems and "not a number" in problems[0]
+
+
+def test_a_negative_stop_timeout_is_reported_with_what_to_use_instead():
+    problems = runnertypes.stop_grace_problems({"stop_grace": "-1"})
+    assert problems and "0 to never kill" in problems[0]
+
+
+def test_a_blank_stop_timeout_is_the_default_not_an_error():
+    assert runnertypes.stop_grace_problems({"stop_grace": ""}) == []
+    assert runnertypes.stop_grace_problems({}) == []

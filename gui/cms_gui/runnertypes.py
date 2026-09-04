@@ -129,6 +129,37 @@ def resolve_dir(settings, project_dir):
     return os.path.normpath(os.path.join(os.path.expanduser(base), own))
 
 
+#: Every supervised service gets this, whatever kind it is: how long it may take
+#: to stop before it is killed. It is not a property of the *type* - a shell
+#: command and a python script are both as slow to shut down as what they run -
+#: so it is appended to each form rather than written into every type's fields.
+STOP_GRACE_FIELD = field(
+    "stop_grace", "Stop timeout", "text",
+    "Seconds to let it shut down before it is killed. Blank uses 8. Raise it "
+    "for anything that must finish what it is doing - a migration, a module "
+    "update - and use 0 to never kill it, which leaves it Stopping until it "
+    "goes on its own.")
+
+
+def stop_grace_problems(settings):
+    """Everything wrong with a stop timeout. Blank is fine - it means the default.
+
+    Checked rather than quietly ignored: a value that does not parse would fall
+    back to eight seconds, and the one service anybody sets this on is the one
+    where eight seconds is the wrong answer.
+    """
+    raw = str((settings or {}).get("stop_grace", "") or "").strip()
+    if not raw:
+        return []
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return ["Stop timeout: %r is not a number of seconds." % raw]
+    if seconds < 0:
+        return ["Stop timeout cannot be negative. Use 0 to never kill it."]
+    return []
+
+
 class RunnerType(object):
     """One kind of service: its form, its command lines, and how to ask its state."""
 
@@ -147,10 +178,20 @@ class RunnerType(object):
     fields = ()
 
     # -- the form -------------------------------------------------------------
+    def form_fields(self):
+        """What the dialog builds and what ``problems`` checks.
+
+        A managed service is stopped by asking its daemon - ``docker stop`` has
+        a timeout of its own - so the grace below is not its to answer for.
+        """
+        if self.mode == MANAGED:
+            return tuple(self.fields)
+        return tuple(self.fields) + (STOP_GRACE_FIELD,)
+
     def default_settings(self):
         return {f.key: {} if f.kind == "env" else
                        (False if f.kind == "check" else "")
-                for f in self.fields}
+                for f in self.form_fields()}
 
     def problems(self, settings):
         """Everything wrong with these settings, as messages. Never raises.
@@ -159,7 +200,7 @@ class RunnerType(object):
         a type only writes down what is peculiar to it.
         """
         problems = []
-        for spec in self.fields:
+        for spec in self.form_fields():
             value = settings.get(spec.key)
             if spec.required and not str(value or "").strip():
                 problems.append("%s is required." % spec.label)
@@ -168,6 +209,7 @@ class RunnerType(object):
                     split_args(value)
                 except ValueError as exc:
                     problems.append("%s: %s." % (spec.label, exc))
+        problems.extend(stop_grace_problems(settings))
         return problems
 
     # -- the command lines ----------------------------------------------------

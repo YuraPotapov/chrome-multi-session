@@ -286,7 +286,8 @@ def test_a_type_this_build_does_not_have_is_shown_but_not_edited(
 # ------------------------------------------------------------------ the forms
 def test_a_generated_form_collects_what_its_type_declared(qapp):
     dialog = RunnerDialog(runnertypes.BY_ID["python"])
-    assert set(dialog._editors) == {f.key for f in runnertypes.BY_ID["python"].fields}
+    assert set(dialog._editors) == {f.key for f in
+                                runnertypes.BY_ID["python"].form_fields()}
     dialog.name.setText("Odoo")
     dialog._editors["script"].setText("odoo-bin")
     dialog._editors["env"].add_row("PYTHONUNBUFFERED", "1")

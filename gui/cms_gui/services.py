@@ -64,7 +64,18 @@ LOG_MAX_BYTES = 5 * 1024 * 1024
 POLL_MS = 3000
 
 #: How long a signalled service gets to go down on its own before it is killed.
+#: Enough for anything that shuts down by closing a socket, and nowhere near
+#: enough for one in the middle of work it must finish - a database migration, a
+#: module update. Those say so per service; see :meth:`ServiceProcess.stop_grace_ms`.
 STOP_GRACE_MS = 8000
+
+#: What a service may set instead, in seconds. 0 means "never force it": the
+#: signal is sent and that is all, so work that must complete is never cut in
+#: half. A service that then refuses to go down stays STOPPING, which is the
+#: truth and is visible, rather than being killed quietly.
+STOP_GRACE_KEY = "stop_grace"
+#: The ceiling on a configured grace, so a typo cannot arm a timer for a week.
+STOP_GRACE_MAX_S = 3600
 
 #: What ``ServiceSupervisor.shutdown`` waits, per service, on the way out.
 SHUTDOWN_WAIT_MS = 10000
@@ -207,6 +218,65 @@ def _alive_windows(pid):
         return False
 
 
+def _own_session(proc):
+    """Give an attached child its own process group, where the platform can.
+
+    Without it the child sits in *our* group, and then the only thing we may
+    safely signal is the child itself - signalling the group would signal this
+    application. A server that forks workers (Odoo in prefork, gunicorn, any
+    master/worker shape) therefore loses only its master: the workers go on
+    holding the port, the next start cannot bind, and the row says "running"
+    over a backend that is not there.
+
+    Qt 6.7 named the flag; on an older PySide6, or on Windows, this is a no-op
+    and :func:`signal_tree` falls back to signalling the one process.
+    """
+    if os.name == "nt":
+        return False
+    try:
+        params = QProcess.UnixProcessParameters()
+        params.flags = QProcess.UnixProcessFlag.CreateNewSession
+        proc.setUnixProcessParameters(params)
+        return True
+    except (AttributeError, TypeError):
+        return False
+
+
+def leads_group(pid):
+    """True when this pid heads a process group that is not our own."""
+    if os.name == "nt":
+        return False
+    try:
+        return os.getpgid(int(pid)) == int(pid) != os.getpgid(0)
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def signal_tree(pid, sig):
+    """Send ``sig`` to the whole process group when there is one to send it to.
+
+    The guard is the point: a child that never got its own group is in ours, and
+    a killpg there would take this application down with it. So the group is
+    signalled only when the pid is its leader and that group is not the one we
+    are running in - otherwise the single process is signalled, which is what
+    used to happen every time.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        if leads_group(pid):
+            os.killpg(pid, sig)
+        else:
+            os.kill(pid, sig)
+        return True
+    except OSError:
+        return False
+
+
 def terminate_pid(pid):
     """Ask a detached service to go down. The poll confirms that it did."""
     try:
@@ -221,11 +291,10 @@ def terminate_pid(pid):
         # outcome, so this must not block the event loop.
         QProcess.startDetached("taskkill", ["/PID", str(pid), "/T"])
         return True
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError:
-        return False
-    return True
+    # The whole group, for the same reason /T is passed above: a detached
+    # service is started with start_new_session, so it already leads one, and
+    # its workers are in it. Signalling the leader alone left them running.
+    return signal_tree(pid, signal.SIGTERM)
 
 
 def _environ(settings):
@@ -511,21 +580,55 @@ class ServiceProcess(QObject):
         self._restart = True
         return self.stop()
 
+    def stop_grace_ms(self):
+        """How long this service gets to stop before it is killed, in ms.
+
+        ``settings["stop_grace"]`` is seconds, and 0 disables the kill entirely.
+        Returns None for that case, which the callers read as "no timer".
+        """
+        raw = (self.runner.settings or {}).get(STOP_GRACE_KEY, "")
+        try:
+            seconds = float(str(raw).strip())
+        except (TypeError, ValueError):
+            return STOP_GRACE_MS
+        if seconds <= 0:
+            return None
+        return int(min(seconds, STOP_GRACE_MAX_S) * 1000)
+
     def _signal_attached(self):
-        """SIGINT first: a service that handles it flushes and closes cleanly."""
+        """SIGINT first: a service that handles it flushes and closes cleanly.
+
+        To the whole group where the child leads one, so a master/worker server
+        takes its workers down with it rather than leaving them on the port.
+        """
         pid = int(self._proc.processId() or 0)
         if os.name == "nt" or not pid:
             self._proc.terminate()
-        else:
-            try:
-                os.kill(pid, signal.SIGINT)
-            except OSError:
-                self._proc.terminate()
-        QTimer.singleShot(STOP_GRACE_MS, self._kill_if_still_running)
+        elif not signal_tree(pid, signal.SIGINT):
+            self._proc.terminate()
+        grace = self.stop_grace_ms()
+        if grace is not None:
+            # Bound to the process it was armed for. A restart stops and starts
+            # again, usually in under a second, so without this the timer comes
+            # back to a service that is up - the NEW one - and kills that. It
+            # looked like starting some other service killed this one, because
+            # that is what somebody happened to be doing eight seconds later.
+            QTimer.singleShot(grace, lambda p=self._proc: self._kill_if_still_running(p))
 
-    def _kill_if_still_running(self):
-        if self._proc is not None and self._proc.state() != QProcess.NotRunning:
-            self._proc.kill()
+    def _kill_if_still_running(self, which=None):
+        """The hard stop, once the grace period is up.
+
+        Also to the group: killing the master alone is how the port stays taken
+        by a worker nobody is left to signal.
+        """
+        if self._proc is None or self._proc.state() == QProcess.NotRunning:
+            return
+        if which is not None and which is not self._proc:
+            return          # that one is long gone; this is its successor
+        pid = int(self._proc.processId() or 0)
+        if os.name != "nt" and pid and signal_tree(pid, signal.SIGKILL):
+            return
+        self._proc.kill()
 
     # -- the three shapes -----------------------------------------------------
     def _start_attached(self, argv, cwd):
@@ -542,6 +645,7 @@ class ServiceProcess(QObject):
         if cwd:
             proc.setWorkingDirectory(cwd)
         proc.setProcessEnvironment(_qt_environ(self.runner.settings))
+        _own_session(proc)
         self._proc = proc
         self._marker = argv[0]
         proc.start(argv[0], list(argv[1:]))

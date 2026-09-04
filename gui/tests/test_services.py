@@ -954,3 +954,213 @@ def test_failed_is_about_the_process_and_not_about_criteria(qapp, supervisor):
     assert _pump(qapp, lambda: supervisor.running())
     assert supervisor.criteria_state("Claim", "svc")[0][2] is False
     assert supervisor.failed() == []
+
+
+# --------------------------------------------- stopping a server that forks
+
+#: A master that forks a worker and exits without taking it with it - the shape
+#: of Odoo in prefork, gunicorn, and anything else with a worker pool. Signalling
+#: the master alone leaves the worker holding whatever it holds.
+PREFORK = """
+import os, signal, sys, time
+if os.fork() == 0:
+    def stop(*a): sys.exit(0)
+    signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGINT, stop)
+    print('worker up', flush=True)
+    while True: time.sleep(0.05)
+print('master up', flush=True)
+def bye(*a): sys.exit(0)
+signal.signal(signal.SIGTERM, bye); signal.signal(signal.SIGINT, bye)
+while True: time.sleep(0.05)
+"""
+
+
+def _script(tmp_path, body):
+    path = tmp_path / "prefork_service.py"
+    path.write_text(body, encoding="utf-8")
+    return "%s -u %s" % (sys.executable, path)
+
+
+def _alive(pid):
+    """Is this exact pid still there? Asked by pid, so a dead group cannot lie."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+
+
+def _descendants(pid):
+    """Every process still in this pid's group, excluding the leader itself."""
+    try:
+        group = os.getpgid(pid)
+    except OSError:
+        return []
+    out = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == pid:
+            continue
+        try:
+            if os.getpgid(int(entry)) == group:
+                out.append(int(entry))
+        except OSError:
+            continue
+    return out
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are a POSIX thing")
+def test_an_attached_service_gets_its_own_process_group(qapp, tmp_path, state,
+                                                        stopper):
+    """Without one, the only thing safe to signal is the one process.
+
+    Its group would be *ours*, and killing that would take the application with
+    it - so a forking server could only ever lose its master.
+    """
+    row = sf.RunnerRow(name="web", type="shell", detach=False,
+                       settings={"command": _script(tmp_path, PREFORK)})
+    service = services.ServiceProcess("p", row, state=state)
+    stopper.append(service)
+    service.start()
+    assert _pump(qapp, lambda: service.status == RUNNING)
+    pid = int(service._proc.processId())
+    assert services.leads_group(pid)
+    assert os.getpgid(pid) != os.getpgid(0)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are a POSIX thing")
+def test_stopping_a_forking_service_takes_its_workers_with_it(qapp, tmp_path,
+                                                              state, stopper):
+    # The bug this exists for: the worker went on running, kept the port, and
+    # the next start could not bind - while the row said "running".
+    row = sf.RunnerRow(name="web", type="shell", detach=False,
+                       settings={"command": _script(tmp_path, PREFORK)})
+    service = services.ServiceProcess("p", row, state=state)
+    stopper.append(service)
+    service.start()
+    assert _pump(qapp, lambda: service.status == RUNNING)
+    assert _pump(qapp, lambda: len(service.console()) >= 2)
+    pid = int(service._proc.processId())
+    workers = _descendants(pid)
+    assert workers, "the fixture should have forked a worker"
+
+    service.stop()
+    assert _pump(qapp, lambda: service.status == STOPPED)
+    # The worker pids captured before the stop, not the group - once the master
+    # is gone there is no group left to ask about, so a test that looked one up
+    # afterwards would pass whether or not the worker was still running.
+    assert _pump(qapp, lambda: not any(_alive(w) for w in workers), timeout=8), \
+        "the worker outlived the service that forked it"
+
+
+# ------------------------------------------------------- how long it may take
+
+def test_the_stop_timeout_defaults_to_the_module_constant(state):
+    row = sf.RunnerRow(name="s", type="shell", settings={"command": "true"})
+    service = services.ServiceProcess("p", row, state=state)
+    assert service.stop_grace_ms() == services.STOP_GRACE_MS
+
+
+def test_a_service_can_ask_for_longer(state):
+    # The reason this exists: eight seconds is nowhere near a module update.
+    row = sf.RunnerRow(name="s", type="shell",
+                       settings={"command": "true", "stop_grace": "300"})
+    service = services.ServiceProcess("p", row, state=state)
+    assert service.stop_grace_ms() == 300000
+
+
+def test_zero_means_never_kill_it(state):
+    row = sf.RunnerRow(name="s", type="shell",
+                       settings={"command": "true", "stop_grace": "0"})
+    service = services.ServiceProcess("p", row, state=state)
+    assert service.stop_grace_ms() is None
+
+
+def test_a_nonsense_timeout_falls_back_rather_than_raising(state):
+    row = sf.RunnerRow(name="s", type="shell",
+                       settings={"command": "true", "stop_grace": "soon"})
+    service = services.ServiceProcess("p", row, state=state)
+    assert service.stop_grace_ms() == services.STOP_GRACE_MS
+
+
+def test_a_wild_timeout_is_capped(state):
+    row = sf.RunnerRow(name="s", type="shell",
+                       settings={"command": "true", "stop_grace": "999999"})
+    service = services.ServiceProcess("p", row, state=state)
+    assert service.stop_grace_ms() == services.STOP_GRACE_MAX_S * 1000
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are a POSIX thing")
+def test_a_service_that_needs_time_is_not_cut_in_half(qapp, tmp_path, state,
+                                                      stopper):
+    """The whole point of the setting, end to end.
+
+    The fixture asks for four seconds after the signal before it finishes. With
+    the default grace it would be killed at eight, which is the same as saying
+    a module update may not take longer than eight seconds.
+    """
+    slow = tmp_path / "slow_service.py"
+    slow.write_text(
+        "import signal, sys, time\n"
+        "asked = {'at': 0.0}\n"
+        "def later(*a):\n"
+        "    asked['at'] = time.time()\n"
+        "signal.signal(signal.SIGTERM, later)\n"
+        "signal.signal(signal.SIGINT, later)\n"
+        "print('working', flush=True)\n"
+        "while True:\n"
+        "    if asked['at'] and time.time() - asked['at'] > 4:\n"
+        "        print('FINISHED', flush=True); sys.exit(0)\n"
+        "    time.sleep(0.05)\n", encoding="utf-8")
+    row = sf.RunnerRow(name="s", type="shell", detach=False,
+                       settings={"command": "%s -u %s" % (sys.executable, slow),
+                                 "stop_grace": "30"})
+    service = services.ServiceProcess("p", row, state=state)
+    stopper.append(service)
+    service.start()
+    assert _pump(qapp, lambda: service.status == RUNNING)
+    assert _pump(qapp, lambda: any("working" in l for l in service.console()))
+
+    service.stop()
+    assert _pump(qapp, lambda: service.status == STOPPED, timeout=25)
+    assert any("FINISHED" in line for line in service.console()), \
+        "it was killed before it could finish"
+
+
+def test_a_restart_is_not_killed_by_the_timer_that_stopped_it(qapp, tmp_path,
+                                                              state, stopper):
+    """The bug: a restarted service died seconds later, for no visible reason.
+
+    stop() arms a timer to kill whatever has not gone down by the grace period.
+    A restart stops and starts again in well under that, so the timer came back
+    to a running service - the new one - and killed it. From the outside it
+    looked like whatever you did next had killed it, because that is what you
+    were doing when the timer finally fired.
+
+    A short grace here so the test does not sit through the real eight seconds;
+    what is being checked is that the timer knows which process it was for.
+    """
+    row = sf.RunnerRow(name="s", type="shell", detach=False,
+                       settings={"command": _shell_row("x", "").settings["command"],
+                                 "stop_grace": "1"})
+    row.settings["command"] = _python("import time\nwhile True: time.sleep(0.05)")
+    service = services.ServiceProcess("p", row, state=state)
+    stopper.append(service)
+    service.start()
+    assert _pump(qapp, lambda: service.status == RUNNING)
+
+    # Stop and start again inside the grace window, the way restart does.
+    service.stop()
+    assert _pump(qapp, lambda: service.status == STOPPED, timeout=10)
+    service.start()
+    assert _pump(qapp, lambda: service.status == RUNNING)
+    survivor = int(service._proc.processId())
+
+    # Well past the moment the first stop\'s timer comes back.
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.02)
+    assert service.status == RUNNING, "the stop timer killed the new process"
+    assert int(service._proc.processId()) == survivor

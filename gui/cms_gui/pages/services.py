@@ -711,7 +711,7 @@ class RunnerDialog(RowDialog):
         self.column.addWidget(widgets.field(
             "Name", self.name, "Unique within this project."))
 
-        for spec in self._type.fields:
+        for spec in self._type.form_fields():
             self.column.addWidget(self._build(spec))
 
         # Every other service in this project, so an order is picked rather than
@@ -825,7 +825,7 @@ class RunnerDialog(RowDialog):
 
     def value(self):
         settings = dict(self._row.settings)
-        for spec in self._type.fields:
+        for spec in self._type.form_fields():
             editor = self._editors[spec.key]
             if spec.kind == "env":
                 settings[spec.key] = editor.values()
