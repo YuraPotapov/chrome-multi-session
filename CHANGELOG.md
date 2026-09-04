@@ -16,6 +16,8 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-09-04
+
 ### Fixed
 - A `wait_for_out` or `wait_for_criterion` step with a **blank** value compiled and ran.
   It is the shape a half-filled step actually arrives in — the scenario editor drops an
