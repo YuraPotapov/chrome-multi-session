@@ -213,6 +213,29 @@ def test_no_flag_when_nothing_is_configured(tmp_path):
     assert not [a for a in core.argv("--describe") if a.startswith("--log-sources")]
 
 
+# --------------------------------------------------------------- --flows-dir
+def test_the_flows_dir_travels_with_every_call(tmp_path):
+    """Every call, not just the runs.
+
+    --describe is what the Scenarios page lists from and --flow-save is what it
+    writes with, so a tree named only on the run line would leave the page
+    editing one place and the run reading another.
+    """
+    script = tmp_path / "session_launcher.py"
+    script.write_text("")
+    core = core_mod.Core(str(script), "python3", "", "", "/data/flows")
+    for command in ("--describe", "--flow-show=alpha", "--flow-save=alpha"):
+        assert "--flows-dir=/data/flows" in core.argv(command), command
+
+
+def test_no_flows_flag_when_the_setting_is_blank(tmp_path):
+    # Blank means the core's own default, which it must be left to work out.
+    script = tmp_path / "session_launcher.py"
+    script.write_text("")
+    core = core_mod.Core(str(script), "python3")
+    assert not [a for a in core.argv("--describe") if a.startswith("--flows-dir")]
+
+
 def test_the_launchers_own_location_is_computable_without_asking_it(tmp_path):
     # It is the one path --log-sources cannot distort, which is what makes it
     # usable as the "read the old one" fallback.

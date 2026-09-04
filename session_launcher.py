@@ -2657,7 +2657,13 @@ Flow execution (require --run-tests):
                             box on each clicked/typed/pressed element.
   --flows-dir=DIR           Where scenarios/blocks/selectors.yaml live (default:
                             flows/ next to the script). Lets the flows live in
-                            their own repository.
+                            their own repository. Taken literally: this becomes
+                            the ONLY tree, so the blocks and selectors.yaml your
+                            scenarios reference have to be in it too - nothing
+                            that ships with the application is searched behind
+                            it. Needs no --run-tests: it applies to --describe
+                            and the --flow-* commands as well, which is how the
+                            GUI edits a tree of your own.
   --reports-dir=DIR         Where run artifacts are written (default: reports/).
   --jobs=N|all|auto         Drive N windows at once (default 1 = one after
                             another); extras queue for a free slot. Scenarios
@@ -3048,9 +3054,11 @@ def main():
         extensions = [e for e in extensions if e.name not in excluded_extensions]
     if flows_dir is not None and not os.path.isdir(flows_dir):
         sys.exit("--flows-dir: %s is not a directory." % flows_dir)
-    if flows_dir is not None and run_tests is None and not recorder:
-        sys.exit("--flows-dir requires --run-tests or --recorder (flows are only read "
-                 "when scenarios run, and written when one is recorded).")
+    # No --run-tests guard, unlike the flags below it, and it used to have one.
+    # This says where a tree *is*, not what to do with it, and the GUI now carries
+    # it on every call so that the tree its Scenarios page edits is the tree a run
+    # reads - the bargain --config and --log-sources already make. On a plain
+    # launch it simply goes unused, which is not worth refusing.
     if reports_dir is not None and run_tests is None:
         sys.exit("--reports-dir requires --run-tests (nothing is written without a run).")
     if jobs_given and run_tests is None:

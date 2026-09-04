@@ -187,6 +187,12 @@ block, shows what each named target resolves to, and writes into
 `~/ChromeMultiSession/flows`, which is searched before the tree that ships with
 the app.
 
+Somewhere else suits you better? Put the folder in the GUI's **Settings ->
+Scenarios**, or run with `--flows-dir=DIR`. It then becomes the **only** tree the
+engine reads, so copy the blocks and `selectors.yaml` your scenarios reference
+across before pointing it at an empty folder — see
+[docs/flows.md](docs/flows.md).
+
 A scenario can also **start, stop and restart the services** on the *Services &
 Logs* page, and wait until one is up - by its status, by a regex over its output,
 or by one of its criteria. Those services belong to the GUI, so a scenario using

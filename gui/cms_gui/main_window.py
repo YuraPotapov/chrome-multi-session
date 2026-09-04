@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
 
         self.settings = Settings()
         self.core = core_mod.Core(self.settings.core_script, self.settings.interpreter,
-                                  self.settings.config)
+                                  self.settings.config, flows_dir=self.settings.flows_path)
         self._aim_log_sources()
         self.inventory = core_mod.Inventory()
         self.run_state = RunState(self)
@@ -939,10 +939,12 @@ class MainWindow(QMainWindow):
     def open_settings(self):
         dialog = SettingsDialog(self.settings, self)
         dialog.set_paths(*self.services.paths())
+        dialog.set_flows_dir(self.inventory.dirs().get("flows") or "")
         if dialog.exec() == QDialog.Accepted:
             dialog.apply()
             self.core = core_mod.Core(self.settings.core_script,
-                                      self.settings.interpreter, self.settings.config)
+                                      self.settings.interpreter, self.settings.config,
+                                      flows_dir=self.settings.flows_path)
             self._aim_log_sources()
             self.refresh_inventory()
 
@@ -1430,7 +1432,7 @@ class MainWindow(QMainWindow):
         return box.clickedButton() is stop
 
     def _update_services(self, *_args):
-        """The footer's line about services: `odoo: running`.
+        """The footer's line about services: `app server: running`.
 
         Read off the supervisor rather than tallied here, so there is one answer
         to what is up and the page and the footer cannot disagree. Only what is

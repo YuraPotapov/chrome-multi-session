@@ -172,7 +172,7 @@ class Core:
     """
 
     def __init__(self, script=None, interpreter=None, config=None,
-                 log_sources=None):
+                 log_sources=None, flows_dir=None):
         auto_script, auto_python = autodetect()
         self.script = script or auto_script
         if not needs_interpreter(self.script):
@@ -187,6 +187,16 @@ class Core:
         # GUI edits this file, so the one it edits and the one a run reads have
         # to be the same one - see Settings -> Log sources.
         self.log_sources = log_sources or ""
+        # And for the same reason: the Scenarios page writes into this tree and a
+        # run reads from it, so both have to be told the one answer rather than
+        # each falling back to the core's default - which in a checkout is the
+        # checkout. See Settings -> Scenarios.
+        #
+        # Taken literally by the core: once this is set it is the ONLY tree, so
+        # the blocks and selectors.yaml a scenario references have to live in it
+        # too. That is the deliberate reading of the setting - "my scenarios come
+        # from here" - rather than a layer over what ships with the application.
+        self.flows_dir = flows_dir or ""
 
     @property
     def legacy_log_sources(self):
@@ -254,6 +264,8 @@ class Core:
             command.append("--config=" + self.config)
         if self.log_sources:
             command.append("--log-sources=" + self.log_sources)
+        if self.flows_dir:
+            command.append("--flows-dir=" + self.flows_dir)
         command.extend(a for a in args if a)
         return command
 

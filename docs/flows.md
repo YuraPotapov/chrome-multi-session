@@ -14,8 +14,19 @@ flows/
 ```
 
 The id maps to the path: a **dotted** id `auth.login` is `auth/login.yaml`; a **bare** id
-`my_scenario` is `scenarios/my_scenario.yaml`. Point the engine at a different tree with
-`--flows-dir=DIR`.
+`my_scenario` is `scenarios/my_scenario.yaml`.
+
+Point the engine at a different tree with `--flows-dir=DIR`, or the GUI's
+**Settings -> Scenarios**.
+
+**It becomes the only tree.** Nothing that ships with the application is searched behind
+it, so the blocks and `selectors.yaml` your scenarios reference have to live in it too —
+a folder holding one scenario that says `use: auth.login` will not compile. Copy what you
+need across before pointing it at an empty folder:
+
+```bash
+cp -r flows/auth flows/common flows/selectors.yaml ~/my-flows/
+```
 
 A complete, runnable example lives in [`tests/fixtures/flows/`](../tests/fixtures/flows).
 
@@ -97,9 +108,9 @@ GUI's **Services & Logs** page — and wait until it is actually up.
 
 ```yaml
 steps:
-  - service_restart: "Claim/Odoo"
+  - service_restart: "Storefront/Web"
   - type: wait_for_out
-    target: "Claim/Odoo"
+    target: "Storefront/Web"
     value: "HTTP service .+ running on .+:8069"
     timeout: 180000
   - goto: "{{env.origin}}"          # the window still holds the old process's page
@@ -125,7 +136,7 @@ scenarios from the Scenarios page; from a bare terminal every service step fails
 with `service steps need the GUI`, rather than pretending or hanging.
 
 **Naming a service.** `Project/Service` as both appear on the page, split on the first `/`.
-A bare `Odoo` works when exactly one project has a service by that name, and is an error
+A bare `Web` works when exactly one project has a service by that name, and is an error
 when two do — which the failure message says.
 
 **`wait_for_out` is a regex**, `re.search` against each line, case-sensitive; open with

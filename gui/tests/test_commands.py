@@ -139,7 +139,9 @@ def test_run_tests_stays_editable_while_its_dependents_are_disabled(qapp):
 def test_filling_run_tests_enables_the_flow_and_report_flags(qapp):
     page = _page(qapp)
     page.set_state({"--run-tests": "tag:access"})
-    for name in ("--jobs", "--execution-overlay", "--close-after", "--flows-dir",
+    # --flows-dir is deliberately absent: it is Settings -> Scenarios now, and
+    # rides on every call from Core.argv the way --config does.
+    for name in ("--jobs", "--execution-overlay", "--close-after",
                  "--report-level", "--report-screen", "--report-always"):
         assert page._flag_rows[name].isEnabled(), name
 
@@ -196,5 +198,11 @@ def test_recording_keeps_what_it_still_needs():
 def test_the_list_of_dropped_flags_comes_from_the_catalogue():
     """So a flow-execution flag added later is covered without touching this."""
     for flag in commands.FLAGS:
-        if flag.needs_run_tests and flag.name not in commands.RECORDING_KEEPS:
+        if flag.needs_run_tests:
             assert commands.for_recording(["%s=x" % flag.name]) == []
+
+
+def test_recording_still_gets_the_flows_dir_now_that_it_is_a_setting():
+    # It used to be the one exception to the rule above. It is not in the
+    # catalogue at all any more - Core.argv carries it - so nothing drops it.
+    assert commands.for_recording(["--flows-dir=/tmp/flows"]) == ["--flows-dir=/tmp/flows"]

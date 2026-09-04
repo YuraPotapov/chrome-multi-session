@@ -4,6 +4,7 @@ import pathlib
 
 import pytest
 
+import runtime_paths
 import session_launcher as sl
 
 # The three environment shapes the real config uses: a bare host:port with no
@@ -539,6 +540,41 @@ def test_main_rejects_jobs_without_run_tests(monkeypatch, config):
     # --jobs only means something for autotest runs; a plain launch has nothing
     # to spread across workers.
     assert "--jobs requires --run-tests" in _main(monkeypatch, config, "--env=dev", "--jobs=4")
+
+
+def test_main_accepts_flows_dir_without_run_tests(monkeypatch, config, tmp_path):
+    """Unlike --jobs, this says where a tree *is*, not what to do with it.
+
+    The GUI carries it on every call so the tree its Scenarios page edits is the
+    tree a run reads - the bargain --config already makes - which means a plain
+    launch gets it too. Refusing that would break every launch from a GUI that
+    has Settings -> Scenarios filled in.
+    """
+    flows = tmp_path / "mine"
+    flows.mkdir()
+    message = _main(monkeypatch, config, "--env=dev", "--flows-dir=" + str(flows))
+    assert "--flows-dir" not in (message or "")
+
+
+def test_main_still_rejects_a_flows_dir_that_is_not_there(monkeypatch, config, tmp_path):
+    # The typo is still worth catching - it is the only tree there will be, so a
+    # wrong path means no scenarios at all rather than a quiet fallback.
+    message = _main(monkeypatch, config, "--env=dev",
+                    "--flows-dir=" + str(tmp_path / "nope"))
+    assert "is not a directory" in (message or "")
+
+
+def test_a_named_flows_dir_is_the_only_tree_searched(tmp_path):
+    """What the setting means, and the thing to know before turning it on.
+
+    Nothing that ships with the application is searched behind it, so the blocks
+    and selectors a scenario references have to be in this tree too.
+    """
+    from engine import loader
+
+    assert loader.search_path(str(tmp_path / "mine")) == [str(tmp_path / "mine")]
+    assert runtime_paths.bundled_flows_dir() not in loader.search_path(
+        str(tmp_path / "mine"))
 
 
 def test_main_rejects_jobs_1_without_run_tests(monkeypatch, config):

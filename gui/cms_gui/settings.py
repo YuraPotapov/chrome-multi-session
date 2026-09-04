@@ -60,6 +60,23 @@ class Settings:
         self._qs.setValue("services/path", value or "")
 
     @property
+    def flows_path(self):
+        """Where the scenarios tree lives; empty means the core's own default.
+
+        The same bargain as ``log_sources_path``: the GUI writes scenarios there
+        and a run reads them from there, so the path travels with every call
+        (``--flows-dir``) rather than each side guessing. And it has a default
+        worth overriding for the same reason ``services_path`` does - in a source
+        checkout the core's default is the checkout itself, so everything written
+        lands among the code.
+        """
+        return self._qs.value("flows/path", "", str)
+
+    @flows_path.setter
+    def flows_path(self, value):
+        self._qs.setValue("flows/path", value or "")
+
+    @property
     def log_sources_path(self):
         """Where logsources.json lives; empty means the default under ~.
 

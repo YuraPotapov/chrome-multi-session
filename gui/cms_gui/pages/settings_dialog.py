@@ -84,6 +84,22 @@ class SettingsDialog(QDialog):
             "reads are the same one."))
         self.data_paths = widgets.elided_mono("")
 
+        # A directory, not a file - and the one setting here whose default is
+        # actively wrong in a checkout, where the core's own answer is the
+        # checkout itself and every scenario saved lands among the source.
+        self.flows = QLineEdit(settings.flows_path)
+        self.flows.setProperty("mono", True)
+        self.flows.setPlaceholderText("the core's own flows directory")
+        column.addWidget(widgets.field(
+            "Scenarios", widgets.row(self.flows,
+                                     self._browse_button(self._pick_flows)),
+            "The folder your scenarios are read from and written to. Blank uses "
+            "the core's default, which in a source checkout is the checkout "
+            "itself. Set, it is the ONLY folder used - the blocks and "
+            "selectors.yaml your scenarios reference have to be in it too, so "
+            "copy them across before pointing this at an empty one. Passed to "
+            "every command as --flows-dir."))
+
         # The GUI's own, and the launcher has never heard of it - so where this
         # one goes really is nobody else's business.
         self.services = QLineEdit(settings.services_path)
@@ -161,6 +177,12 @@ class SettingsDialog(QDialog):
         if path:
             self.services.setText(path)
 
+    def _pick_flows(self):
+        path = widgets.pick_path(self, "Scenarios folder",
+                                 self.flows.text() or "~", directory=True)
+        if path:
+            self.flows.setText(path)
+
     def _pick_config(self):
         path = widgets.pick_path(self, "users.json",
                                  os.path.dirname(self.config.text() or "") or "~")
@@ -195,11 +217,22 @@ class SettingsDialog(QDialog):
         if log_sources and not self.log_sources.text().strip():
             self.log_sources.setPlaceholderText(log_sources)
 
+    def set_flows_dir(self, path):
+        """The tree the core says it is using, for the field that is left blank.
+
+        The same courtesy as the log sources placeholder above, and the more
+        useful one: "where do my scenarios go right now" is the question this
+        field exists to answer, and blank is not an answer.
+        """
+        if path and not self.flows.text().strip():
+            self.flows.setPlaceholderText(path)
+
     def core(self):
         return core_mod.Core(self.script.text().strip(),
                              self.interpreter.text().strip(),
                              self.config.text().strip(),
-                             self.log_sources.text().strip())
+                             self.log_sources.text().strip(),
+                             self.flows.text().strip())
 
     def apply(self):
         self.settings.core_script = self.script.text().strip()
@@ -207,3 +240,4 @@ class SettingsDialog(QDialog):
         self.settings.config = self.config.text().strip()
         self.settings.services_path = self.services.text().strip()
         self.settings.log_sources_path = self.log_sources.text().strip()
+        self.settings.flows_path = self.flows.text().strip()

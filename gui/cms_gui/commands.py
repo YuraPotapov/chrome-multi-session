@@ -73,8 +73,6 @@ FLAGS = [
          "In-page execution HUD components.",
          choices=["tree", "progress", "status", "logs", "highlight", "notifications"],
          needs_run_tests=True),
-    Flag("--flows-dir", "path", FLOW,
-         "Where scenarios, blocks and selectors.yaml live.", needs_run_tests=True),
     Flag("--reports-dir", "path", FLOW,
          "Where run artifacts are written.", needs_run_tests=True),
     Flag("--close-after", "flag", FLOW,
@@ -106,6 +104,11 @@ GUI_OWNED = ("--config", "--events", "--control", "--describe", "--init-users-js
              # so the file it edits and the file a run reads are the same one -
              # not something anyone builds a command line out of by hand.
              "--log-sources",
+             # And where the flows tree is, for the same reason: the Scenarios
+             # page edits it and a run reads it. It was a form field until it
+             # became Settings -> Scenarios; two places to say it meant the page
+             # could be editing one tree while a run read another.
+             "--flows-dir",
              # RUN ▾ -> "With Recorder" adds this; it is a mode, not a form field.
              "--recorder",
              "--help", "-h", "--version", "-V")
@@ -121,13 +124,6 @@ ONE_SHOTS = [
 ]
 
 
-#: The one flow-execution flag a recording still wants. Everything else in that
-#: group describes a run - how many at once, what to overlay on it, what to
-#: report about it - and there is no run. ``--flows-dir`` is different: it says
-#: where the flows tree is, which is where the recording gets written.
-RECORDING_KEEPS = ("--flows-dir",)
-
-
 def for_recording(args):
     """``args`` with everything that belongs to a run taken out.
 
@@ -136,9 +132,13 @@ def for_recording(args):
     window opens ("--execution-overlay requires --run-tests"). Reading the group
     off the catalogue rather than naming flags here means a new one is covered
     the day it is added.
+
+    ``--flows-dir`` used to need an exception here, being the one flow flag a
+    recording still wants - it says where the recording gets written. It is a
+    setting now rather than a form field, so it is not in the catalogue at all
+    and there is nothing to except: it rides along like --config does.
     """
-    drop = {flag.name for flag in FLAGS
-            if flag.needs_run_tests and flag.name not in RECORDING_KEEPS}
+    drop = {flag.name for flag in FLAGS if flag.needs_run_tests}
     drop.add("--run-tests")
     return [a for a in args if a.split("=", 1)[0] not in drop]
 
