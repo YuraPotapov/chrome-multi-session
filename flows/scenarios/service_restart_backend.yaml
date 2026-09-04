@@ -1,0 +1,12 @@
+id: service_restart_backend
+name: "Backend restarts, and the app comes back"
+tags: [template, manual, services]
+steps:
+  - service_restart: "Odoo: Launch Demo Claims"
+  - wait_for_out: {target: "Odoo: Launch Demo Claims", value: "HTTP service .+ running on .+:8069", timeout: 180000}
+  - type: wait_for_service
+    target: "Odoo: Launch Demo Claims"
+    timeout: 30000
+  - goto: "{{env.origin}}"
+  - use: "auth.login"
+  - assert_visible: "dashboard"

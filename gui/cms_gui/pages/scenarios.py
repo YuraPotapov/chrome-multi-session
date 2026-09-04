@@ -37,6 +37,9 @@ FALLBACK_ACTIONS = {
     "selector_and_value": ["fill", "select", "assert_text_contains"],
     "value_only": ["assert_url_contains", "assert_title", "assert_host_up", "press"],
     "url_target": ["goto"],
+    "service_target": ["service_start", "service_stop", "service_restart",
+                       "wait_for_service"],
+    "service_target_and_value": ["wait_for_out", "wait_for_criterion"],
     "use": ["use"],
     "states": ["visible", "attached", "hidden", "detached"],
 }
@@ -345,7 +348,7 @@ class ScenariosPage(QWidget):
     def all_actions(self):
         seen = []
         for group in ("use", "url_target", "selector_only", "selector_and_value",
-                      "value_only"):
+                      "value_only", "service_target", "service_target_and_value"):
             for action in self.actions_for(group):
                 if action not in seen:
                     seen.append(action)
@@ -464,6 +467,12 @@ class ScenariosPage(QWidget):
                     resolved = "block"
                 elif action in self.actions_for("url_target"):
                     resolved = "url"
+                elif (action in self.actions_for("service_target")
+                        or action in self.actions_for("service_target_and_value")):
+                    # A Project/Service reference from services.json. Saying
+                    # "raw selector" here would be the column lying about the
+                    # one thing it is for.
+                    resolved = "service"
                 else:
                     resolved = selectors.get(target, "")
                     if not resolved and target:

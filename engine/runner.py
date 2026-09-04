@@ -19,11 +19,15 @@ import runtime_paths
 import system_load
 
 from domain.result import FlowResult, RunResult, StepResult, PASS, FAIL, ERROR
-from engine import artifacts, assertions, compiler, events, loader
+from engine import artifacts, assertions, compiler, events, loader, services
 from engine.context import RunContext
 from engine.overlay import ExecutionOverlay, NullOverlay
 
 log = logging.getLogger("flowengine.runner")
+
+
+class ServiceError(Exception):
+    """A service step could not be carried out (no GUI, unknown service, refused)."""
 
 
 class _OverlayLogBridge(logging.Handler):
@@ -955,6 +959,15 @@ def _do_action(adapter, step):
         adapter.wait_for(step.target, state=step.state or "visible", timeout=step.timeout)
     elif action == "press":
         adapter.press_key(step.value)
+    elif action in services.IMPERATIVE:
+        # No adapter: the GUI owns the service, so this is a request over the
+        # control channel. A refusal raises - being unable to carry out an
+        # instruction is an ERROR, where a service that simply never came up is
+        # a FAIL through the wait actions in engine.assertions.
+        ok, detail = services.request(action, step.target, timeout_ms=step.timeout)
+        if not ok:
+            # Bare: _run_scenario already prefixes the action and its target.
+            raise ServiceError(detail)
     else:
         raise ValueError("no handler for action %r" % action)
 

@@ -188,7 +188,7 @@ def _render_step(step):
     # state and retry exist only in the verbose form, and so does a timeout on
     # anything that is not a {target, value} action.
     verbose = state or retry or (
-        timeout and action not in compiler.SELECTOR_AND_VALUE)
+        timeout and action not in compiler.TARGET_AND_VALUE)
     if verbose:
         out = ["  - type: %s" % action]
         if target is not None:
@@ -204,7 +204,7 @@ def _render_step(step):
                        % (int(retry.get("attempts", 1)), retry.get("delay", 1)))
         return out
 
-    if action in compiler.SELECTOR_AND_VALUE:
+    if action in compiler.TARGET_AND_VALUE:
         inner = "target: %s, value: %s" % (_scalar(target), _scalar(value))
         if timeout:
             inner += ", timeout: %s" % int(timeout)

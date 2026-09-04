@@ -1292,6 +1292,27 @@ def test_describe_advertises_the_step_grammar(monkeypatch, capsys, flow_tree, co
     assert set(actions["selector_and_value"]) == compiler.SELECTOR_AND_VALUE
     assert set(actions["selector_only"]) == compiler.SELECTOR_ONLY
     assert "goto" in actions["url_target"] and "use" in actions["use"]
+    assert set(actions["service_target"]) == compiler.SERVICE_TARGET
+    assert set(actions["service_target_and_value"]) == compiler.SERVICE_TARGET_AND_VALUE
+
+
+def test_a_service_result_on_the_control_channel_reaches_whoever_asked(monkeypatch):
+    # The answer half of a service step: the GUI writes this line, and the
+    # session thread blocked in engine.services is what is waiting for it.
+    import io
+
+    from engine import services as engine_services
+
+    delivered = []
+    monkeypatch.setattr(engine_services, "deliver",
+                        lambda request_id, **kw: delivered.append((request_id, kw)))
+    monkeypatch.setattr(sl.sys, "stdin", io.StringIO(
+        '{"command": "service.result", "id": 7, "ok": true, "status": "running"}\n'
+        '{"command": "who-knows"}\n'          # ignored, not fatal
+        'not json at all\n'))
+    sl.read_commands({})
+
+    assert delivered == [(7, {"ok": True, "status": "running", "message": ""})]
 
 
 # ------------------------------------------------------ staged window launching

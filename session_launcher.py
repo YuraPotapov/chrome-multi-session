@@ -691,6 +691,10 @@ def flow_actions():
         "value_only": sorted(compiler.VALUE_ONLY),
         # target is a URL, never a selector
         "url_target": sorted(compiler.URL_TARGET),
+        # target is a "Project/Service" reference from services.json
+        "service_target": sorted(compiler.SERVICE_TARGET),
+        # ...and the value is a regex over its output, or a criterion's name
+        "service_target_and_value": sorted(compiler.SERVICE_TARGET_AND_VALUE),
         # composition: the target is another flow's id
         "use": [compiler.USE],
         # accepted by wait_for; anything else is Playwright's default
@@ -2273,13 +2277,16 @@ def read_commands(windows_by_session):
     here. Opt-in through ``--control=-`` because a reader on stdin would
     otherwise swallow the keystrokes of anyone running this in a terminal.
 
-    Only one command so far - stop ONE session - and it does both halves of what
-    that means: tell the engine to stop driving that window (so it stops issuing
-    steps rather than having them fail against a browser being torn down), then
-    close the window itself. Unknown commands are ignored rather than fatal: a
-    newer GUI talking to an older core should lose a feature, not the run.
+    Two commands. ``stop-session`` does both halves of what stopping one window
+    means: tell the engine to stop driving it (so it stops issuing steps rather
+    than having them fail against a browser being torn down), then close the
+    window itself. ``service.result`` is the answer to a ``service.request``
+    event - the scenario asked the GUI to start or watch a service and a session
+    thread is blocked waiting for this. Unknown commands are ignored rather than
+    fatal: a newer GUI talking to an older core should lose a feature, not the run.
     """
     from engine import runner as engine_runner
+    from engine import services as engine_services
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -2297,6 +2304,10 @@ def read_commands(windows_by_session):
             proc = windows_by_session.get(session)
             if proc is not None:
                 close_all([(session, proc)])
+        elif command == "service.result":
+            engine_services.deliver(message.get("id"), ok=message.get("ok"),
+                                    status=message.get("status", ""),
+                                    message=message.get("message", ""))
         else:
             log.warning("Ignoring an unknown control command: %r", command)
 
@@ -3329,6 +3340,14 @@ def main():
         # windows exist so an early command finds something to address.
         threading.Thread(target=read_commands, args=(windows_by_session,),
                          name="control", daemon=True).start()
+        # A scenario may now ask for a service. Both halves have to be there:
+        # this thread to be answered on, and an events sink to ask through.
+        try:
+            from engine import services as engine_services
+
+            engine_services.configure(_events is not None and _events.enabled())
+        except ImportError:
+            pass                    # no engine installed: a plain launch, nothing to ask
 
     if staged:
         log.info("%d session(s) prepared. Windows open as slots free, %s at a time; "
@@ -3389,6 +3408,13 @@ def main():
             stopped = True
             raise
         finally:
+            # Before anything else: a session thread still blocked on a service
+            # reply would otherwise hold the run open for the rest of its
+            # timeout, and no answer is coming now.
+            if control_stdin:
+                from engine import services as engine_services
+
+                engine_services.abandon_all()
             _emit("run.finished", exit_code=rc)
             # A STOPPED run always closes its windows, whatever --close-after
             # says. That flag answers "what should happen when a run finishes";

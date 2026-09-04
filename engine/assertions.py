@@ -8,11 +8,17 @@ To add one: write the function, add it to :data:`ASSERTIONS`, AND add its name t
 the matching set in :mod:`engine.compiler` (``SELECTOR_ONLY`` /
 ``SELECTOR_AND_VALUE`` / ``VALUE_ONLY``). Both halves are required - without the
 second, ``_validate`` rejects it as an unknown action. See docs/flows.md.
+
+Not everything here asks the browser. ``assert_host_up`` asks the network and the
+three ``wait_for_*`` service steps ask the GUI (:mod:`engine.services`); what puts
+them in this module is the shape of the answer, not where it came from.
 """
 
 import ssl
 import urllib.error
 import urllib.request
+
+from engine import services
 
 
 def _assert_exists(adapter, step):
@@ -72,6 +78,32 @@ def _assert_host_up(adapter, step):
     return ok, ("host answered (%s)" % detail) if ok else ("host not answering (%s)" % detail)
 
 
+# The three waits on a service. They are here rather than among the actions for
+# the reason at the top of this module: each one asks a question and answers it
+# with (ok, message), so a service that never comes up is a FAIL with a readable
+# reason rather than an exception. Like _assert_host_up they never touch the
+# adapter - the answer comes from the GUI, over the control channel.
+def _wait_for_service(adapter, step):
+    ok, detail = services.request(services.WAIT_RUNNING, step.target,
+                                  timeout_ms=step.timeout)
+    return ok, ("%s is running" % step.target) if ok else (
+        "%s did not come up (%s)" % (step.target, detail))
+
+
+def _wait_for_out(adapter, step):
+    ok, detail = services.request(services.WAIT_OUT, step.target,
+                                  pattern=step.value, timeout_ms=step.timeout)
+    return ok, ("%s printed %r" % (step.target, step.value)) if ok else (
+        "%s never printed %r (%s)" % (step.target, step.value, detail))
+
+
+def _wait_for_criterion(adapter, step):
+    ok, detail = services.request(services.WAIT_CRITERION, step.target,
+                                  pattern=step.value, timeout_ms=step.timeout)
+    return ok, ("%s: %r is lit" % (step.target, step.value)) if ok else (
+        "%s: %r never lit (%s)" % (step.target, step.value, detail))
+
+
 ASSERTIONS = {
     "assert_exists": _assert_exists,
     "assert_visible": _assert_visible,
@@ -80,6 +112,9 @@ ASSERTIONS = {
     "assert_url_contains": _assert_url_contains,
     "assert_title": _assert_title,
     "assert_host_up": _assert_host_up,
+    "wait_for_service": _wait_for_service,
+    "wait_for_out": _wait_for_out,
+    "wait_for_criterion": _wait_for_criterion,
 }
 
 

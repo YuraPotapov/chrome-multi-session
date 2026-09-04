@@ -13,6 +13,7 @@ The engine never executes YAML directly - only the compiled plan.
 """
 
 import logging
+import re
 
 from domain.flow import Step, USE
 from domain.plan import PlanNode, GROUP, STEP
@@ -32,9 +33,19 @@ SELECTOR_AND_VALUE = {"fill", "select", "assert_text_contains"}
 # Scalar-argument steps: the shorthand arg becomes ``value`` (e.g. `press: Enter`).
 VALUE_ONLY = {"assert_url_contains", "assert_title", "assert_host_up", "press"}
 URL_TARGET = {"goto"}
+# Service steps: the target is a "Project/Service" reference, never a selector.
+SERVICE_TARGET = {"service_start", "service_stop", "service_restart",
+                  "wait_for_service"}
+# ...and the value is what to wait for: a regex over the service's output, or
+# the name of a criterion configured on it.
+SERVICE_TARGET_AND_VALUE = {"wait_for_out", "wait_for_criterion"}
 # Actions whose ``target`` is a selector (so it goes through the selectors map).
 SELECTOR_TARGET = SELECTOR_ONLY | SELECTOR_AND_VALUE
-KNOWN = SELECTOR_ONLY | SELECTOR_AND_VALUE | VALUE_ONLY | URL_TARGET | {USE}
+# Actions whose shorthand argument is a ``{target, value}`` mapping - which is
+# also what decides how engine.flowfile writes one back out.
+TARGET_AND_VALUE = SELECTOR_AND_VALUE | SERVICE_TARGET_AND_VALUE
+KNOWN = (SELECTOR_ONLY | SELECTOR_AND_VALUE | VALUE_ONLY | URL_TARGET
+         | SERVICE_TARGET | SERVICE_TARGET_AND_VALUE | {USE})
 
 
 def parse_step(raw, source=None):
@@ -52,11 +63,12 @@ def parse_step(raw, source=None):
             raise CompileError("shorthand step needs exactly one action key: %r" % (raw,))
         action, arg = keys[0], raw[keys[0]]
         step = Step(action=action, source=source)
-        if action == USE or action in URL_TARGET or action in SELECTOR_ONLY:
+        if (action == USE or action in URL_TARGET or action in SELECTOR_ONLY
+                or action in SERVICE_TARGET):
             step.target = arg
         elif action in VALUE_ONLY:
             step.value = arg
-        elif action in SELECTOR_AND_VALUE:
+        elif action in TARGET_AND_VALUE:
             if not isinstance(arg, dict):
                 raise CompileError("%s needs a {target, value} mapping: %r" % (action, raw))
             step.target = arg.get("target")
@@ -83,6 +95,11 @@ def _validate(step, raw):
         raise CompileError("%s needs target and value: %r" % (action, raw))
     elif action in VALUE_ONLY and step.value is None:
         raise CompileError("%s needs a value: %r" % (action, raw))
+    elif action in SERVICE_TARGET and not step.target:
+        raise CompileError("%s needs a Project/Service reference: %r" % (action, raw))
+    elif action in SERVICE_TARGET_AND_VALUE and (not step.target or step.value is None):
+        raise CompileError(
+            "%s needs a Project/Service target and a value: %r" % (action, raw))
 
 
 def _finalize(step, selectors, ctx):
@@ -93,6 +110,17 @@ def _finalize(step, selectors, ctx):
         step.target = substitute(step.target, ctx)
     if step.value is not None:
         step.value = substitute(step.value, ctx)
+    if step.action == "wait_for_out":
+        # After substitution, because the pattern may be built from a param -
+        # and here rather than in _validate for the same reason. A regex that
+        # will not compile matches nothing, so left alone it would be a wait
+        # that silently runs its whole timeout out; the scenario should not
+        # compile at all.
+        try:
+            re.compile(step.value)
+        except re.error as exc:
+            raise CompileError("wait_for_out: regex does not compile (%s): %r"
+                               % (exc, step.value))
     return step
 
 

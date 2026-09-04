@@ -1001,6 +1001,14 @@ class ServiceSupervisor(QObject):
     def service(self, project, name):
         return self._services.get((project, name))
 
+    def keys(self):
+        """Every (project, name) pair it knows, in the order the page shows them.
+
+        For looking a service up by name alone, which is what a scenario step
+        written as ``Odoo`` rather than ``Claim/Odoo`` has to do.
+        """
+        return list(self._services)
+
     def status(self, project, name):
         service = self._services.get((project, name))
         return service.status if service is not None else STOPPED

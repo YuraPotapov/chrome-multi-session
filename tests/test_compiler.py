@@ -65,6 +65,63 @@ def test_parse_shorthand_must_be_single_key():
         compiler.parse_step({"click": "a", "fill": "b"})
 
 
+# --- service steps ----------------------------------------------------------
+def test_parse_shorthand_service_reference():
+    step = compiler.parse_step({"service_restart": "Claim/Odoo"})
+    assert step.action == "service_restart" and step.target == "Claim/Odoo"
+
+
+def test_parse_service_wait_takes_target_and_value():
+    step = compiler.parse_step({"wait_for_out": {"target": "Claim/Odoo",
+                                                 "value": ".+:8069",
+                                                 "timeout": 120000}})
+    assert (step.target, step.value, step.timeout) == ("Claim/Odoo", ".+:8069", 120000)
+
+
+def test_parse_service_wait_verbose_form():
+    step = compiler.parse_step({"type": "wait_for_criterion",
+                                "target": "Claim/Odoo", "value": "start"})
+    assert step.action == "wait_for_criterion" and step.value == "start"
+
+
+def test_service_step_needs_a_reference():
+    with pytest.raises(compiler.CompileError):
+        compiler.parse_step({"type": "service_start"})
+
+
+def test_service_wait_needs_both_halves():
+    with pytest.raises(compiler.CompileError):
+        compiler.parse_step({"wait_for_out": {"target": "Claim/Odoo"}})
+    with pytest.raises(compiler.CompileError):
+        compiler.parse_step({"wait_for_criterion": {"value": "start"}})
+
+
+def test_a_service_reference_is_not_looked_up_as_a_selector():
+    # It is a Project/Service pair, so a selectors.yaml entry that happens to
+    # share its name must not stand in for it.
+    step = compiler.parse_step({"service_start": "dashboard"})
+    compiler._finalize(step, {"dashboard": ".app-root"}, None)
+    assert step.target == "dashboard"
+
+
+def test_wait_for_out_rejects_a_regex_that_will_not_compile():
+    step = compiler.parse_step({"wait_for_out": {"target": "Claim/Odoo",
+                                                 "value": "[unclosed"}})
+    with pytest.raises(compiler.CompileError) as excinfo:
+        compiler._finalize(step, {}, None)
+    assert "does not compile" in str(excinfo.value)
+
+
+def test_wait_for_out_compiles_a_pattern_built_from_a_param():
+    # The check has to run AFTER substitution, or a valid pattern with a
+    # placeholder in it would be judged on the placeholder.
+    ctx = RunContext(env={"origin": "http://localhost:8069"})
+    step = compiler.parse_step({"wait_for_out": {"target": "Claim/Odoo",
+                                                 "value": "{{env.origin}}"}})
+    compiler._finalize(step, {}, ctx)
+    assert step.value == "http://localhost:8069"
+
+
 # --- compile_scenario: expansion, selectors, params, cycles -----------------
 def test_compile_expands_use_blocks():
     selectors = loader.load_selectors(FLOWS)

@@ -28,6 +28,7 @@ from . import (commands, core as core_mod, history as history_mod, icon, icons,
 from .loader import LoaderThread
 from . import version as gui_version
 from .runner import LauncherProcess, RunState
+from .servicebridge import ServiceBridge
 from .settings import Settings
 from .pages.artifacts import ArtifactsPage
 from .pages.command import CommandPage
@@ -187,6 +188,12 @@ class MainWindow(QMainWindow):
         self.services.saved.connect(self._update_nav_badges)
         self.run_state.changed.connect(self._schedule_nav_badges)
         self._update_nav_badges()
+
+        # A scenario can ask for a service - the other direction of the pipe the
+        # launcher is already given. It needs the supervisor to act through and
+        # the launcher's stdin to answer on, and this is where both exist.
+        self.service_bridge = ServiceBridge(self.services.supervisor,
+                                            self.process.send_command, self)
 
         self.workers_label = QLabel("")
         self.workers_label.setStyleSheet("padding: 0 10px;")
@@ -1192,6 +1199,11 @@ class MainWindow(QMainWindow):
     def _on_event(self, event):
         self.run_state.handle(event)
         kind = event.get("kind")
+        if kind == "service.request":
+            # A scenario is blocked on the answer to this, so it goes first and
+            # nothing else here is interested in it.
+            self.service_bridge.handle(event)
+            return
         if kind == "window.launched":
             self._keep_on_top()
         elif kind == "run.finished":
@@ -1209,6 +1221,9 @@ class MainWindow(QMainWindow):
 
     def _on_finished(self, code):
         self._set_running(False)
+        # Nothing left to answer: the timers would otherwise outlive the run and
+        # write into a launcher that has gone.
+        self.service_bridge.cancel_all()
         self.run.run_finished(code)
         self.status_right.setText("finished (exit %d)" % code)
         if self.run_state.run_dir:

@@ -47,6 +47,21 @@ def test_a_target_and_value_step_renders_as_an_inline_mapping():
     assert parsed[0].target == "login_input" and parsed[0].value == "admin"
 
 
+def test_a_service_step_renders_as_shorthand():
+    parsed, text = _roundtrip([{"action": "service_restart", "target": "Claim/Odoo"}])
+    assert '  - service_restart: "Claim/Odoo"' in text
+    assert parsed[0].target == "Claim/Odoo"
+
+
+def test_a_service_wait_keeps_its_value_through_the_round_trip():
+    # It takes a {target, value} mapping like `fill` does, so it must be written
+    # as one - rendered as a bare target its regex would be silently dropped.
+    parsed, text = _roundtrip([{"action": "wait_for_out", "target": "Claim/Odoo",
+                                "value": ".+:8069"}])
+    assert '  - wait_for_out: {target: "Claim/Odoo", value: ".+:8069"}' in text
+    assert parsed[0].value == ".+:8069"
+
+
 def test_a_value_only_step_puts_the_argument_in_value():
     parsed, _ = _roundtrip([{"action": "press", "value": "Enter"}])
     assert parsed[0].value == "Enter" and parsed[0].target is None

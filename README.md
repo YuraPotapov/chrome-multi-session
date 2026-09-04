@@ -187,6 +187,12 @@ block, shows what each named target resolves to, and writes into
 `~/ChromeMultiSession/flows`, which is searched before the tree that ships with
 the app.
 
+A scenario can also **start, stop and restart the services** on the *Services &
+Logs* page, and wait until one is up - by its status, by a regex over its output,
+or by one of its criteria. Those services belong to the GUI, so a scenario using
+them is run from the Scenarios page rather than from a terminal; the *Services*
+section of [docs/flows.md](docs/flows.md) has the six actions.
+
 ## Running the tests
 
 ```bash

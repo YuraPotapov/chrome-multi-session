@@ -7,7 +7,7 @@ import pytest
 
 from domain.flow import Step
 from domain.result import ERROR, FAIL, PASS, FlowResult
-from engine import runner
+from engine import assertions, runner, services
 
 
 class Recorder:
@@ -79,6 +79,67 @@ def test_press_action_dispatches_key():
     result = runner._run_step(kb, 0, Step("press", value="Enter"))
     assert result.status == PASS
     assert kb.keys == ["Enter"]
+
+
+# ------------------------------------------------------------- service steps
+
+@pytest.fixture
+def broker(monkeypatch):
+    """Stands in for the GUI at the other end of the control channel."""
+    asked = []
+
+    class Broker:
+        IMPERATIVE = services.IMPERATIVE
+        WAIT_RUNNING = services.WAIT_RUNNING
+        WAIT_OUT = services.WAIT_OUT
+        WAIT_CRITERION = services.WAIT_CRITERION
+        answer = (True, "ok")
+
+        def request(self, op, ref, pattern=None, timeout_ms=None, session=None):
+            asked.append((op, ref, pattern, timeout_ms))
+            return self.answer
+
+    broker = Broker()
+    monkeypatch.setattr(runner, "services", broker)
+    monkeypatch.setattr(assertions, "services", broker)
+    broker.asked = asked
+    return broker
+
+
+@pytest.mark.parametrize("action", ["service_start", "service_stop", "service_restart"])
+def test_a_service_step_asks_for_it_and_passes(broker, action):
+    result = runner._run_step(None, 0, Step(action, target="Claim/Odoo"))
+    assert result.status == PASS
+    assert broker.asked == [(action, "Claim/Odoo", None, None)]
+
+
+def test_a_service_step_that_is_refused_is_an_error(broker):
+    # Being unable to carry out an instruction is infrastructure, not a test
+    # result - unlike a wait, below.
+    broker.answer = (False, "no service Claim/Nope")
+    result = runner._run_step(None, 0, Step("service_start", target="Claim/Nope"))
+    assert result.status == ERROR
+    assert "no service" in result.message
+
+
+def test_a_wait_that_expires_is_a_fail_not_an_error(broker):
+    broker.answer = (False, "timed out after 120s")
+    result = runner._run_step(None, 0, Step("wait_for_out", target="Claim/Odoo",
+                                            value=".+:8069"))
+    assert result.status == FAIL
+    assert ".+:8069" in result.message
+
+
+def test_a_wait_that_is_answered_passes(broker):
+    result = runner._run_step(None, 0, Step("wait_for_service", target="Claim/Odoo"))
+    assert result.status == PASS
+    assert broker.asked == [("wait_for_service", "Claim/Odoo", None, None)]
+
+
+def test_a_service_step_needs_no_browser(broker):
+    # None as the adapter throughout the tests above is the point, not an
+    # oversight: the GUI owns the service, so nothing here touches a page.
+    assert runner._run_step(None, 0, Step("service_stop", target="Claim/Odoo")).status == PASS
 
 
 # ---------------------------------------------- --run-tests=config (per session)

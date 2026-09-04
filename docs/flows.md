@@ -90,6 +90,64 @@ accidentally merged into one step.
 means waiting the window out. It is usually where a slow scenario's time goes, so give it
 a short explicit `timeout:` rather than the 30 s default.
 
+## Services
+
+A scenario can start, stop and restart a service from `services.json` — the ones on the
+GUI's **Services & Logs** page — and wait until it is actually up.
+
+```yaml
+steps:
+  - service_restart: "Claim/Odoo"
+  - type: wait_for_out
+    target: "Claim/Odoo"
+    value: "HTTP service .+ running on .+:8069"
+    timeout: 180000
+  - goto: "{{env.origin}}"          # the window still holds the old process's page
+  - use: auth.login
+```
+
+**Reload after a restart.** The browser is not restarted with the service, and the page it
+already loaded is still on screen. Asserting on that DOM proves nothing about the backend
+that just came back, so go to the server again — a `goto:` — before the assertions.
+
+| Action | Argument | Meaning |
+| --- | --- | --- |
+| `service_start` | `Project/Service` | start it; returns as soon as the request is taken |
+| `service_stop` | `Project/Service` | stop it |
+| `service_restart` | `Project/Service` | stop, then start — dependencies and all |
+| `wait_for_service` | `Project/Service` | wait until its **status** is running |
+| `wait_for_out` | `{target, value}` | wait until its **output** matches the regex in `value` |
+| `wait_for_criterion` | `{target, value}` | wait until the **criterion** named in `value` is lit |
+
+**These need the GUI.** The services are owned by the process that started them — an
+attached one is literally its child — so the launcher asks and the GUI acts. Run these
+scenarios from the Scenarios page; from a bare terminal every service step fails at once
+with `service steps need the GUI`, rather than pretending or hanging.
+
+**Naming a service.** `Project/Service` as both appear on the page, split on the first `/`.
+A bare `Odoo` works when exactly one project has a service by that name, and is an error
+when two do — which the failure message says.
+
+**`wait_for_out` is a regex**, `re.search` against each line, case-sensitive; open with
+`(?i)` for insensitive. It will not compile the scenario if it will not compile as a regex.
+It sees **only what the service has printed since it last started**, so a `service_restart`
+followed by a `wait_for_out` waits for the *new* boot's line and cannot be satisfied by the
+previous one still sitting in the console — including in the window where the restart has
+been accepted but the old process has not gone down yet, which is exactly when the step
+after it runs.
+
+**Status and criteria are different questions**, and the three waits keep them apart:
+`wait_for_service` is about the process, the other two are about what it wrote. A service
+whose port was already taken is *running* and has not printed its ready line; that is the
+distinction, and it is usually the one you want. Use `wait_for_criterion` for something the
+service is already configured to watch for, `wait_for_out` for a one-off.
+
+**Timeouts.** `service_start`/`stop`/`restart` default to **15 s** (they only wait for the
+request to be taken, not for the service to be up); the three waits default to **120 s**,
+because a cold backend building its assets routinely needs more than the engine's usual
+30 s. `timeout:` overrides either. A wait that expires is a FAIL naming what it was still
+waiting for; a service step that cannot be carried out at all is an ERROR.
+
 ## Timeouts and retries
 
 One default: **30 000 ms**, set once on the page when the engine attaches. Any step
@@ -197,3 +255,10 @@ gives a `ValueError` at run time:
 Adding an **assertion** is smaller: a function in `engine/assertions.py`, an entry in its
 `ASSERTIONS` dict, **and** the name in one of the compiler sets in step 1 — that last one
 is easy to miss, and without it `_validate` rejects the assertion as an unknown action.
+
+An action the **GUI** carries out rather than the browser skips steps 3–5 and adds two of
+its own: an op in `engine/services.py` (which emits the request and waits for the answer)
+and a branch in `gui/cms_gui/servicebridge.py` (which does the work and replies). The
+compiler set is still step 1, and `SERVICE_TARGET` / `SERVICE_TARGET_AND_VALUE` are also
+advertised through `--describe`, so the GUI's scenario editor needs them in both
+`FALLBACK_ACTIONS` and `all_actions()` in `gui/cms_gui/pages/scenarios.py`.
