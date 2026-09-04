@@ -9,7 +9,9 @@ Command page cannot mean two different things.
 
 The page never shows a path the user has to type, a flag name, or a comma-
 separated list to assemble by hand. The one exception is Advanced, folded away,
-where a power user who does know what a flows directory is can still set one.
+where a power user who does know what a reports directory is can set one.
+Where the scenarios live is not among them: that is one answer for the whole
+application, so it is Settings -> Scenarios rather than a per-run override.
 """
 
 import json
@@ -477,8 +479,7 @@ class LaunchSessionsPage(QWidget):
         self.dir_edits = {}
         dirs = QHBoxLayout()
         dirs.setSpacing(16)
-        for key, label in (("flows_dir", "Scenarios folder"),
-                           ("reports_dir", "Reports folder"),
+        for key, label in (("reports_dir", "Reports folder"),
                            ("sessions_dir", "Profiles folder")):
             edit = QLineEdit()
             edit.setProperty("mono", True)
@@ -611,7 +612,6 @@ class LaunchSessionsPage(QWidget):
             "advanced": {"url": self.url.text().strip(),
                          "profile_prefix": self.profile_prefix.text().strip(),
                          "log_level": self.log_level.currentText(),
-                         "flows_dir": self.dir_edits["flows_dir"].text().strip(),
                          "reports_dir": self.dir_edits["reports_dir"].text().strip(),
                          "sessions_dir": self.dir_edits["sessions_dir"].text().strip()},
         }
@@ -849,7 +849,7 @@ class LaunchSessionsPage(QWidget):
             self._populate_artifacts(config["reports"]["artifacts"])
             self._populate_overlay(config["overlay"]["components"])
 
-            for key, name in (("flows_dir", "flows"), ("reports_dir", "reports"),
+            for key, name in (("reports_dir", "reports"),
                               ("sessions_dir", "sessions")):
                 edit = self.dir_edits[key]
                 # The Environments page owns the defaults; adopt them silently

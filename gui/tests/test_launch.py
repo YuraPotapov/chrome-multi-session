@@ -191,13 +191,12 @@ def test_advanced_overrides_reach_the_command_line():
     config = _config(scenarios={"mode": launch.SCENARIOS_ALL, "selected": []},
                      advanced={"url": "http://localhost:8069/web/login",
                                "profile_prefix": "matrix", "log_level": "DEBUG",
-                               "flows_dir": "/tmp/flows", "reports_dir": "/tmp/out",
+                               "reports_dir": "/tmp/out",
                                "sessions_dir": "/tmp/profiles"})
     argv = launch.argv(config)
     assert _flag(argv, "--url") == "http://localhost:8069/web/login"
     assert _flag(argv, "--user-session") == "matrix"
     assert _flag(argv, "--log-level") == "DEBUG"
-    assert _flag(argv, "--flows-dir") == "/tmp/flows"
 
 
 def test_the_default_log_level_is_not_passed():

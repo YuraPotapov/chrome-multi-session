@@ -71,7 +71,7 @@ DEFAULTS = {
     "screenshots": {"mode": SHOTS_OFF},
     "overlay": {"enabled": False, "components": []},
     "advanced": {"url": "", "profile_prefix": "", "log_level": "INFO",
-                 "flows_dir": "", "reports_dir": "", "sessions_dir": ""},
+                 "reports_dir": "", "sessions_dir": ""},
 }
 
 
@@ -118,7 +118,6 @@ def to_command_state(config, inventory=None):
                    "all" if sessions["all_at_once"] else
                    str(int(sessions["jobs"] or 1))),
         "--execution-overlay": _overlay(config["overlay"], inventory),
-        "--flows-dir": advanced["flows_dir"],
         "--reports-dir": advanced["reports_dir"],
         "--close-after": not bool(sessions["keep_open"]),
 
@@ -407,7 +406,7 @@ def summarise(config, inventory=None):
         rows.append(("Profile prefix", advanced["profile_prefix"]))
     if (advanced["log_level"] or "INFO") != "INFO":
         rows.append(("Log level", advanced["log_level"]))
-    for label, key in (("Flows from", "flows_dir"), ("Reports to", "reports_dir"),
+    for label, key in (("Reports to", "reports_dir"),
                        ("Profiles in", "sessions_dir")):
         if advanced[key]:
             rows.append((label, advanced[key]))
