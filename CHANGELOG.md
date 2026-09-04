@@ -16,6 +16,15 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+### Fixed
+- A `wait_for_out` or `wait_for_criterion` step with a **blank** value compiled and ran.
+  It is the shape a half-filled step actually arrives in — the scenario editor drops an
+  empty cell rather than writing it, and the YAML writer renders a missing value as
+  `value: ""` — and for `wait_for_out` it was the dangerous one: an empty regex matches
+  the first line the service prints, so the step passed instantly having proved nothing.
+  A blank value, or a blank service reference, is now refused at compile time, which is
+  also what stops the editor saving such a step in the first place.
+
 ## [0.14.0] - 2026-09-04
 
 ### Added

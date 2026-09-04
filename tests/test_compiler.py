@@ -96,6 +96,27 @@ def test_service_wait_needs_both_halves():
         compiler.parse_step({"wait_for_criterion": {"value": "start"}})
 
 
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_service_wait_with_a_blank_value_is_refused(blank):
+    """An empty value box is an error, not a wait that always passes.
+
+    The scenario editor drops a blank cell rather than writing it, and the YAML
+    writer renders a missing value as ``value: ""`` - so this is the shape a
+    half-filled step arrives in, not a hypothetical. For wait_for_out it is the
+    dangerous one: an empty regex matches the first line the service prints, so
+    the step would pass instantly having proved nothing.
+    """
+    for action in ("wait_for_out", "wait_for_criterion"):
+        with pytest.raises(compiler.CompileError) as excinfo:
+            compiler.parse_step({action: {"target": "Claim/Odoo", "value": blank}})
+        assert action in str(excinfo.value)
+
+
+def test_a_service_wait_with_a_blank_target_is_refused():
+    with pytest.raises(compiler.CompileError):
+        compiler.parse_step({"wait_for_out": {"target": "  ", "value": "ready"}})
+
+
 def test_a_service_reference_is_not_looked_up_as_a_selector():
     # It is a Project/Service pair, so a selectors.yaml entry that happens to
     # share its name must not stand in for it.

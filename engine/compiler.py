@@ -80,6 +80,11 @@ def parse_step(raw, source=None):
     return step
 
 
+def _given(value):
+    """Whether a field was actually filled in - blank is not an answer."""
+    return bool(str(value).strip()) if value is not None else False
+
+
 def _validate(step, raw):
     action = step.action
     if action not in KNOWN:
@@ -95,11 +100,23 @@ def _validate(step, raw):
         raise CompileError("%s needs target and value: %r" % (action, raw))
     elif action in VALUE_ONLY and step.value is None:
         raise CompileError("%s needs a value: %r" % (action, raw))
-    elif action in SERVICE_TARGET and not step.target:
+    elif action in SERVICE_TARGET and not _given(step.target):
         raise CompileError("%s needs a Project/Service reference: %r" % (action, raw))
-    elif action in SERVICE_TARGET_AND_VALUE and (not step.target or step.value is None):
-        raise CompileError(
-            "%s needs a Project/Service target and a value: %r" % (action, raw))
+    elif action in SERVICE_TARGET_AND_VALUE:
+        # Blank, not just missing. An editor that leaves the value box empty
+        # writes ``value: ""``, and an empty regex matches the first line the
+        # service prints - so wait_for_out would pass instantly and prove
+        # nothing. Refusing it here is what makes the empty box a visible error
+        # rather than a scenario that quietly always passes.
+        if not _given(step.target):
+            raise CompileError("%s needs a Project/Service target: %r" % (action, raw))
+        if not _given(step.value):
+            raise CompileError(
+                "%s needs a %s: %r"
+                % (action,
+                   "regex to look for in the service's output"
+                   if action == "wait_for_out" else "criterion name",
+                   raw))
 
 
 def _finalize(step, selectors, ctx):

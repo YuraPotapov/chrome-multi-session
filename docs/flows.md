@@ -130,6 +130,9 @@ when two do — which the failure message says.
 
 **`wait_for_out` is a regex**, `re.search` against each line, case-sensitive; open with
 `(?i)` for insensitive. It will not compile the scenario if it will not compile as a regex.
+A **blank** value is refused too, rather than treated as "match anything": an empty regex
+matches the first line the service prints, so the step would pass instantly having proved
+nothing. The same goes for an empty criterion name.
 It sees **only what the service has printed since it last started**, so a `service_restart`
 followed by a `wait_for_out` waits for the *new* boot's line and cannot be satisfied by the
 previous one still sitting in the console — including in the window where the restart has
