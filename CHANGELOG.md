@@ -16,6 +16,33 @@ app-agnostic, since that will break things on purpose.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-04
+
+### Added
+- **A scenario can call the services it depends on.** Six new step actions —
+  `service_start`, `service_stop`, `service_restart`, `wait_for_service`,
+  `wait_for_out` and `wait_for_criterion` — act on the services configured on the
+  *Services & Logs* page, named as `Project/Service`. So a test that needs a clean
+  backend, or that means to prove the app survives a restart, can now say so; until
+  now everything a scenario depended on had to be brought up by hand first.
+
+  The two halves of "up" are kept apart, because they answer different questions and
+  a backend whose port was already taken answers them differently: `wait_for_service`
+  is the process, `wait_for_out` is a regex over what it has printed, and
+  `wait_for_criterion` is a criterion already configured on it. `wait_for_out` sees
+  only what the service has said since it last started, so a restart cannot be
+  declared finished by the previous boot's ready line — not even in the window
+  where the restart has been accepted and the old process is still going down,
+  which is precisely when the step after it runs. A regex that will not compile
+  fails the scenario at compile time rather than becoming a wait that never matches.
+
+  **These steps are carried out by the GUI**, which is the process that owns those
+  services — an attached one is its child, so nothing else can stop it. The engine
+  asks over the `--events` stream it already writes and is answered on the
+  `--control` channel the GUI already opens. Run such a scenario from a bare
+  terminal and every service step fails at once saying so, rather than hanging or
+  quietly starting a second copy of your backend.
+
 ## [0.12.4] - 2026-09-04
 
 ### Added
