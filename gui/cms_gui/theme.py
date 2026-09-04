@@ -220,6 +220,11 @@ QLabel[role="mono"] {{ font-family: {mono}; font-size: 12px; color: {n700}; }}
 QLabel[role="muted"] {{ color: {n600}; }}
 QLabel[role="hint"] {{ font-size: 11px; color: {n600}; }}
 QLabel[role="summary"] {{ font-size: 12px; color: {n800}; }}
+/* The line an empty zone leads with: the subject, said once, in the page's own
+   heading face so it is plainly a state and not a row that lost its text. */
+QLabel[role="emptytitle"] {{
+    font-family: {heading}; font-size: 13px; font-weight: 600; color: {n700};
+}}
 QLabel[role="error"] {{ font-size: 12px; color: {bad}; }}
 QLabel[role="error-bold"] {{ font-size: 11px; color: {bad}; font-weight: bold; }}
 QLabel[role="preview"] {{ font-family: {mono}; font-size: 11px; color: {n600}; }}
@@ -457,6 +462,19 @@ QTableCornerButton::section {{ background: {n200}; border: none; }}
 
 /* --- containers ---------------------------------------------------------- */
 QFrame[role="panel"] {{ background: transparent; border: 1px solid {divider}; }}
+/* A panel for something that is always there, as against the ones a person
+   makes: Connections and the block for logs belonging to no project, beside the
+   projects themselves. Same frame, filled rather than clear, so the page reads
+   as "these are the parts, and those are yours" before a word of it is read.
+   SURFACE rather than a grey step for the reason at QHeaderView above - it is a
+   shade off the page in either mode, so the distinction survives dark mode
+   instead of inverting into a lighter block that reads as the highlighted one. */
+QFrame[role="panel-fixed"] {{ background: {surface}; border: 1px solid {divider}; }}
+/* Nothing configured yet: its own ground, so the page says "empty" rather than
+   looking like it failed to draw. */
+QFrame[role="emptyzone"] {{
+    background: {surface}; border: 1px dashed {divider_strong};
+}}
 QFrame[role="sidebar"] {{ background: {n100}; border-right: 1px solid {divider}; }}
 QFrame[role="bar"] {{ background: {bg}; border-bottom: 1px solid {divider}; }}
 QFrame[role="footer"] {{ background: {n100}; border-top: 1px solid {divider}; }}

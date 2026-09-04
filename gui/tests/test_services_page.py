@@ -12,6 +12,7 @@ import os
 import sys
 
 import pytest
+from PySide6.QtWidgets import QFrame, QLabel
 
 from cms_gui import logsourcesfile as lsf
 from cms_gui import runnertypes
@@ -1593,3 +1594,69 @@ def test_the_block_and_the_page_agree_because_both_ask_the_supervisor(page):
     assert len(page.supervisor.failed()) == 1
     assert "1 failed" in page._blocks["Claim"].disclosure.title()
     assert "1 failed" in page.totals.text()
+
+
+# ------------------------------------------------------ what an empty page says
+
+def _zone(widget):
+    """The empty-state zone, if the page is showing one."""
+    return [f for f in widget.findChildren(QFrame)
+            if f.property("role") == "emptyzone"]
+
+
+def test_a_page_with_no_projects_says_so_on_its_own_ground(empty_page):
+    """Otherwise it shows only the parts that are always there.
+
+    Connections and the unassigned-logs block are not an answer to "what is on
+    this machine" - a page carrying just those two reads as one that failed to
+    draw rather than as one nobody has filled in.
+    """
+    zones = _zone(empty_page)
+    assert len(zones) == 1
+    said = " ".join(label.text() for label in zones[0].findChildren(QLabel))
+    assert "No projects yet" in said
+    assert "Add Project" in said
+
+
+def test_the_zone_goes_as_soon_as_there_is_a_project(page):
+    # `page` is loaded with one project, so the question is already answered.
+    assert _zone(page) == []
+
+
+def test_a_project_block_is_clear_and_a_fixed_one_is_filled(page):
+    """The distinction the page is read by: yours, against always here.
+
+    A project someone added draws on the page's own ground; Connections and the
+    unassigned block are filled, so which is which does not depend on reading
+    the titles.
+    """
+    project = page._blocks["Claim"]
+    panels = [f for f in project.findChildren(QFrame)
+              if f.property("role") in ("panel", "panel-fixed")]
+    assert panels and panels[0].property("role") == "panel"
+
+    fixed = [f for f in page.findChildren(QFrame)
+             if f.property("role") == "panel-fixed"]
+    assert fixed, "Connections should be a fixed panel"
+
+
+def test_the_unassigned_block_is_filled_like_connections(empty_page):
+    # It is not a project either: it is where logs land when theirs is gone.
+    empty_page._logs = [lsf.LogRow(name="stray", connection="here",
+                                   project="Gone", type="file",
+                                   target="/var/log/stray.log")]
+    empty_page._rebuild()
+    block = empty_page._blocks[""]
+    panels = [f for f in block.findChildren(QFrame)
+              if f.property("role") in ("panel", "panel-fixed")]
+    assert panels[0].property("role") == "panel-fixed"
+
+
+def test_an_orphan_log_still_gets_its_block_beside_the_empty_zone(empty_page):
+    # Two different statements: no projects, and here are logs belonging to none.
+    empty_page._logs = [lsf.LogRow(name="stray", connection="here",
+                                   project="Gone", type="file",
+                                   target="/var/log/stray.log")]
+    empty_page._rebuild()
+    assert len(_zone(empty_page)) == 1
+    assert "" in empty_page._blocks

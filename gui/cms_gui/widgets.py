@@ -28,9 +28,15 @@ class BlueprintPanel(QFrame):
     blueprint look on its own.
     """
 
-    def __init__(self, parent=None, padding=(16, 16, 16, 16)):
+    def __init__(self, parent=None, padding=(16, 16, 16, 16), fixed=False):
+        """``fixed`` fills the panel: for a part of the page, not a row someone made.
+
+        The page this exists for stacks both kinds - a project a person added,
+        and Connections, which is always there. Given one frame for both, the
+        only way to tell which is which is to read the titles.
+        """
         super().__init__(parent)
-        self.setProperty("role", "panel")
+        self.setProperty("role", "panel-fixed" if fixed else "panel")
         self.setContentsMargins(0, 0, 0, 0)
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(*padding)
@@ -783,6 +789,34 @@ def lede(text):
     label.setProperty("role", "lede")
     label.setWordWrap(True)
     return label
+
+
+def empty_zone(title, detail):
+    """A whole region saying nothing is configured yet, on its own ground.
+
+    :func:`empty_note` answers the same question for one table, from inside it.
+    This is for the case where there is no table to be inside: a page whose main
+    subject has no rows at all shows only the parts that are always there, which
+    reads as a page that failed to load rather than as one waiting to be filled.
+
+    Dashed rather than solid, and taller than it needs to be: the shape says
+    "something goes here" without pretending to be a row already.
+    """
+    frame = QFrame()
+    frame.setProperty("role", "emptyzone")
+    box = QVBoxLayout(frame)
+    box.setContentsMargins(20, 26, 20, 26)
+    box.setSpacing(6)
+    head = QLabel(title)
+    head.setProperty("role", "emptytitle")
+    head.setAlignment(Qt.AlignCenter)
+    body = QLabel(detail)
+    body.setProperty("role", "hint")
+    body.setAlignment(Qt.AlignCenter)
+    body.setWordWrap(True)
+    box.addWidget(head)
+    box.addWidget(body)
+    return frame
 
 
 def mono(text=""):

@@ -1150,7 +1150,10 @@ class ProjectBlock(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        panel = widgets.BlueprintPanel(padding=(14, 12, 14, 14))
+        # Filled when it is not a project: the block for logs belonging to none
+        # is a part of the page, like Connections, not a row somebody added.
+        panel = widgets.BlueprintPanel(padding=(14, 12, 14, 14),
+                                       fixed=project is None)
         outer.addWidget(panel)
 
         title = self.name or "Unassigned"
@@ -1657,7 +1660,7 @@ class ServicesPage(QWidget):
                                                self._connections_note,
                                                self.connections_search))
         self.connections_fold.body().addWidget(ProjectBlock._panel(self.connections))
-        holder = widgets.BlueprintPanel(padding=(14, 12, 14, 14))
+        holder = widgets.BlueprintPanel(padding=(14, 12, 14, 14), fixed=True)
         holder.layout().addWidget(self.connections_fold)
         self._column.addWidget(holder)
         self._column.addStretch(1)
@@ -1834,11 +1837,24 @@ class ServicesPage(QWidget):
             self._column.insertWidget(at, block)
             at += 1
 
+        # Nothing configured at all: say so on its own ground. Without this the
+        # page shows only the parts that are always there - Connections, and the
+        # block for logs belonging to no project - which reads as a page that
+        # failed to draw rather than as one nobody has filled in yet. It stands
+        # where the projects would be, so what is missing is missing in its place.
+        if not self._projects:
+            self._column.insertWidget(at, widgets.empty_zone(
+                "No projects yet",
+                "A project groups the services that make one thing work - a "
+                "server, its database, the queue behind them - and the logs they "
+                "write. Add Project starts one."))
+            at += 1
+
         # A log naming a project that is not configured is still a log. It goes
         # in the trailing block rather than nowhere: silently hiding somebody's
         # row because a name no longer matches would look exactly like losing it.
         orphans = [row for row in self._logs if row.project not in known]
-        if orphans or not self._projects:
+        if orphans:
             block = ProjectBlock(self, None)
             block.set_logs(_newest_first(orphans))
             block.restore_search(searches.get(""))
